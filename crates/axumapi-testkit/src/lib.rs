@@ -1,9 +1,11 @@
 //! In-process testing helpers for axumapi applications.
 #![forbid(unsafe_code)]
 
-use axumapi_core::{App, Body, BodyError, RouterService};
+use axumapi_core::lifespan::Lifespan;
+use axumapi_core::{App, Body, BodyError, RouterService, ServerError};
 use http::{HeaderMap, Method, Request, StatusCode, header};
 use serde::{Serialize, de::DeserializeOwned};
+use std::sync::{Arc, Mutex, PoisonError};
 use thiserror::Error;
 use tower::ServiceExt;
 
@@ -57,6 +59,7 @@ impl TestResponse {
 #[derive(Debug, Clone)]
 pub struct TestClient {
     service: RouterService,
+    lifespan: Arc<Mutex<Option<Lifespan>>>,
 }
 
 impl TestClient {
@@ -68,6 +71,7 @@ impl TestClient {
     pub fn try_new(app: App) -> Result<Self, axumapi_core::ServerError> {
         Ok(Self {
             service: app.into_router_service()?,
+            lifespan: Arc::default(),
         })
     }
 
@@ -80,6 +84,41 @@ impl TestClient {
         match Self::try_new(app) {
             Ok(client) => client,
             Err(err) => panic!("invalid app configuration: {err}"),
+        }
+    }
+
+    /// Wrap `app` and run its startup hooks (mounted children included).
+    ///
+    /// Unlike [`TestClient::try_new`], which never runs hooks, this mirrors
+    /// `App::run` without binding a socket. Call [`TestClient::shutdown`] to
+    /// run the shutdown hooks.
+    ///
+    /// # Errors
+    /// Returns the configuration error, or [`ServerError::Lifespan`] if a
+    /// startup hook fails.
+    pub async fn start(app: App) -> Result<Self, ServerError> {
+        let (service, mut lifespan) = app.into_service_with_lifespan()?;
+        lifespan.startup().await?;
+        Ok(Self {
+            service,
+            lifespan: Arc::new(Mutex::new(Some(lifespan))),
+        })
+    }
+
+    /// Run the shutdown hooks (reverse order). A no-op if already run or if
+    /// the client was not created with [`TestClient::start`].
+    ///
+    /// # Errors
+    /// Returns [`ServerError::Lifespan`] with the first failing hook.
+    pub async fn shutdown(&self) -> Result<(), ServerError> {
+        let taken = self
+            .lifespan
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        match taken {
+            Some(mut lifespan) => lifespan.shutdown().await,
+            None => Ok(()),
         }
     }
 

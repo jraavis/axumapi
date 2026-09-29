@@ -14,7 +14,9 @@
 //! after the parent's at startup, before them at shutdown).
 
 use crate::body::Body;
+use crate::di::{self, DiRegistry};
 use crate::error::{ApiError, ServerError};
+use crate::lifespan::Lifespan;
 use crate::response::IntoResponse;
 use crate::routing::{Endpoint, MethodRouter, Route};
 use axumapi_openapi::{DocumentBuilder, OpenApi, OpenApiError, ui};
@@ -93,6 +95,10 @@ pub struct App {
     pub(crate) services: Vec<RouterLayer>,
     pub(crate) startup_hooks: Vec<LifespanHook>,
     pub(crate) shutdown_hooks: Vec<LifespanHook>,
+    /// Middleware; the first registered is the outermost.
+    pub(crate) middleware: Vec<RouterLayer>,
+    /// Dependency-injection configuration.
+    pub(crate) di: DiRegistry,
 }
 
 impl std::fmt::Debug for App {
@@ -135,6 +141,8 @@ impl App {
             services: Vec::new(),
             startup_hooks: Vec::new(),
             shutdown_hooks: Vec::new(),
+            middleware: Vec::new(),
+            di: DiRegistry::default(),
         }
     }
 
@@ -289,9 +297,19 @@ impl App {
     }
 
     /// Build the internal router; lifts lifespan hooks out of mounts.
-    fn build_router(mut self, hooks: &mut Hooks) -> axum::Router {
+    ///
+    /// Layering, innermost first: routes, mounts, services, DI scope, state
+    /// and other router layers. The app's middleware is returned separately so
+    /// the caller applies it once everything else (docs, fallback) exists.
+    fn build_router(
+        mut self,
+        hooks: &mut Lifespan,
+        root: bool,
+    ) -> (axum::Router, Vec<RouterLayer>) {
         hooks.startup.append(&mut self.startup_hooks);
-        let mut own_shutdown = std::mem::take(&mut self.shutdown_hooks);
+        // Own shutdown hooks come before the children's in the list; shutdown runs
+        // the list reversed, so children stop first, mirroring startup.
+        hooks.shutdown.append(&mut self.shutdown_hooks);
 
         let mut grouped: BTreeMap<String, Vec<Endpoint>> = BTreeMap::new();
         for (path, r) in self.routes {
@@ -306,31 +324,32 @@ impl App {
             router = router.route(&path, method_router);
         }
         for mount in self.mounts {
-            let child = mount.app.build_router(hooks);
-            router = router.nest(&mount.prefix, child);
+            let (child, middleware) = mount.app.build_router(hooks, false);
+            router = router.nest(&mount.prefix, apply_middleware(child, middleware));
         }
         for service in self.services {
             router = service(router);
+        }
+        if root || !self.di.is_empty() {
+            router = di::install(router, self.di);
         }
         router = self
             .router_layers
             .into_iter()
             .fold(router, |r, layer| layer(r));
-        // Child shutdown hooks were appended while building mounts; ours run last.
-        hooks.shutdown.append(&mut own_shutdown);
-        router
+        (router, self.middleware)
     }
 
     /// Validate and build the root router, including documentation routes.
-    pub(crate) fn build(self) -> Result<(axum::Router, Hooks), ServerError> {
+    pub(crate) fn build(self) -> Result<(axum::Router, Lifespan), ServerError> {
         self.validate()?;
         let openapi = self
             .openapi()
             .map_err(|e| ServerError::Configuration(e.to_string()))?;
         let docs = self.docs.clone();
         let title = self.meta.title.clone();
-        let mut hooks = Hooks::default();
-        let mut router = self.build_router(&mut hooks);
+        let mut hooks = Lifespan::default();
+        let (mut router, middleware) = self.build_router(&mut hooks, true);
         if let Some(spec_url) = docs.openapi_url {
             let json = serde_json::to_string(&openapi)
                 .map_err(|e| ServerError::Configuration(e.to_string()))?;
@@ -344,7 +363,8 @@ impl App {
                 router = router.route(&url, static_route("text/html; charset=utf-8", html));
             }
         }
-        Ok((router.fallback(route_not_found), hooks))
+        let router = apply_middleware(router.fallback(route_not_found), middleware);
+        Ok((router, hooks))
     }
 
     /// Convert into an in-process `tower::Service` (used by the testkit).
@@ -357,17 +377,28 @@ impl App {
             .map(|(router, _)| crate::RouterService::new(router))
     }
 
+    /// Like [`App::into_router_service`], but also returns the [`Lifespan`]
+    /// so the caller can run startup and shutdown hooks around the service
+    /// without binding a socket (used by the testkit).
+    ///
+    /// # Errors
+    /// Returns [`ServerError::Configuration`] if the app is misconfigured.
+    pub fn into_service_with_lifespan(
+        self,
+    ) -> Result<(crate::RouterService, Lifespan), ServerError> {
+        self.build()
+            .map(|(router, lifespan)| (crate::RouterService::new(router), lifespan))
+    }
+
     /// Run startup hooks, bind `addr`, serve until ctrl-c, then run shutdown
-    /// hooks.
+    /// hooks. Handlers can read the peer address (used by `RateLimit`).
     ///
     /// # Errors
     /// Returns [`ServerError`] on misconfiguration, hook failure, or I/O errors.
     pub async fn run(self, addr: &str) -> Result<(), ServerError> {
         let (title, version) = (self.meta.title.clone(), self.meta.version.clone());
-        let (router, hooks) = self.build()?;
-        for hook in hooks.startup {
-            hook().await.map_err(ServerError::Lifespan)?;
-        }
+        let (router, mut lifespan) = self.build()?;
+        lifespan.startup().await?;
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|source| ServerError::Bind {
@@ -375,27 +406,23 @@ impl App {
                 source,
             })?;
         tracing::info!(%addr, %title, %version, "listening");
-        let served = axum::serve(listener, router)
+        let service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let served = axum::serve(listener, service)
             .with_graceful_shutdown(shutdown_signal())
             .await
             .map_err(ServerError::Serve);
-        let mut first_error = None;
-        for hook in hooks.shutdown.into_iter().rev() {
-            if let Err(err) = hook().await {
-                tracing::error!(error = %err, "shutdown hook failed");
-                first_error.get_or_insert(err);
-            }
-        }
+        let stopped = lifespan.shutdown().await;
         served?;
-        first_error.map_or(Ok(()), |e| Err(ServerError::Lifespan(e)))
+        stopped
     }
 }
 
-/// Lifespan hooks collected from an app tree.
-#[derive(Default)]
-pub(crate) struct Hooks {
-    pub(crate) startup: Vec<LifespanHook>,
-    pub(crate) shutdown: Vec<LifespanHook>,
+/// Apply middleware so that the first registered layer is the outermost.
+fn apply_middleware(router: axum::Router, layers: Vec<RouterLayer>) -> axum::Router {
+    layers
+        .into_iter()
+        .rev()
+        .fold(router, |router, layer| layer(router))
 }
 
 fn static_route(content_type: &'static str, body: String) -> axum::routing::MethodRouter {
