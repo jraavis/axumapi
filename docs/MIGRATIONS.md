@@ -24,7 +24,7 @@ axumapi_migrations::cli::run(
 | `showmigrations` | `[X]` applied / `[ ]` pending, in graph order. |
 | `squashmigrations FROM TO [--name SLUG]` | Collapse a contiguous range into one migration with `replaces`. |
 
-The `axumapi` CLI binary runs `migrate`, `rollback`, `showmigrations` and `squashmigrations` from JSON files plus `--database-url` / `DATABASE_URL`. SQLite is always available; PostgreSQL URLs need `axumapi-cli` built with `--features postgres`. For `makemigrations` it prints the snippet above: the binary cannot see your models.
+The `axumapi` CLI binary runs `migrate`, `rollback`, `showmigrations` and `squashmigrations` from JSON files plus `--database-url` / `DATABASE_URL`. SQLite is always available; PostgreSQL and MySQL URLs need `axumapi-cli` built with `--features postgres` / `--features mysql`. See [CLI.md](CLI.md) for the application-side commands (`AppCli`). For `makemigrations` it prints the snippet above: the binary cannot see your models.
 
 `--dry-run` prints SQL (or operations) and executes nothing.
 
@@ -75,7 +75,7 @@ Creates are topological by foreign-key dependencies (cyclic FKs are deferred as 
 
 ## DDL
 
-Identifiers are always double-quoted; embedded quotes are doubled. Bind parameters are used for history-table DML; developer-authored `RunSQL` / `CHECK` expressions are copied as written.
+Identifiers are double-quoted on PostgreSQL and SQLite (embedded quotes doubled) and backtick-quoted on MySQL. Bind parameters are used for history-table DML; developer-authored `RunSQL` / `CHECK` expressions are copied as written.
 
 | Family | PostgreSQL | SQLite |
 |---|---|---|
@@ -96,7 +96,7 @@ Identifiers are always double-quoted; embedded quotes are doubled. Bind paramete
 
 `DbDefault::Now` → `CURRENT_TIMESTAMP` on PostgreSQL; on SQLite `(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, which `DateTime::from_value` accepts as RFC3339.
 
-Other backends return `MigrationError::UnsupportedBackend` before I/O.
+MySQL DDL is described in [MySQL](#mysql). Other backends (MongoDB, Redis) return `MigrationError::UnsupportedBackend` before I/O.
 
 ## SQLite table rebuild
 
@@ -113,6 +113,46 @@ SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add or d
 
 Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding `UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
 
+## MySQL
+
+The MySQL schema editor (`crates/axumapi-migrations/src/schema_editor/mysql.rs`) targets MySQL 8.0.31+ and mirrors the PostgreSQL editor, with the differences MySQL forces.
+
+### DDL is not transactional
+
+Every DDL statement in MySQL commits implicitly, so the executor does **not** wrap MySQL migrations in a transaction, whatever the migration's `atomic` flag says. Consequences:
+
+* A migration that fails half way leaves its earlier statements applied, and no row is written to the history table. Running `migrate` again then fails on the statements that already ran (for example a table that exists).
+* Repair by hand (or by rolling the applied part back with SQL), then re-run.
+* Keep MySQL migrations small, ideally one schema change each, so a failure is easy to repair. Prefer several small migrations to one large one; `--dry-run` shows the SQL first.
+* `RunSQL` statements are not rolled back either.
+
+### Keyed `TEXT` needs `max_length`
+
+`TEXT`, `BLOB` and `JSON` columns cannot be a primary key, `UNIQUE` or indexed without a prefix length, and the editor never guesses one. A `String` field that is unique, indexed or a primary key must set `max_length` so it becomes a `VARCHAR(n)`; otherwise the migration fails before any I/O with an error saying so:
+
+```rust
+#[field(max_length = 191, unique)]   // VARCHAR(191): fine on MySQL
+pub email: String,
+```
+
+(`VARCHAR(191)` keeps a `utf8mb4` unique index within older key-length limits.) Literal defaults on `TEXT`, `BLOB` and `JSON` are written as `DEFAULT ('..')`.
+
+### `ON DELETE SET DEFAULT` is unsupported
+
+InnoDB rejects `ON DELETE SET DEFAULT`, so a foreign key using it is reported as an error instead of producing DDL that MySQL would ignore or refuse. Use `SET NULL`, `CASCADE`, `RESTRICT` or `NO ACTION`.
+
+### Other differences
+
+| Topic | MySQL |
+|---|---|
+| Quoting | backticks (embedded backticks doubled); string literals escape backslashes as well as quotes |
+| Auto primary key | `BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY` |
+| Column types | `TINYINT(1)` bool, `DATETIME(6)` (UTC) timestamps, `TIME(6)`, `CHAR(36)` UUID, `JSON`, `DOUBLE`; a decimal without precision is `DECIMAL(38,10)` |
+| `DbDefault::Now` | `CURRENT_TIMESTAMP(6)` |
+| Foreign keys | table-level `CONSTRAINT .. FOREIGN KEY`, named `<table>_<column>_fk` (an inline `REFERENCES` is parsed and ignored by MySQL, so it is never used) |
+| `AlterField` | `MODIFY COLUMN`, which restates type, nullability and default |
+| Dropping | `DROP INDEX name ON table`; a unique constraint is dropped as an index and a check constraint with `DROP CHECK` |
+
 ## History table
 
 ```sql
@@ -127,7 +167,7 @@ CREATE TABLE IF NOT EXISTS "axumapi_migrations" (
 
 ## Deferred
 
-* MySQL / MongoDB / Redis migrations.
+* MongoDB / Redis migrations.
 * Automatic rename detection (hints only).
 * Data migrations beyond `RunSQL` / `RunRust`.
 * Multi-app graphs (`app` is reserved on the file but unused).

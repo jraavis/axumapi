@@ -5,11 +5,15 @@
 | Backend | SQL compile | Execution | Notes |
 |---|---|---|---|
 | SQLite | yes | yes (`SqliteBackend`, SQLx) | Row locking, regex, `DISTINCT ON`, arrays and `STDDEV` / `VARIANCE` are rejected with a capability error |
-| PostgreSQL | yes | yes (`PgBackend`, SQLx, feature `postgres`), executed against Postgres 16 | `tests/postgres.rs` runs when `DATABASE_URL` starts with `postgres` and is skipped otherwise. Example: `docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16` then `DATABASE_URL=postgres://postgres:postgres@localhost/postgres cargo test -p axumapi-backends --all-features --test postgres` |
-| MySQL | yes | yes (`MySqlBackend`, SQLx, feature `mysql`), MySQL 8.0.31+, tested on 9.6 | `tests/mysql.rs` runs when `MYSQL_URL` (or `DATABASE_URL`) starts with `mysql`. Example: `MYSQL_URL=mysql://root@127.0.0.1:3306/axumapi_test cargo test -p axumapi-backends --all-features --test mysql` |
-| MongoDB | subset, to aggregation pipelines | yes (`MongoBackend`, feature `mongodb`), MongoDB 5.0+, replica set for transactions | `tests/mongodb.rs` runs when `MONGODB_URL` starts with `mongodb` |
-| Redis | not applicable | yes (`RedisStore`, feature `redis`) | A key/hash/set API; **not** a QuerySet backend. `tests/redis.rs` runs when `REDIS_URL` starts with `redis` (use db 15) |
+| PostgreSQL | yes | yes (`PgBackend`, SQLx, feature `postgres`), live suite passed against `postgres:17` on 2026-09-29 | `tests/postgres.rs` runs when `DATABASE_URL` starts with `postgres` and is skipped otherwise. Example: `docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:17` then `DATABASE_URL=postgres://postgres:postgres@localhost/postgres cargo test -p axumapi-backends --all-features --test postgres` |
+| MySQL | yes | yes (`MySqlBackend`, SQLx, feature `mysql`), MySQL 8.0.31+, live suite passed against `mysql:8.4` on 2026-09-29 | `tests/mysql.rs` runs when `MYSQL_URL` (or `DATABASE_URL`) starts with `mysql`. Example: `MYSQL_URL=mysql://root@127.0.0.1:3306/axumapi_test cargo test -p axumapi-backends --all-features --test mysql` |
+| MongoDB | subset, to aggregation pipelines | yes (`MongoBackend`, feature `mongodb`), MongoDB 5.0+, replica set for transactions, live suite passed against `mongo:8` as a single-node replica set on 2026-09-29 | `tests/mongodb.rs` runs when `MONGODB_URL` starts with `mongodb` |
+| Redis | not applicable | yes (`RedisStore`, feature `redis`) | A key/hash/set API; **not** a QuerySet backend. Live suite passed against `redis:7` on 2026-09-29. `tests/redis.rs` runs when `REDIS_URL` starts with `redis` (use db 15) |
 | DynamoDB | not applicable | not applicable | Design note only; not planned for v1 |
+
+### Running the live suites
+
+The PostgreSQL, MySQL, MongoDB and Redis suites were run and passed against docker containers (`postgres:17`, `mysql:8.4`, `mongo:8` as a replica set, `redis:7`) on 2026-09-29. Reproduce with the root `docker-compose.yml`; the variables, the MySQL root requirement and the MongoDB replica set are described in [TESTING.md](TESTING.md#live-database-tests). SQLite suites need no setup.
 
 ## Feature matrix (implemented)
 
