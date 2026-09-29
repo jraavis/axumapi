@@ -368,3 +368,41 @@ async fn annotation_and_alias_names_are_validated() {
         Err(OrmError::Query(QueryError::InvalidPlan(_)))
     ));
 }
+
+/// Handlers run on a multi-threaded runtime: every terminal future must be `Send`.
+#[tokio::test]
+async fn terminal_futures_are_send() {
+    fn is_send<T: Send>(_: T) {}
+    let db = db().await;
+    let book = Book::new("x", 1);
+    is_send(Book::objects(&db).all());
+    is_send(Book::objects(&db).get(Book::id.eq(1_i64)));
+    is_send(Book::objects(&db).first());
+    is_send(Book::objects(&db).count());
+    is_send(Book::objects(&db).exists());
+    is_send(Book::objects(&db).paginate(1, 2));
+    is_send(Book::objects(&db).in_bulk([1_i64]));
+    is_send(Book::objects(&db).values([Book::title.select()]));
+    is_send(Book::objects(&db).aggregate([("n", axumapi_orm::Count::all())]));
+    is_send(Book::objects(&db).update([Book::likes.set(1_i64)]));
+    is_send(Book::objects(&db).delete());
+    is_send(Book::objects(&db).bulk_create(vec![book.clone()]));
+    is_send(Book::objects(&db).bulk_update(&[], &["likes"]));
+    is_send(Book::objects(&db).get_or_create(Book::id.eq(1_i64), || Book::new("x", 1)));
+    is_send(Book::objects(&db).update_or_create(Book::id.eq(1_i64), || Book::new("x", 1), |_| {}));
+    is_send(
+        Book::objects(&db)
+            .select_related(Book::author_relation())
+            .all(),
+    );
+    is_send(
+        Book::objects(&db)
+            .prefetch_related(Book::author_relation())
+            .all(),
+    );
+    is_send(book.tags(&db).add_pks([String::new()]));
+    is_send(book.tags(&db).set_pks([String::new()]));
+    let mut owned = book.clone();
+    is_send(axumapi_orm::ModelOps::save(&mut owned, &db));
+    is_send(axumapi_orm::ModelOps::delete(&book, &db));
+}

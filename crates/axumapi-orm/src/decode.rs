@@ -96,3 +96,49 @@ impl QueryResult {
         self.rows.first()?.iter().next().map(|(_, v)| v)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row() -> Row {
+        Row::new(vec![
+            ("name".into(), Value::Text("ann".into())),
+            ("age".into(), Value::Int(30)),
+            ("nick".into(), Value::Null),
+        ])
+    }
+
+    #[test]
+    fn tuples_decode_by_position() {
+        let (name, age, nick) =
+            <(String, i64, Option<String>)>::from_values(&row()).unwrap_or_default();
+        assert_eq!((name.as_str(), age, nick), ("ann", 30, None));
+        assert_eq!(String::from_values(&row()), Ok("ann".to_owned()));
+    }
+
+    #[test]
+    fn errors_name_the_offending_column() {
+        let err = <(i64,)>::from_values(&row());
+        assert!(matches!(err, Err(QueryError::Decode { column, .. }) if column == "name"));
+        let short = <(String, i64, Option<String>, i64)>::from_values(&row());
+        assert!(matches!(short, Err(QueryError::Decode { column, .. }) if column == "#3"));
+    }
+
+    #[test]
+    fn rows_decode_by_name_and_decimals_fit_integers() {
+        assert_eq!(row().get_as::<i64>("age"), Ok(30));
+        assert!(row().get_as::<i64>("missing").is_err());
+        let sum = Row::new(vec![(
+            "s".into(),
+            Value::Decimal(rust_decimal::Decimal::new(27, 0)),
+        )]);
+        assert_eq!(sum.get_as::<i64>("s"), Ok(27));
+        assert_eq!(sum.get_as::<f64>("s"), Ok(27.0));
+        let fractional = Row::new(vec![(
+            "s".into(),
+            Value::Decimal(rust_decimal::Decimal::new(275, 1)),
+        )]);
+        assert!(fractional.get_as::<i64>("s").is_err());
+    }
+}

@@ -4,6 +4,7 @@
 //! text form ([`canonical_text`]), so they compare and sort correctly and
 //! decode through [`DbType::from_value`](axumapi_orm::DbType::from_value).
 
+use crate::shared::{TxSlot, affected_result, map_error, returning_result, with_tx};
 use crate::sql::{CompiledQuery, Sqlite, compile, compile_write};
 use async_trait::async_trait;
 use axumapi_orm::types::canonical_text;
@@ -13,9 +14,6 @@ use axumapi_orm::{
 };
 use sqlx::sqlite::{SqliteArguments, SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
-use tokio::sync::Mutex;
-
-type SqlxTx = sqlx::Transaction<'static, sqlx::Sqlite>;
 
 /// SQLite adapter executing compiled plans on a connection pool.
 #[derive(Debug, Clone)]
@@ -82,27 +80,13 @@ impl Backend for SqliteBackend {
             self.capabilities()
                 .require(axumapi_orm::Feature::Isolation(level))?;
         }
-        let tx = self.pool.begin().await.map_err(map_err)?;
-        Ok(Box::new(SqliteTransaction {
-            tx: Mutex::new(Some(tx)),
-        }))
+        let tx = self.pool.begin().await.map_err(map_error)?;
+        Ok(Box::new(SqliteTransaction(TxSlot::new(tx))))
     }
 }
 
 /// An open SQLite transaction. Dropped without commit, it rolls back.
-struct SqliteTransaction {
-    tx: Mutex<Option<SqlxTx>>,
-}
-
-/// Run `$body` with `$conn` bound to the open transaction's connection.
-macro_rules! with_tx {
-    ($self:ident, $conn:ident => $body:expr) => {{
-        let mut guard = $self.tx.lock().await;
-        let tx = guard.as_mut().ok_or(QueryError::TransactionClosed)?;
-        let $conn = &mut **tx;
-        $body
-    }};
-}
+struct SqliteTransaction(TxSlot<sqlx::Sqlite>);
 
 #[async_trait]
 impl Executor for SqliteTransaction {
@@ -112,48 +96,36 @@ impl Executor for SqliteTransaction {
 
     async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
         let compiled = compile(plan, &Sqlite)?;
-        with_tx!(self, conn => fetch_rows(conn, &compiled.sql, compiled.params).await)
+        with_tx!(self.0, conn => fetch_rows(conn, &compiled.sql, compiled.params).await)
     }
 
     async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
         let compiled = compile_write(plan, &Sqlite)?;
         let returning = !plan.returning().is_empty();
-        with_tx!(self, conn => run_write(conn, compiled, returning).await)
+        with_tx!(self.0, conn => run_write(conn, compiled, returning).await)
     }
 
     async fn fetch_raw(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError> {
-        with_tx!(self, conn => fetch_rows(conn, sql, params).await)
+        with_tx!(self.0, conn => fetch_rows(conn, sql, params).await)
     }
 
     async fn execute_raw(&self, sql: &str, params: Vec<Value>) -> Result<u64, OrmError> {
-        with_tx!(self, conn => execute_rows(conn, sql, params).await)
+        with_tx!(self.0, conn => execute_rows(conn, sql, params).await)
     }
 
     async fn execute_script(&self, sql: &str) -> Result<(), OrmError> {
-        with_tx!(self, conn => script_result(sqlx::Executor::execute(conn, sql).await))
+        with_tx!(self.0, conn => script_result(sqlx::Executor::execute(conn, sql).await))
     }
 }
 
 #[async_trait]
 impl Transaction for SqliteTransaction {
     async fn commit(&self) -> Result<(), OrmError> {
-        let tx = self
-            .tx
-            .lock()
-            .await
-            .take()
-            .ok_or(QueryError::TransactionClosed)?;
-        tx.commit().await.map_err(|e| map_err(e).into())
+        self.0.commit().await
     }
 
     async fn rollback(&self) -> Result<(), OrmError> {
-        let tx = self
-            .tx
-            .lock()
-            .await
-            .take()
-            .ok_or(QueryError::TransactionClosed)?;
-        tx.rollback().await.map_err(|e| map_err(e).into())
+        self.0.rollback().await
     }
 }
 
@@ -181,7 +153,10 @@ async fn fetch_rows<'c, E>(ex: E, sql: &str, params: Vec<Value>) -> Result<Query
 where
     E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
 {
-    let rows = bind_all(sql, params).fetch_all(ex).await.map_err(map_err)?;
+    let rows = bind_all(sql, params)
+        .fetch_all(ex)
+        .await
+        .map_err(map_error)?;
     let rows = rows.iter().map(decode_row).collect::<Result<_, _>>()?;
     Ok(QueryResult { rows })
 }
@@ -190,7 +165,7 @@ async fn execute_rows<'c, E>(ex: E, sql: &str, params: Vec<Value>) -> Result<u64
 where
     E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
 {
-    let done = bind_all(sql, params).execute(ex).await.map_err(map_err)?;
+    let done = bind_all(sql, params).execute(ex).await.map_err(map_error)?;
     Ok(done.rows_affected())
 }
 
@@ -204,37 +179,18 @@ where
 {
     if returning {
         let rows = fetch_rows(ex, &compiled.sql, compiled.params).await?.rows;
-        Ok(ExecResult {
-            rows_affected: rows.len() as u64,
-            returning: rows,
-        })
+        Ok(returning_result(rows))
     } else {
-        let rows_affected = execute_rows(ex, &compiled.sql, compiled.params).await?;
-        Ok(ExecResult {
-            rows_affected,
-            returning: Vec::new(),
-        })
+        Ok(affected_result(
+            execute_rows(ex, &compiled.sql, compiled.params).await?,
+        ))
     }
 }
 
 fn script_result(
     done: Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error>,
 ) -> Result<(), OrmError> {
-    done.map(|_| ()).map_err(|e| map_err(e).into())
-}
-
-fn map_err(e: sqlx::Error) -> BackendError {
-    match &e {
-        sqlx::Error::Database(db)
-            if db.constraint().is_some()
-                || db.is_unique_violation()
-                || db.is_foreign_key_violation()
-                || db.is_check_violation() =>
-        {
-            BackendError::Constraint(db.message().to_owned())
-        }
-        _ => BackendError::Database(e.to_string()),
-    }
+    done.map(|_| ()).map_err(|e| map_error(e).into())
 }
 
 fn decode_row(row: &SqliteRow) -> Result<Row, QueryError> {
