@@ -9,8 +9,8 @@
 //! * [`mysql`] (feature `mysql`) executes plans with SQLx.
 //! * [`mongodb`] (feature `mongodb`) compiles the supported plan subset to
 //!   filters and aggregation pipelines.
-//! * [`redis`] (feature `redis`) is a key/hash/set store, not a QuerySet
-//!   backend.
+//! * [`redis`] (feature `redis`) is a key/hash/set store
+//!   ([`redis::RedisStore`]), not a QuerySet backend.
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "mongodb")]
