@@ -1,0 +1,20 @@
+[package]
+name = "todo_mongo"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axumapi.workspace = true
+axumapi-backends = { workspace = true, features = ["mongodb"] }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+axumapi-backends = { workspace = true, features = ["mongodb"] }
+axumapi-testkit.workspace = true
+http.workspace = true

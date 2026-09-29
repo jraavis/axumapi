@@ -1,0 +1,20 @@
+[package]
+name = "polyglot"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axumapi.workspace = true
+axumapi-cli = { workspace = true, features = ["postgres"] }
+axumapi-migrations.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+axumapi-testkit.workspace = true
+http.workspace = true

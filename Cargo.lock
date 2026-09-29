@@ -497,6 +497,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "blog_postgres"
+version = "0.0.0"
+dependencies = [
+ "axumapi",
+ "axumapi-cli",
+ "axumapi-testkit",
+ "http",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "borrow-or-share"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2615,6 +2628,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "polyglot"
+version = "0.0.0"
+dependencies = [
+ "axumapi",
+ "axumapi-cli",
+ "axumapi-migrations",
+ "axumapi-testkit",
+ "http",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3766,6 +3793,19 @@ name = "tinyvec"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
+name = "todo_mongo"
+version = "0.0.0"
+dependencies = [
+ "axumapi",
+ "axumapi-backends",
+ "axumapi-testkit",
+ "http",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "todo_sqlite"

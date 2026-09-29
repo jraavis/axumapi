@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "examples/hello_world", "examples/todo_sqlite"]
+members = ["crates/*", "examples/hello_world", "examples/todo_sqlite", "examples/blog_postgres", "examples/todo_mongo", "examples/polyglot"]
 
 [workspace.package]
 version = "0.1.0"

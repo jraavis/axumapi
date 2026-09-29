@@ -1,0 +1,430 @@
+{
+  "id": "0001_initial",
+  "dependencies": [],
+  "operations": [
+    {
+      "op": "create_model",
+      "model": {
+        "name": "AuditEntry",
+        "table": "audit_log",
+        "fields": [
+          {
+            "name": "id",
+            "column": "id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": true,
+            "auto": true,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "action",
+            "column": "action",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "entity_id",
+            "column": "entity_id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "created_at",
+            "column": "created_at",
+            "sql_type": "timestamp",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false,
+            "default": "now"
+          }
+        ]
+      }
+    },
+    {
+      "op": "create_model",
+      "model": {
+        "name": "Tag",
+        "table": "tags",
+        "fields": [
+          {
+            "name": "id",
+            "column": "id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": true,
+            "auto": true,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "name",
+            "column": "name",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": true,
+            "index": false,
+            "max_length": 50
+          }
+        ]
+      }
+    },
+    {
+      "op": "create_model",
+      "model": {
+        "name": "User",
+        "table": "users",
+        "fields": [
+          {
+            "name": "id",
+            "column": "id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": true,
+            "auto": true,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "username",
+            "column": "username",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": true,
+            "index": false,
+            "max_length": 32
+          },
+          {
+            "name": "password_hash",
+            "column": "password_hash",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "scopes",
+            "column": "scopes",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "created_at",
+            "column": "created_at",
+            "sql_type": "timestamp",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false,
+            "default": "now"
+          }
+        ]
+      }
+    },
+    {
+      "op": "create_model",
+      "model": {
+        "name": "AccessToken",
+        "table": "access_tokens",
+        "fields": [
+          {
+            "name": "id",
+            "column": "id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": true,
+            "auto": true,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "token",
+            "column": "token",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": true,
+            "index": false,
+            "max_length": 64
+          },
+          {
+            "name": "user",
+            "column": "user_id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": true,
+            "fk": {
+              "target_table": "users",
+              "target_column": "id",
+              "on_delete": "cascade"
+            }
+          },
+          {
+            "name": "scopes",
+            "column": "scopes",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "expires_at",
+            "column": "expires_at",
+            "sql_type": "timestamp",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          }
+        ]
+      }
+    },
+    {
+      "op": "create_model",
+      "model": {
+        "name": "Post",
+        "table": "posts",
+        "fields": [
+          {
+            "name": "id",
+            "column": "id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": true,
+            "auto": true,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "title",
+            "column": "title",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false,
+            "max_length": 200
+          },
+          {
+            "name": "slug",
+            "column": "slug",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": true,
+            "index": false,
+            "max_length": 220
+          },
+          {
+            "name": "body",
+            "column": "body",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "published",
+            "column": "published",
+            "sql_type": "bool",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "author",
+            "column": "author_id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": true,
+            "fk": {
+              "target_table": "users",
+              "target_column": "id",
+              "on_delete": "cascade"
+            }
+          },
+          {
+            "name": "created_at",
+            "column": "created_at",
+            "sql_type": "timestamp",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false,
+            "default": "now"
+          },
+          {
+            "name": "updated_at",
+            "column": "updated_at",
+            "sql_type": "timestamp",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          }
+        ]
+      }
+    },
+    {
+      "op": "create_model",
+      "model": {
+        "name": "Comment",
+        "table": "comments",
+        "fields": [
+          {
+            "name": "id",
+            "column": "id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": true,
+            "auto": true,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "post",
+            "column": "post_id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": true,
+            "fk": {
+              "target_table": "posts",
+              "target_column": "id",
+              "on_delete": "cascade"
+            }
+          },
+          {
+            "name": "author",
+            "column": "author_id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": true,
+            "fk": {
+              "target_table": "users",
+              "target_column": "id",
+              "on_delete": "cascade"
+            }
+          },
+          {
+            "name": "body",
+            "column": "body",
+            "sql_type": "text",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false
+          },
+          {
+            "name": "created_at",
+            "column": "created_at",
+            "sql_type": "timestamp",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": false,
+            "default": "now"
+          }
+        ]
+      }
+    },
+    {
+      "op": "create_model",
+      "model": {
+        "name": "post_tags",
+        "table": "post_tags",
+        "fields": [
+          {
+            "name": "post_id",
+            "column": "post_id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": true,
+            "fk": {
+              "target_table": "posts",
+              "target_column": "id",
+              "on_delete": "cascade"
+            }
+          },
+          {
+            "name": "tag_id",
+            "column": "tag_id",
+            "sql_type": "big_int",
+            "nullable": false,
+            "primary_key": false,
+            "auto": false,
+            "unique": false,
+            "index": true,
+            "fk": {
+              "target_table": "tags",
+              "target_column": "id",
+              "on_delete": "cascade"
+            }
+          }
+        ],
+        "constraints": [
+          {
+            "kind": "unique",
+            "name": "post_tags_uniq",
+            "columns": [
+              "post_id",
+              "tag_id"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "atomic": true,
+  "checksum": "53a30b3dc867ab40"
+}
