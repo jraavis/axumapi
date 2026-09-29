@@ -166,6 +166,32 @@ impl BackendCapabilities {
         }
     }
 
+    /// Capabilities of Redis as a key, hash and set store.
+    ///
+    /// Redis is not a QuerySet backend. Every relational feature is
+    /// unsupported, so a plan checked against these capabilities fails with a
+    /// [`BackendCapabilityError`] before any I/O. Multi-key atomicity is one
+    /// `MULTI`/`EXEC` ([`TransactionSupport::Flat`]): there are no savepoints
+    /// and no SQL isolation levels. `max_params` is `0` because Redis does not
+    /// bind SQL parameters.
+    pub const fn redis() -> Self {
+        Self {
+            kind: BackendKind::Redis,
+            transactions: TransactionSupport::Flat,
+            row_locking: RowLocking::None,
+            joins: false,
+            returning: false,
+            window_functions: false,
+            regex: false,
+            arrays: false,
+            distinct_on: false,
+            ilike: false,
+            statistical_aggregates: false,
+            max_params: 0,
+            isolation_levels: &[],
+        }
+    }
+
     /// Whether `feature` is supported.
     pub fn supports(&self, feature: Feature) -> bool {
         match feature {
@@ -178,8 +204,15 @@ impl BackendCapabilities {
             Feature::Arrays => self.arrays,
             Feature::StatisticalAggregates => self.statistical_aggregates,
             Feature::DistinctOn => self.distinct_on,
-            // Emulated with LOWER(..) LIKE LOWER(..) where not native.
-            Feature::CaseInsensitiveLike => true,
+            // Relational backends emulate this with LOWER(x) LIKE LOWER(?)
+            // when native ILIKE is absent. Redis has no LIKE.
+            Feature::CaseInsensitiveLike => {
+                self.ilike
+                    || matches!(
+                        self.kind,
+                        BackendKind::Postgres | BackendKind::Sqlite | BackendKind::MySql
+                    )
+            }
             Feature::Savepoints => self.transactions >= TransactionSupport::Savepoints,
             Feature::Isolation(level) => self.isolation_levels.contains(&level),
         }
@@ -218,8 +251,47 @@ mod tests {
             Feature::Regex,
             Feature::LockModifiers,
             Feature::DistinctOn,
+            Feature::CaseInsensitiveLike,
         ] {
             assert!(caps.supports(f), "{f:?}");
+        }
+        assert!(BackendCapabilities::sqlite().supports(Feature::CaseInsensitiveLike));
+    }
+
+    #[test]
+    fn redis_rejects_relational_features_without_io() {
+        let caps = BackendCapabilities::redis();
+        assert_eq!(caps.kind, BackendKind::Redis);
+        assert_eq!(caps.transactions, TransactionSupport::Flat);
+        assert_eq!(caps.max_params, 0);
+        assert!(matches!(
+            caps.require(Feature::RowLocking),
+            Err(BackendCapabilityError::RowLockingUnsupported {
+                backend: BackendKind::Redis
+            })
+        ));
+        for feature in [
+            Feature::Joins,
+            Feature::Returning,
+            Feature::WindowFunctions,
+            Feature::Regex,
+            Feature::Arrays,
+            Feature::DistinctOn,
+            Feature::StatisticalAggregates,
+            Feature::Savepoints,
+            Feature::CaseInsensitiveLike,
+            Feature::Isolation(IsolationLevel::ReadCommitted),
+        ] {
+            assert!(
+                matches!(
+                    caps.require(feature),
+                    Err(BackendCapabilityError::Unsupported {
+                        backend: BackendKind::Redis,
+                        ..
+                    })
+                ),
+                "{feature:?}"
+            );
         }
     }
 }
