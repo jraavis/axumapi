@@ -18,13 +18,17 @@ thiserror.workspace = true
 tokio.workspace = true
 mongodb = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+rust_decimal = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 
 [features]
 default = ["sqlite"]
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]
 mysql = ["sqlx/mysql"]
-mongodb = ["dep:mongodb"]
+mongodb = ["dep:mongodb", "dep:chrono", "dep:rust_decimal", "dep:serde_json", "dep:uuid"]
 redis = ["dep:redis"]
 
 [dev-dependencies]
