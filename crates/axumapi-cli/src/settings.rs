@@ -88,9 +88,36 @@ impl fmt::Debug for CliSettings {
     }
 }
 
+impl From<&axumapi_config::Settings> for CliSettings {
+    /// Take the server address and every database URL from loaded settings.
+    fn from(settings: &axumapi_config::Settings) -> Self {
+        let databases = settings
+            .databases
+            .iter()
+            .map(|(alias, db)| (alias.clone(), db.url.expose().clone()))
+            .collect();
+        Self::new()
+            .addr(settings.server.addr.clone())
+            .databases(databases)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn converts_from_loaded_settings() {
+        let settings = axumapi_config::ConfigBuilder::new()
+            .set("server.addr", "127.0.0.1:9100")
+            .set("databases.default.url", "sqlite::memory:")
+            .build()
+            .unwrap();
+        let cli = CliSettings::from(&settings);
+        assert_eq!(cli.configured_addr(), Some("127.0.0.1:9100"));
+        assert_eq!(cli.database_url("default"), Some("sqlite::memory:"));
+        assert!(!format!("{cli:?}").contains("sqlite::memory:"));
+    }
 
     #[test]
     fn addr_precedence_is_flag_env_settings_default() {

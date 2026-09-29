@@ -292,6 +292,7 @@ name = "axumapi-cli"
 version = "0.1.0"
 dependencies = [
  "axumapi-backends",
+ "axumapi-config",
  "axumapi-core",
  "axumapi-migrations",
  "axumapi-orm",

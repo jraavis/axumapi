@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 axumapi-backends = { workspace = true, features = ["sqlite"] }
+axumapi-config.workspace = true
 axumapi-core.workspace = true
 axumapi-migrations.workspace = true
 axumapi-orm.workspace = true
