@@ -43,7 +43,7 @@ pub use plan::{
     SelectExpr,
 };
 pub use queryset::QuerySet;
-pub use relations::{ForeignKey, OneToOne};
+pub use relations::{ForeignKey, ManyToManyManager, OneToOne};
 pub use types::{DbType, SqlType};
 pub use value::Value;
 pub use write::{DeletePlan, InsertPlan, UpdatePlan, WritePlan};

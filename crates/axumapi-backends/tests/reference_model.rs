@@ -241,6 +241,7 @@ async fn round_trip_through_meta_and_querysets() {
     let books = ann.books(&db).all().await.unwrap();
     assert_eq!(books, [book]);
     assert_eq!(books[0].author.id(), &ann.id);
+    assert_eq!(books[0].author.get(&db).await.unwrap().name, "Ann");
 
     let missing = Author::objects(&db).get(Author::id.eq(999_i64)).await;
     assert!(matches!(

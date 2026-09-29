@@ -8,7 +8,9 @@
 //!   (`#[model(many_to_many(tags(Tag)))]`), not as struct fields, because they
 //!   have no column and no serialized form.
 
-use crate::model::Model;
+use crate::db::Db;
+use crate::error::OrmError;
+use crate::model::{ManyToManyMeta, Model};
 use crate::types::{DbType, SqlType};
 use crate::value::Value;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -48,6 +50,25 @@ impl<T: Model> ForeignKey<T> {
     /// The cached object, if it was loaded.
     pub fn cached(&self) -> Option<&T> {
         self.cached.as_deref()
+    }
+
+    /// The referenced object: the cached one, or fetched by primary key (and
+    /// not cached, since `self` is borrowed immutably).
+    ///
+    /// # Errors
+    /// [`QueryError::DoesNotExist`](crate::QueryError::DoesNotExist) for a
+    /// dangling key, or backend errors.
+    pub async fn get(&self, db: &Db) -> Result<Arc<T>, OrmError> {
+        if let Some(object) = &self.cached {
+            return Ok(Arc::clone(object));
+        }
+        let pk = T::META.pk().ok_or_else(|| {
+            crate::QueryError::Model(format!("{} has no primary key", T::META.name))
+        })?;
+        T::objects(db)
+            .get(crate::Expr::col(pk.column).eq(self.id.to_value()))
+            .await
+            .map(Arc::new)
     }
 
     /// Replace the cached object. Ignored unless its key matches [`id`](Self::id),
@@ -110,5 +131,42 @@ where
 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         T::Pk::deserialize(deserializer).map(Self::new)
+    }
+}
+
+/// Accessor for one many-to-many relation of one source object
+/// (`post.tags(&db)`). Generated accessors construct it; its query and
+/// mutation methods (`all`, `add`, `remove`, `clear`, `set`) run on `db`.
+pub struct ManyToManyManager<S: Model, T: Model> {
+    db: Db,
+    meta: &'static ManyToManyMeta,
+    source_pk: Value,
+    _models: std::marker::PhantomData<fn() -> (S, T)>,
+}
+
+impl<S: Model, T: Model> ManyToManyManager<S, T> {
+    /// Manager for relation `meta` of the object whose key is `source_pk`.
+    pub fn new(db: &Db, meta: &'static ManyToManyMeta, source_pk: Value) -> Self {
+        Self {
+            db: db.clone(),
+            meta,
+            source_pk,
+            _models: std::marker::PhantomData,
+        }
+    }
+
+    /// Database handle.
+    pub fn db(&self) -> &Db {
+        &self.db
+    }
+
+    /// Relation metadata.
+    pub fn meta(&self) -> &'static ManyToManyMeta {
+        self.meta
+    }
+
+    /// Key of the source object.
+    pub fn source_pk(&self) -> &Value {
+        &self.source_pk
     }
 }
