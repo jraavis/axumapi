@@ -170,18 +170,20 @@ fn add_field_sqlite_uses_alter_table() {
 }
 
 #[test]
-fn mysql_is_rejected_before_io() {
-    let err = schema_editor::statements(
-        BackendKind::MySql,
-        &ProjectState::new(),
-        &[Operation::RunSQL {
-            sql: "SELECT 1".into(),
-            reverse_sql: None,
-        }],
-    )
-    .unwrap_err();
-    assert!(matches!(
-        err,
-        axumapi_migrations::MigrationError::UnsupportedBackend(BackendKind::MySql)
-    ));
+fn non_sql_backends_are_rejected_before_io() {
+    for kind in [BackendKind::MongoDb, BackendKind::Redis] {
+        let err = schema_editor::statements(
+            kind,
+            &ProjectState::new(),
+            &[Operation::RunSQL {
+                sql: "SELECT 1".into(),
+                reverse_sql: None,
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            axumapi_migrations::MigrationError::UnsupportedBackend(k) if k == kind
+        ));
+    }
 }

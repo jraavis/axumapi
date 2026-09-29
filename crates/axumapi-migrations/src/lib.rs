@@ -3,7 +3,7 @@
 //! * [`state`] — serializable snapshots built from [`axumapi_orm::ModelMeta`].
 //! * [`operation`] — `CreateModel`, `AddField`, `RunSQL`, …
 //! * [`autodetector`] — deterministic [`autodetector::diff`].
-//! * [`schema_editor`] — PostgreSQL / SQLite DDL.
+//! * [`schema_editor`] — PostgreSQL / SQLite / MySQL DDL.
 //! * [`loader`] / [`migration`] — JSON files, dependency graph, checksums.
 //! * [`executor::Migrator`] — history table, migrate / rollback / dry-run.
 //! * [`cli::run`] — the five management commands, called from the app binary.

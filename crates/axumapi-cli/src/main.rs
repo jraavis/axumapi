@@ -1,4 +1,6 @@
 //! `axumapi` CLI: apply JSON migrations, squash them, and show their status.
+//! Commands that need the application (`runserver`, `check`, ...) run from the
+//! application binary through [`axumapi_cli::AppCli`].
 
 #![forbid(unsafe_code)]
 

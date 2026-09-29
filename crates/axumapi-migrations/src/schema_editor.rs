@@ -1,9 +1,13 @@
-//! DDL generation for PostgreSQL and SQLite.
+//! DDL generation for PostgreSQL, SQLite and MySQL.
 //!
-//! Identifiers are always double-quoted (embedded `"` doubled). SQLite
-//! `AlterField` / `RemoveField` / constraint changes rebuild the table
-//! (create new, copy, drop, rename). Other backends return
+//! PostgreSQL and SQLite identifiers are double-quoted (embedded `"`
+//! doubled). SQLite `AlterField` / `RemoveField` / constraint changes rebuild
+//! the table (create new, copy, drop, rename). MySQL has its own dialect
+//! (backticks, `AUTO_INCREMENT`, `MODIFY COLUMN`, no transactional DDL); see
+//! the [`mysql`] module. Other backends return
 //! [`MigrationError::UnsupportedBackend`] before any I/O.
+
+pub mod mysql;
 
 use crate::error::MigrationError;
 use crate::operation::Operation;
@@ -27,6 +31,15 @@ pub fn quote_ident(ident: &str) -> String {
     out
 }
 
+/// Quote `ident` for the SQL dialect of `kind`: backticks for MySQL, double
+/// quotes for everything else.
+pub fn quote_identifier(kind: BackendKind, ident: &str) -> String {
+    match kind {
+        BackendKind::MySql => mysql::quote_ident(ident),
+        _ => quote_ident(ident),
+    }
+}
+
 /// Quote a SQL string literal with single quotes.
 pub fn quote_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
@@ -45,8 +58,8 @@ pub fn quote_string(value: &str) -> String {
 /// later ops see earlier ones (needed for SQLite rebuilds).
 ///
 /// # Errors
-/// [`MigrationError::UnsupportedBackend`] for anything other than PostgreSQL
-/// or SQLite, or [`MigrationError::State`] when an op cannot be rendered.
+/// [`MigrationError::UnsupportedBackend`] for anything other than PostgreSQL,
+/// SQLite or MySQL, or [`MigrationError::State`] when an op cannot be rendered.
 pub fn statements(
     kind: BackendKind,
     state: &ProjectState,
@@ -72,6 +85,9 @@ pub fn render(
     state: &ProjectState,
 ) -> Result<Vec<String>, MigrationError> {
     require_sql(kind)?;
+    if kind == BackendKind::MySql {
+        return mysql::render(op, state);
+    }
     match op {
         Operation::CreateModel { model } => Ok(create_model_sql(kind, model)),
         Operation::DeleteModel { name } => {
@@ -111,7 +127,7 @@ pub fn render(
 
 fn require_sql(kind: BackendKind) -> Result<(), MigrationError> {
     match kind {
-        BackendKind::Postgres | BackendKind::Sqlite => Ok(()),
+        BackendKind::Postgres | BackendKind::Sqlite | BackendKind::MySql => Ok(()),
         other => Err(MigrationError::UnsupportedBackend(other)),
     }
 }

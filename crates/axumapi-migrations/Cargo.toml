@@ -18,6 +18,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-axumapi-backends.workspace = true
+axumapi-backends = { workspace = true, features = ["sqlite", "mysql"] }
 chrono.workspace = true
 tokio.workspace = true

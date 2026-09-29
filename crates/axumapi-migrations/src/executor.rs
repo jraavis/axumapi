@@ -81,7 +81,7 @@ impl<'a> Migrator<'a> {
         let mut state = replay(self.graph, &history)?;
         let mut sql = Vec::new();
         if !history.table_exists {
-            sql.push(create_history_sql());
+            sql.push(create_history_sql(self.kind()));
         }
         for id in &plan {
             let migration = self.require_migration(id)?;
@@ -103,7 +103,9 @@ impl<'a> Migrator<'a> {
             });
         }
         if !history.table_exists {
-            self.db.execute_script(&create_history_sql()).await?;
+            self.db
+                .execute_script(&create_history_sql(self.kind()))
+                .await?;
         }
         let mut applied = Vec::new();
         let mut state = replay(self.graph, &history)?;
@@ -153,7 +155,9 @@ impl<'a> Migrator<'a> {
             });
         }
         if !history.table_exists {
-            self.db.execute_script(&create_history_sql()).await?;
+            self.db
+                .execute_script(&create_history_sql(self.kind()))
+                .await?;
         }
         let mut unapplied = Vec::new();
         for id in &plan {
@@ -204,7 +208,7 @@ impl<'a> Migrator<'a> {
 
     fn require_backend(&self) -> Result<(), MigrationError> {
         match self.kind() {
-            BackendKind::Postgres | BackendKind::Sqlite => Ok(()),
+            BackendKind::Postgres | BackendKind::Sqlite | BackendKind::MySql => Ok(()),
             other => Err(MigrationError::UnsupportedBackend(other)),
         }
     }
@@ -329,9 +333,9 @@ impl<'a> Migrator<'a> {
             .raw_sql(
                 &format!(
                     "SELECT {} as id, {} as checksum FROM {}",
-                    quote_star("id"),
-                    quote_star("checksum"),
-                    quote_star(HISTORY_TABLE)
+                    quote_star(self.kind(), "id"),
+                    quote_star(self.kind(), "checksum"),
+                    quote_star(self.kind(), HISTORY_TABLE)
                 ),
                 Vec::new(),
             )
@@ -395,7 +399,7 @@ impl<'a> Migrator<'a> {
                 Ok::<_, MigrationError>(())
             }
         };
-        if migration.atomic && self.db.capabilities().transactions > TransactionSupport::None {
+        if runs_in_transaction(self.db, migration) {
             self.db.transaction(run).await?;
         } else {
             run(self.db.clone()).await?;
@@ -430,7 +434,7 @@ impl<'a> Migrator<'a> {
                 Ok::<_, MigrationError>(())
             }
         };
-        if migration.atomic && self.db.capabilities().transactions > TransactionSupport::None {
+        if runs_in_transaction(self.db, migration) {
             self.db.transaction(run).await?;
         } else {
             run(self.db.clone()).await?;
@@ -445,17 +449,33 @@ struct History {
     table_exists: bool,
 }
 
-fn quote_star(ident: &str) -> String {
-    crate::schema_editor::quote_ident(ident)
+fn quote_star(kind: BackendKind, ident: &str) -> String {
+    schema_editor::quote_identifier(kind, ident)
 }
 
-fn create_history_sql() -> String {
+/// Whether one migration can be wrapped in a transaction that also undoes
+/// its DDL. MySQL commits implicitly on every DDL statement, so wrapping it
+/// would only suggest an atomicity the database cannot give.
+fn runs_in_transaction(db: &Db, migration: &Migration) -> bool {
+    let caps = db.capabilities();
+    migration.atomic
+        && caps.transactions > TransactionSupport::None
+        && caps.kind != BackendKind::MySql
+}
+
+fn create_history_sql(kind: BackendKind) -> String {
+    // MySQL cannot key a TEXT column without a prefix length.
+    let key_type = if kind == BackendKind::MySql {
+        "VARCHAR(255)"
+    } else {
+        "TEXT"
+    };
     format!(
-        "CREATE TABLE IF NOT EXISTS {} (\n  {} TEXT PRIMARY KEY,\n  {} TEXT NOT NULL,\n  {} TEXT NOT NULL\n)",
-        quote_star(HISTORY_TABLE),
-        quote_star("id"),
-        quote_star("checksum"),
-        quote_star("applied_at"),
+        "CREATE TABLE IF NOT EXISTS {} (\n  {} {key_type} PRIMARY KEY,\n  {} TEXT NOT NULL,\n  {} TEXT NOT NULL\n)",
+        quote_star(kind, HISTORY_TABLE),
+        quote_star(kind, "id"),
+        quote_star(kind, "checksum"),
+        quote_star(kind, "applied_at"),
     )
 }
 
@@ -473,10 +493,10 @@ async fn record_history(
 ) -> Result<(), MigrationError> {
     let sql = format!(
         "INSERT INTO {} ({}, {}, {}) VALUES ({}, {}, {})",
-        quote_star(HISTORY_TABLE),
-        quote_star("id"),
-        quote_star("checksum"),
-        quote_star("applied_at"),
+        quote_star(kind, HISTORY_TABLE),
+        quote_star(kind, "id"),
+        quote_star(kind, "checksum"),
+        quote_star(kind, "applied_at"),
         placeholder(kind, 1),
         placeholder(kind, 2),
         placeholder(kind, 3),
@@ -497,8 +517,8 @@ async fn record_history(
 async fn delete_history(db: &Db, kind: BackendKind, id: &str) -> Result<(), MigrationError> {
     let sql = format!(
         "DELETE FROM {} WHERE {} = {}",
-        quote_star(HISTORY_TABLE),
-        quote_star("id"),
+        quote_star(kind, HISTORY_TABLE),
+        quote_star(kind, "id"),
         placeholder(kind, 1),
     );
     db.raw_execute(&sql, vec![Value::Text(id.to_owned())])
@@ -599,4 +619,28 @@ fn reverse_rust(
         }
     }
     Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_table_ddl_follows_the_dialect() {
+        let pg = create_history_sql(BackendKind::Postgres);
+        assert!(pg.contains("\"id\" TEXT PRIMARY KEY"), "{pg}");
+        let mysql = create_history_sql(BackendKind::MySql);
+        assert!(mysql.contains("`id` VARCHAR(255) PRIMARY KEY"), "{mysql}");
+        assert!(mysql.contains("`axumapi_migrations`"), "{mysql}");
+        assert!(!mysql.contains('"'), "{mysql}");
+    }
+
+    #[test]
+    fn history_statements_quote_per_backend() {
+        assert_eq!(
+            quote_star(BackendKind::MySql, HISTORY_TABLE),
+            "`axumapi_migrations`"
+        );
+        assert_eq!(quote_star(BackendKind::Sqlite, "id"), "\"id\"");
+    }
 }

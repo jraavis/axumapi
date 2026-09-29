@@ -61,7 +61,7 @@ pub enum MigrationError {
     /// A requested SQL feature is not supported by this backend.
     #[error(transparent)]
     Capability(#[from] BackendCapabilityError),
-    /// Schema migrations are only implemented for PostgreSQL and SQLite.
+    /// Schema migrations are only implemented for PostgreSQL, SQLite and MySQL.
     #[error("schema migrations are not supported by {0:?}")]
     UnsupportedBackend(BackendKind),
     /// The operation does not apply to the current [`crate::state::ProjectState`].
