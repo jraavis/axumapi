@@ -45,21 +45,27 @@ jobs:
         env: { MYSQL_ROOT_PASSWORD: axumapi, MYSQL_USER: axumapi, MYSQL_PASSWORD: axumapi, MYSQL_DATABASE: axumapi }
         ports: ["3306:3306"]
         options: --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -paxumapi" --health-interval 2s --health-retries 60
-      mongodb:
-        image: mongo:8
-        ports: ["27017:27017"]
       redis:
         image: redis:7-alpine
         ports: ["6379:6379"]
     env:
       DATABASE_URL: postgres://axumapi:axumapi@127.0.0.1:5432/axumapi
-      MYSQL_URL: mysql://axumapi:axumapi@127.0.0.1:3306/axumapi
-      MONGODB_URL: mongodb://127.0.0.1:27017/axumapi
-      REDIS_URL: redis://127.0.0.1:6379/0
+      MYSQL_URL: mysql://root:axumapi@127.0.0.1:3306/axumapi
+      MONGODB_URL: mongodb://127.0.0.1:27017/axumapi?directConnection=true
+      REDIS_URL: redis://127.0.0.1:6379/15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Service containers cannot take arguments; MongoDB transactions need a
+      # replica set, so start it here.
+      - name: Start MongoDB replica set
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:8 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval "rs.initiate({_id: 'rs0', members: [{_id: 0, host: '127.0.0.1:27017'}]}).ok" && break
+            sleep 2
+          done
       - run: cargo test --workspace --all-features -- --include-ignored --test-threads=1
 
   msrv:
