@@ -21,6 +21,7 @@ pub mod middleware;
 pub mod response;
 pub mod responses;
 pub mod routing;
+pub mod security;
 pub mod service;
 pub mod state;
 pub mod static_files;

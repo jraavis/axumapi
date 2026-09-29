@@ -13,9 +13,12 @@
 //! ```
 #![forbid(unsafe_code)]
 
+pub use axumapi_cache as cache;
+pub use axumapi_config as config;
 pub use axumapi_core::*;
 pub use axumapi_macros::{
-    Model, Schema, Validate, delete, get, head, model_hooks, options, patch, post, put, routes, ws,
+    Model, Schema, Validate, delete, get, head, model_hooks, options, patch, post, put, receiver,
+    routes, ws,
 };
 pub use axumapi_openapi as openapi;
 

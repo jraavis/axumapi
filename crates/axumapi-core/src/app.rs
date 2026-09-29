@@ -20,6 +20,7 @@ use crate::lifespan::Lifespan;
 use crate::response::IntoResponse;
 use crate::routing::{Endpoint, MethodRouter, Route};
 use axumapi_openapi::{DocumentBuilder, OpenApi, OpenApiError, ui};
+use axumapi_orm::{Databases, Db};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -101,6 +102,8 @@ pub struct App {
     pub(crate) middleware: Vec<RouterLayer>,
     /// Dependency-injection configuration.
     pub(crate) di: DiRegistry,
+    /// Named databases, exposed to handlers as `State<Databases>`.
+    databases: Option<Databases>,
 }
 
 impl std::fmt::Debug for App {
@@ -146,6 +149,7 @@ impl App {
             shutdown_hooks: Vec::new(),
             middleware: Vec::new(),
             di: DiRegistry::default(),
+            databases: None,
         }
     }
 
@@ -225,6 +229,29 @@ impl App {
                 router.layer(axum::Extension(state))
             }));
         self
+    }
+
+    /// Register `db` under `alias` (`"default"`, `"replica"`, ...).
+    ///
+    /// Every registered database is available to handlers as
+    /// `State<Databases>`; a router set with [`App::databases`] is kept.
+    #[must_use]
+    pub fn database(mut self, alias: impl Into<String>, db: Db) -> Self {
+        let databases = self.databases.take().unwrap_or_default();
+        self.databases = Some(databases.with(alias, db));
+        self
+    }
+
+    /// Replace the whole database registry (aliases and router).
+    #[must_use]
+    pub fn databases(mut self, databases: Databases) -> Self {
+        self.databases = Some(databases);
+        self
+    }
+
+    /// The registered databases, if any.
+    pub fn database_registry(&self) -> Option<&Databases> {
+        self.databases.as_ref()
     }
 
     /// Every documented endpoint as `(full path, endpoint)`, including mounts.
@@ -349,8 +376,11 @@ impl App {
     }
 
     /// Validate and build the root router, including documentation routes.
-    pub(crate) fn build(self) -> Result<(axum::Router, Lifespan), ServerError> {
+    pub(crate) fn build(mut self) -> Result<(axum::Router, Lifespan), ServerError> {
         self.validate()?;
+        if let Some(databases) = self.databases.take() {
+            self = self.with_state(databases);
+        }
         let openapi = self
             .openapi()
             .map_err(|e| ServerError::Configuration(e.to_string()))?;

@@ -49,7 +49,7 @@ pub struct Components {
     /// Named schemas.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub schemas: BTreeMap<String, SchemaObject>,
-    /// Security schemes (populated by the auth layer in a later phase).
+    /// Security schemes registered by security extractors.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub security_schemes: BTreeMap<String, Value>,
 }

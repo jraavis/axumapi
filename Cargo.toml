@@ -20,8 +20,15 @@ axumapi-backends = { path = "crates/axumapi-backends" }
 axumapi-migrations = { path = "crates/axumapi-migrations" }
 axumapi-openapi = { path = "crates/axumapi-openapi" }
 axumapi-testkit = { path = "crates/axumapi-testkit" }
+axumapi-config = { path = "crates/axumapi-config" }
+axumapi-cache = { path = "crates/axumapi-cache" }
+axumapi-cli = { path = "crates/axumapi-cli" }
 
 async-trait = "0.1"
+base64 = "0.22"
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+figment = { version = "0.10", features = ["toml", "env", "test"] }
+lru = "0.16"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 cookie = { version = "0.18", features = ["percent-encode"] }
@@ -51,7 +58,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

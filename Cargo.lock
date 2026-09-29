@@ -196,6 +196,8 @@ name = "axumapi"
 version = "0.1.0"
 dependencies = [
  "axumapi-backends",
+ "axumapi-cache",
+ "axumapi-config",
  "axumapi-core",
  "axumapi-macros",
  "axumapi-openapi",
@@ -233,6 +235,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "axumapi-cache"
+version = "0.1.0"
+
+[[package]]
 name = "axumapi-cli"
 version = "0.1.0"
 dependencies = [
@@ -241,6 +247,10 @@ dependencies = [
  "axumapi-orm",
  "tokio",
 ]
+
+[[package]]
+name = "axumapi-config"
+version = "0.1.0"
 
 [[package]]
 name = "axumapi-core"

@@ -26,6 +26,7 @@ mod hooks;
 mod meta;
 mod model;
 mod probe;
+mod receiver;
 mod route;
 mod routes;
 mod schema;
@@ -259,4 +260,15 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(err) => err.into_compile_error().into(),
     }
+}
+
+/// Turn an `async fn` into an ORM signal receiver:
+/// `#[receiver(post_save, model = User)]`.
+///
+/// Generates `fn <name>_receiver() -> ::axumapi::orm::signals::Receiver`;
+/// register it explicitly with `Signals::connect`. See the ORM signals
+/// documentation for ordering and failure semantics.
+#[proc_macro_attribute]
+pub fn receiver(args: TokenStream, item: TokenStream) -> TokenStream {
+    receiver::expand(args.into(), item.into()).into()
 }

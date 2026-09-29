@@ -106,6 +106,7 @@ impl DocumentBuilder {
         if let Some(err) = self.errors.into_iter().next() {
             return Err(err);
         }
+        let security_schemes = self.registry.take_security_schemes();
         let schemas = self
             .registry
             .into_components()
@@ -116,7 +117,7 @@ impl DocumentBuilder {
             paths: self.paths,
             components: Components {
                 schemas,
-                security_schemes: BTreeMap::new(),
+                security_schemes,
             },
         })
     }

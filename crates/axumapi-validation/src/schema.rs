@@ -97,6 +97,7 @@ struct Entry {
 pub struct SchemaRegistry {
     entries: BTreeMap<String, Entry>,
     conflicts: Vec<SchemaConflict>,
+    security_schemes: BTreeMap<String, serde_json::Value>,
 }
 
 impl SchemaRegistry {
@@ -137,6 +138,30 @@ impl SchemaRegistry {
             entry.definition = Some(definition);
         }
         reference
+    }
+
+    /// Register an OpenAPI security scheme under `name`
+    /// (`components.securitySchemes`).
+    ///
+    /// Registering the same definition twice is a no-op; a different
+    /// definition under an existing name is recorded as a [`SchemaConflict`].
+    pub fn add_security_scheme(&mut self, name: &str, scheme: serde_json::Value) {
+        match self.security_schemes.get(name) {
+            Some(existing) if *existing != scheme => self.conflicts.push(SchemaConflict {
+                name: name.to_owned(),
+                first: "security scheme",
+                second: "security scheme",
+            }),
+            Some(_) => {}
+            None => {
+                self.security_schemes.insert(name.to_owned(), scheme);
+            }
+        }
+    }
+
+    /// Remove and return every registered security scheme.
+    pub fn take_security_schemes(&mut self) -> BTreeMap<String, serde_json::Value> {
+        std::mem::take(&mut self.security_schemes)
     }
 
     /// Consume the registry, returning `components.schemas`.

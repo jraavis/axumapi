@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 axumapi-core.workspace = true
+axumapi-config.workspace = true
+axumapi-cache.workspace = true
 axumapi-validation.workspace = true
 axumapi-orm.workspace = true
 axumapi-openapi.workspace = true
