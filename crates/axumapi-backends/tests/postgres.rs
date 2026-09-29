@@ -110,6 +110,19 @@ async fn instance_operations_and_timestamps() {
     copy.refresh(db).await.unwrap();
     assert_eq!(copy.body, "edited");
     assert_eq!(note.delete(db).await.unwrap(), 1);
+
+    // SQLx caches prepared statements by SQL text: a NULL first, a value later,
+    // must not reuse a statement whose parameter type was inferred from NULL.
+    let mut without_age = Author::new("first", None);
+    without_age.save(db).await.unwrap();
+    let mut with_age = Author::new("second", Some(3));
+    with_age.save(db).await.unwrap();
+    without_age.age = Some(4);
+    without_age.save(db).await.unwrap();
+    with_age.age = None;
+    with_age.save(db).await.unwrap();
+    let ages: Vec<Option<i32>> = Author::objects(db).values_list(["age"]).await.unwrap();
+    assert_eq!(ages, [Some(4), None]);
     t.cleanup().await;
 }
 

@@ -41,9 +41,10 @@ Comparing with a `NULL` literal (`Author::age.eq(None::<i32>)`) compiles to `IS 
 
 ## Compiler rules
 
-* Values are always bound. The only literals written into SQL text are integers that PostgreSQL requires as `integer` (`LIMIT`, `OFFSET`, `NTILE(n)`, `LAG` offsets) and `SUBSTR` positions, which are bound and cast.
+* Values are always bound, with one exception: a `NULL` value is written as the keyword `NULL`. That keeps the statement text different from the same statement with a value, which matters because SQLx caches PostgreSQL prepared statements by text. The other literals written into SQL text are integers that PostgreSQL requires as `integer` (`LIMIT`, `OFFSET`, `NTILE(n)`, `LAG` offsets); `SUBSTR` positions are bound and cast.
 * When a plan has joins, unqualified columns are qualified with the root source, and an empty projection becomes `"root".*`, so joined tables' columns never clash.
 * Parameters are numbered across the whole statement, subqueries included.
+* `UPDATE` and `DELETE` targets count as the enclosing query of their subqueries, so `OuterRef` works in their filters and assignments. A subquery over the *same* table as its enclosing query must name its table with `aliased(..)`; without it the compiler refuses the plan, because the inner name would shadow the outer one and turn the correlation into a tautology.
 * Structural problems (wrong function arity, `OuterRef` outside a subquery, an unresolved `Related` column) are `QueryError::InvalidPlan`; they never produce broken SQL.
 
 ## From QuerySet to plan

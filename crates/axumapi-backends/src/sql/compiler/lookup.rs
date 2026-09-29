@@ -50,7 +50,7 @@ impl Compiler<'_> {
                 self.push("(");
                 self.expr(target);
                 self.push(" IN (");
-                self.list(values, ", ", |c, v| c.bind(v.clone()));
+                self.list(values, ", ", |c, v| c.value(v));
                 self.push("))");
             }
             Lookup::InSubquery(plan) => {

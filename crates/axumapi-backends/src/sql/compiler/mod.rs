@@ -75,7 +75,7 @@ pub fn compile_write(plan: &WritePlan, dialect: &dyn Dialect) -> Result<Compiled
                 c.push(") VALUES ");
                 c.list(&p.rows, ", ", |c, row| {
                     c.push("(");
-                    c.list(row, ", ", |c, v| c.bind(v.clone()));
+                    c.list(row, ", ", |c, v| c.value(v));
                     c.push(")");
                 });
             }
@@ -84,6 +84,7 @@ pub fn compile_write(plan: &WritePlan, dialect: &dyn Dialect) -> Result<Compiled
             if p.assignments.is_empty() {
                 return Err(QueryError::InvalidPlan("update without assignments".into()).into());
             }
+            c.write_scope(&p.table);
             c.push("UPDATE ");
             c.ident(&p.table);
             c.push(" SET ");
@@ -95,6 +96,7 @@ pub fn compile_write(plan: &WritePlan, dialect: &dyn Dialect) -> Result<Compiled
             c.where_clause(p.filter.as_ref());
         }
         WritePlan::Delete(p) => {
+            c.write_scope(&p.table);
             c.push("DELETE FROM ");
             c.ident(&p.table);
             c.where_clause(p.filter.as_ref());
@@ -176,6 +178,30 @@ impl<'d> Compiler<'d> {
 
     fn ident(&mut self, ident: &str) {
         self.dialect.write_ident(&mut self.sql, ident);
+    }
+
+    /// The scope of an `UPDATE` / `DELETE` target, so correlated subqueries in
+    /// its assignments and filter can refer to the row with `OuterRef`.
+    fn write_scope(&mut self, table: &str) {
+        self.scopes.push(Scope {
+            reference: table.to_owned(),
+            qualify: false,
+        });
+    }
+
+    /// A value operand: `NULL` is written as the keyword, everything else is bound.
+    ///
+    /// Spelling `NULL` out (instead of binding an untyped parameter) keeps the
+    /// statement text distinct from the same statement with a value, which
+    /// matters for PostgreSQL: SQLx caches prepared statements by text, and a
+    /// parameter whose type the server inferred from `NULL` would reject a
+    /// later binary value of another width.
+    fn value(&mut self, v: &Value) {
+        if v.is_null() {
+            self.push("NULL");
+        } else {
+            self.bind(v.clone());
+        }
     }
 
     fn bind(&mut self, v: Value) {

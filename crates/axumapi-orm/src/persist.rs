@@ -134,10 +134,11 @@ pub(crate) fn value_key(value: &Value) -> String {
 /// Put `returned` rows of a multi-row `INSERT .. RETURNING` back in the order
 /// of `inputs`, without relying on the database's `RETURNING` order.
 ///
-/// Generated (auto) keys are assigned in insertion order, so sorting by key
-/// restores it; manual keys are matched against the inputs.
+/// `inputs` share one column list, so they are either all unsaved (the
+/// database generated their keys, in insertion order, so sorting by key
+/// restores it) or all saved (their keys are matched against the inputs).
 pub(crate) fn restore_order<M: Model>(inputs: &[M], mut returned: Vec<M>) -> Vec<M> {
-    if pk_field::<M>().is_ok_and(|f| f.auto) {
+    if inputs.first().is_some_and(M::is_unsaved) {
         returned.sort_by_key(|m| match m.pk().to_value() {
             Value::Int(i) => i,
             _ => 0,

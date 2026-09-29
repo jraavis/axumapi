@@ -163,3 +163,20 @@ async fn bulk_update_validates_columns_and_skips_missing_rows() {
         .unwrap();
     assert_eq!(changed, 1);
 }
+
+#[tokio::test]
+async fn bulk_create_keeps_input_order_for_explicit_keys() {
+    let db = db().await;
+    let authors = [50, 10, 30].map(|id| Author {
+        id,
+        ..Author::new(&format!("a{id}"), None)
+    });
+    let stored = Author::objects(&db)
+        .bulk_create(authors.to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        stored.iter().map(|a| a.id).collect::<Vec<_>>(),
+        [50, 10, 30]
+    );
+}

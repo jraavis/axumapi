@@ -406,3 +406,35 @@ async fn terminal_futures_are_send() {
     is_send(axumapi_orm::ModelOps::save(&mut owned, &db));
     is_send(axumapi_orm::ModelOps::delete(&book, &db));
 }
+
+#[tokio::test]
+async fn correlated_subqueries_work_in_delete_and_update() {
+    let db = db().await;
+    let s = seed(&db).await;
+    let has_books = || {
+        Book::objects(&db)
+            .filter(Book::author.expr().eq(Author::id.outer_ref()))
+            .exists_expr()
+    };
+    let removed = Author::objects(&db)
+        .exclude(has_books())
+        .delete()
+        .await
+        .unwrap();
+    assert_eq!(removed, 1, "only Cy has no books");
+    assert!(!Author::objects(&db).contains(&s.cy).await.unwrap());
+
+    let per_author = Book::objects(&db)
+        .filter(Book::author.expr().eq(Author::id.outer_ref()))
+        .subquery(("n", axumapi_orm::Count::all()));
+    let changed = Author::objects(&db)
+        .update([Author::age.set_expr(Expr::subquery(per_author))])
+        .await
+        .unwrap();
+    assert_eq!(changed, 3);
+    let ages: Vec<_> = Author::objects(&db)
+        .values_list::<Option<i32>, _>(["age"])
+        .await
+        .unwrap();
+    assert_eq!(ages, [Some(2), Some(1), Some(2)]);
+}

@@ -7,7 +7,7 @@ impl Compiler<'_> {
     pub(super) fn expr(&mut self, e: &Expr) {
         match e {
             Expr::Column(c) => self.column(c),
-            Expr::Value(v) => self.bind(v.clone()),
+            Expr::Value(v) => self.value(v),
             Expr::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs),
             Expr::Unary { op, expr } => {
                 self.push(match op {
@@ -79,6 +79,15 @@ impl Compiler<'_> {
             .checked_sub(2)
             .and_then(|i| self.scopes.get(i))
             .map(|s| s.reference.clone());
+        let current = self.scopes.last().map(|s| s.reference.as_str());
+        if outer.as_deref().is_some() && outer.as_deref() == current {
+            self.fail(format!(
+                "OuterRef on `{}` inside a subquery over the same table: name the subquery's table with aliased(..)",
+                c.name
+            ));
+            self.push("NULL");
+            return;
+        }
         match outer {
             Some(reference) => {
                 self.ident(&reference);

@@ -515,4 +515,78 @@ mod dsl {
             r#"SELECT COUNT(*) AS "count" FROM (SELECT * FROM "posts" WHERE ("likes" > $1) LIMIT 10) AS "counted""#
         );
     }
+
+    #[test]
+    fn null_values_are_spelled_out_not_bound() {
+        use axumapi_orm::{InsertPlan, UpdatePlan, WritePlan};
+        let update = WritePlan::Update(UpdatePlan {
+            table: "books".into(),
+            assignments: vec![
+                ("pages".into(), Expr::Value(Value::Null)),
+                ("likes".into(), Expr::val(3)),
+            ],
+            filter: Some(Expr::col("id").eq(1)),
+            returning: vec![],
+        });
+        let q = compile_write(&update, &Postgres).unwrap();
+        assert_eq!(
+            q.sql,
+            r#"UPDATE "books" SET "pages" = NULL, "likes" = $1 WHERE ("id" = $2)"#
+        );
+        assert_eq!(q.params, vec![Value::Int(3), Value::Int(1)]);
+        let insert = WritePlan::Insert(InsertPlan {
+            table: "books".into(),
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![
+                vec![Value::Null, Value::Int(1)],
+                vec![Value::Int(2), Value::Null],
+            ],
+            returning: vec![],
+        });
+        assert_eq!(
+            compile_write(&insert, &Sqlite).unwrap().sql,
+            r#"INSERT INTO "books" ("a", "b") VALUES (NULL, ?), (?, NULL)"#
+        );
+    }
+
+    #[test]
+    fn writes_can_correlate_subqueries_with_the_target_row() {
+        use axumapi_orm::{DeletePlan, UpdatePlan, WritePlan};
+        let has_books = QueryPlan::from_table("books")
+            .select(Expr::val(1), None)
+            .filter(Expr::col("author_id").eq(Expr::outer("id")));
+        let delete = WritePlan::Delete(DeletePlan {
+            table: "authors".into(),
+            filter: Some(!Expr::exists(has_books.clone())),
+            returning: vec![],
+        });
+        let expected = r#"DELETE FROM "authors" WHERE (NOT EXISTS (SELECT $1 FROM "books" WHERE ("author_id" = "authors"."id")))"#;
+        assert_eq!(compile_write(&delete, &Postgres).unwrap().sql, expected);
+        assert_eq!(
+            compile_write(&delete, &Sqlite).unwrap().sql,
+            expected.replace("$1", "?")
+        );
+        let update = WritePlan::Update(UpdatePlan {
+            table: "authors".into(),
+            assignments: vec![("n".into(), Expr::subquery(has_books))],
+            filter: None,
+            returning: vec![],
+        });
+        assert!(
+            compile_write(&update, &Postgres)
+                .unwrap()
+                .sql
+                .starts_with(r#"UPDATE "authors" SET "n" = (SELECT"#)
+        );
+    }
+
+    #[test]
+    fn correlating_a_table_with_itself_needs_an_alias() {
+        let same =
+            QueryPlan::from_table("posts").filter(Expr::col("likes").gt(Expr::outer("likes")));
+        let err = compile(&posts().filter(Expr::exists(same)), &Postgres);
+        assert!(
+            matches!(err, Err(OrmError::Query(QueryError::InvalidPlan(m))) if m.contains("aliased"))
+        );
+    }
 }

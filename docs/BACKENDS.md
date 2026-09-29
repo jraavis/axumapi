@@ -5,7 +5,7 @@
 | Backend | SQL compile | Execution | Notes |
 |---|---|---|---|
 | SQLite | yes | yes (`SqliteBackend`, SQLx) | Row locking, regex, `DISTINCT ON`, arrays and `STDDEV` / `VARIANCE` are rejected with a capability error |
-| PostgreSQL | yes | yes (`PgBackend`, SQLx, feature `postgres`) | End-to-end tests run when `DATABASE_URL` starts with `postgres`; the dialect is also covered by compiled-SQL assertions |
+| PostgreSQL | yes | yes (`PgBackend`, SQLx, feature `postgres`), **not yet run against a server** | The executor compiles and the dialect is covered by compiled-SQL assertions. `tests/postgres.rs` runs only when `DATABASE_URL` starts with `postgres` and is skipped otherwise, so it has not been executed in CI-less development. Run it once with `docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16` and `DATABASE_URL=postgres://postgres:postgres@localhost/postgres cargo test -p axumapi-backends --all-features --test postgres` |
 | MySQL | Phase 5 | Phase 5 | |
 | MongoDB | Phase 5 | Phase 5 | Compiles only the supported subset to filters and pipelines |
 | Redis | not applicable | Phase 5 | A specialised key/hash/set API; **not** a QuerySet backend |
@@ -67,7 +67,7 @@ Two details matter in practice:
 * Date parts: PostgreSQL uses `CAST(EXTRACT(.. FROM x) AS BIGINT)` (the adapter pins each connection to UTC); SQLite uses `CAST(strftime(..) AS INTEGER)` on the canonical text forms. `week` is the ISO 8601 week on both, computed on SQLite from the Thursday of the week. `quarter` is derived from the month there.
 * `concat` treats `NULL` as empty text on both: PostgreSQL `CONCAT`, SQLite `COALESCE(CAST(x AS TEXT), '') || ..`.
 * Integer literals are bound as 64-bit integers. PostgreSQL functions that take `integer` (`SUBSTR`, `NTILE`, `LAG`) get a `CAST` or a literal from the compiler. `LAG(x, n, default)` needs `default` to have the column's exact type; cast it when the column is not `bigint`.
-* `NULL` parameters are sent untyped on PostgreSQL (the server infers `text`, `uuid`, `timestamptz`, ...), never as a typed integer.
+* A `NULL` value is written as the keyword `NULL`, not bound, so the server infers its type from context and SQLx's statement cache (keyed by SQL text) never reuses a statement that was prepared with an inferred parameter type for a later value. In `raw_sql` a `Value::Null` parameter is sent untyped (OID 0); keep `NULL` and non-`NULL` variants of a raw statement textually different (`WHERE x IS NULL`) or cast the parameter (`$1::text`).
 
 ## Locking notes
 
