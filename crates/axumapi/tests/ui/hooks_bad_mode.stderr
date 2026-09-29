@@ -1,0 +1,11 @@
+error: unknown mode `during`; expected "after" or "before"
+  --> tests/ui/hooks_bad_mode.rs:11:38
+   |
+11 |     #[field_validator("name", mode = "during")]
+   |                                      ^^^^^^^^
+
+error: unknown mode `later`; expected "after" or "before"
+  --> tests/ui/hooks_bad_mode.rs:16:30
+   |
+16 |     #[model_validator(mode = "later")]
+   |                              ^^^^^^^

@@ -14,7 +14,9 @@
 #![forbid(unsafe_code)]
 
 pub use axumapi_core::*;
-pub use axumapi_macros::{Schema, delete, get, head, options, patch, post, put, routes, ws};
+pub use axumapi_macros::{
+    Schema, Validate, delete, get, head, model_hooks, options, patch, post, put, routes, ws,
+};
 pub use axumapi_openapi as openapi;
 pub use axumapi_orm as orm;
 pub use axumapi_validation as validation;
@@ -27,7 +29,9 @@ pub mod prelude {
         PlainText, Provided, Query, Redirect, ResolveContext, Resource, Route, ServerError, State,
         WebSocket, WebSocketUpgrade, WithStatus, delete, get, head, options, patch, post, put,
     };
-    pub use axumapi_macros::{Schema, delete, get, head, options, patch, post, put, routes, ws};
+    pub use axumapi_macros::{
+        Schema, Validate, delete, get, head, model_hooks, options, patch, post, put, routes, ws,
+    };
     pub use axumapi_orm as orm;
     pub use axumapi_validation::{
         Schema, SchemaObject, SchemaRegistry, Validate, ValidationError, ValidationResult,

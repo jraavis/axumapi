@@ -1,0 +1,5 @@
+error: unknown `field` key `min_lenght`; valid keys: min_length, max_length, pattern (or regex), email, url, gt, ge, lt, le, multiple_of, default, default_factory, alias, validation_alias, serialization_alias, title, description, examples, exclude, strict, max_digits, decimal_places, validator
+ --> tests/ui/field_unknown_key.rs:5:13
+  |
+5 |     #[field(min_lenght = 3)]
+  |             ^^^^^^^^^^

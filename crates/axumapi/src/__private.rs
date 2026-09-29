@@ -2,10 +2,14 @@
 //!
 //! Semver-exempt: only the macros in this workspace may rely on it.
 
+pub use axumapi_validation::hooks::{Probe, ViaDefault, ViaHooks};
+pub use regex::Regex;
+pub use serde;
+pub use serde_json;
 pub use serde_json::json;
 
 use axumapi_validation::SchemaObject;
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 
 /// Add annotation/constraint keywords to `schema`.
 ///
@@ -45,6 +49,11 @@ impl ObjectBuilder {
         if required {
             self.required.push(Value::String(name.to_owned()));
         }
+    }
+
+    /// The properties added so far (computed fields add theirs here).
+    pub fn properties_mut(&mut self) -> &mut Map<String, Value> {
+        &mut self.properties
     }
 
     /// Finish the schema; `deny_unknown` sets `additionalProperties: false`.
@@ -122,4 +131,10 @@ pub fn adjacently_tagged(
 pub fn internally_tagged_newtype(tag: &str, name: &str, inner: SchemaObject) -> SchemaObject {
     let parts = vec![tagged_unit(tag, name).into_value(), inner.into_value()];
     SchemaObject::default().with("allOf", parts)
+}
+
+/// A finite float as a JSON number. The derives reject non-finite bounds at
+/// compile time, so the fallback is never used.
+pub fn number_f64(value: f64) -> Number {
+    Number::from_f64(value).unwrap_or_else(|| Number::from(0_i64))
 }

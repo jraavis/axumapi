@@ -1,4 +1,4 @@
-error: flatten is not supported by derive(Schema) yet
+error: flatten is not supported by axumapi's derives yet
   --> tests/ui/flatten_unsupported.rs:10:13
    |
 10 |     #[serde(flatten)]

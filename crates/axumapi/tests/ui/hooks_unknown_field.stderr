@@ -1,0 +1,11 @@
+error[E0609]: no field `nmae` on type `&Model`
+  --> tests/ui/hooks_unknown_field.rs:11:23
+   |
+11 |     #[field_validator("nmae")]
+   |                       ^^^^^^ unknown field
+   |
+help: a field with a similar name exists
+   |
+11 -     #[field_validator("nmae")]
+11 +     #[field_validator(name)]
+   |

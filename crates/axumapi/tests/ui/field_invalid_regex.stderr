@@ -1,0 +1,5 @@
+error: invalid regular expression: unclosed group
+ --> tests/ui/field_invalid_regex.rs:5:23
+  |
+5 |     #[field(pattern = "(unclosed")]
+  |                       ^^^^^^^^^^^

@@ -1,0 +1,11 @@
+error: unknown `extra` value `sometimes`; expected "forbid", "ignore" or "allow"
+ --> tests/ui/model_config_unknown_key.rs:4:24
+  |
+4 | #[model_config(extra = "sometimes", frozen)]
+  |                        ^^^^^^^^^^^
+
+error: unknown `model_config` key `frozen`; valid keys: strict, extra, str_strip_whitespace, str_to_lower, str_to_upper, populate_by_name, hooks
+ --> tests/ui/model_config_unknown_key.rs:4:37
+  |
+4 | #[model_config(extra = "sometimes", frozen)]
+  |                                     ^^^^^^
