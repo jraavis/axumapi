@@ -10,10 +10,21 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["sqlite"]
+# In-memory SQLite test databases (`TestDatabase::sqlite_memory`).
+sqlite = ["dep:axumapi-backends", "axumapi-backends/sqlite"]
+
 [dependencies]
 axumapi-core.workspace = true
+axumapi-orm.workspace = true
+axumapi-migrations.workspace = true
+axumapi-backends = { workspace = true, optional = true }
 http.workspace = true
 tower.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

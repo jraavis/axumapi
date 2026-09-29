@@ -1,6 +1,14 @@
 //! In-process testing helpers for axumapi applications.
 #![forbid(unsafe_code)]
 
+mod builder;
+mod database;
+
+pub use builder::TestClientBuilder;
+pub use database::{TestDatabase, TestDatabaseError};
+/// Re-exported so tests can build custom [`Request`]s for [`TestClient::send`].
+pub use http;
+
 use axumapi_core::lifespan::Lifespan;
 use axumapi_core::{App, Body, BodyError, RouterService, ServerError};
 use http::{HeaderMap, Method, Request, StatusCode, header};
@@ -63,6 +71,12 @@ pub struct TestClient {
 }
 
 impl TestClient {
+    /// Start a [`TestClientBuilder`] to apply dependency overrides and
+    /// databases to `app` before it is built.
+    pub fn builder(app: App) -> TestClientBuilder {
+        TestClientBuilder::new(app)
+    }
+
     /// Wrap `app`.
     ///
     /// # Errors
@@ -129,6 +143,18 @@ impl TestClient {
     pub async fn get(&self, path: &str) -> Result<TestResponse, TestClientError> {
         let req = Request::builder()
             .method(Method::GET)
+            .uri(path)
+            .body(Body::empty())?;
+        self.send(req).await
+    }
+
+    /// Send a DELETE request.
+    ///
+    /// # Errors
+    /// Returns [`TestClientError`] on a malformed request or unreadable body.
+    pub async fn delete(&self, path: &str) -> Result<TestResponse, TestClientError> {
+        let req = Request::builder()
+            .method(Method::DELETE)
             .uri(path)
             .body(Body::empty())?;
         self.send(req).await
