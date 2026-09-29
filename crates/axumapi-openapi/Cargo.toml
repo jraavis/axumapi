@@ -1,11 +1,13 @@
 [package]
 name = "axumapi-openapi"
-description = "OpenAPI 3.1 document generation for axumapi (scaffolding)"
+description = "OpenAPI 3.1 document model and builder for axumapi"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lints]
 workspace = true

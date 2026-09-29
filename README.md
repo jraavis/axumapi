@@ -2,7 +2,7 @@
 
 A FastAPI-style Rust web framework with Pydantic-style validation and a Django-style ORM. It is async-first, type-safe, and targets stable Rust (edition 2024, MSRV 1.92).
 
-> **Status: Phase 5 (MySQL, MongoDB, Redis backends) complete, pre-alpha.** The APIs will change. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) lists what is implemented and what is deferred.
+> **Status: Phase 6 (production tooling) complete, pre-alpha.** The APIs will change. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) lists what is implemented and what is deferred.
 
 ```rust
 use axumapi::prelude::*;
@@ -54,11 +54,14 @@ let adults = User::objects(&db)
 | `axumapi-validation` | Validation errors, rules, constrained types, schema metadata |
 | `axumapi-orm` | `Model`, `QuerySet`, relations, transactions, QueryPlan IR |
 | `axumapi-backends` | SQL compiler and executors: SQLite (default), PostgreSQL, MySQL, MongoDB (subset); Redis key/hash/set client |
-| `axumapi-testkit` | In-process `TestClient` |
+| `axumapi-testkit` | In-process `TestClient`, `TestDatabase` fixtures and isolation |
+| `axumapi-config` | Layered configuration (TOML, environment, overrides), `Secret` |
+| `axumapi-cache` | Cache trait, in-memory LRU and Redis caches, `RouteCache` middleware |
 | `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Model, Validate, Schema)]` |
 | `axumapi-openapi` | OpenAPI 3.1 model, builder, docs UIs |
 | `axumapi-migrations` | Autodetector, JSON migrations, schema editor |
-| `axumapi-cli` | `axumapi` binary (`migrate`, `rollback`, `showmigrations`, `squashmigrations`) |
+| `axumapi-cli` | `AppCli` (`runserver`, `routes`, `check`, `dbshell`, migrations) and the `axumapi` migration binary |
+| `axumapi-bench` | Criterion benchmarks (not published) |
 
 ## Development
 
@@ -79,7 +82,10 @@ Backends other than SQLite are behind cargo features (`postgres`, `mysql`, `mong
 | MongoDB | `mongodb` | `MONGODB_URL=mongodb://...` |
 | Redis | `redis` | `REDIS_URL=redis://...` |
 
+To run them locally, start the databases from `docker-compose.yml` and export the URLs listed in its header ([docs/TESTING.md](docs/TESTING.md)):
+
 ```bash
+docker compose up -d --wait
 cargo test --workspace --all-features
 ```
 
@@ -92,7 +98,7 @@ Unsupported features fail with a `BackendCapabilityError` before any I/O; see [d
 3. Validation and serialization: done (Pydantic-style pipeline, validators, computed fields, dump options, constrained types)
 4. ORM models, QuerySet, relations, transactions, migrations: done
 5. MySQL, MongoDB, Redis: done (MongoDB compiles the supported QuerySet subset; Redis is a typed client)
-6. Production tooling: next (CLI `runserver`/`routes`/`check`/`shell`, configuration, observability, security schemes, signals, database routing, cache, benchmarks, docker-compose, release tooling)
+6. Production tooling: done (configuration, observability, security schemes, signals, database routing, cache, CLI, testkit, benchmarks, CI, docker-compose; see [docs/RELEASING.md](docs/RELEASING.md))
 
 ## License
 
