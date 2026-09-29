@@ -34,7 +34,7 @@ use crate::validate::{Validate, json_type};
 pub struct Decimal<const MAX_DIGITS: u32, const DECIMAL_PLACES: u32>(RawDecimal);
 
 /// Decimal constrained only by rust_decimal's maximum scale of 28.
-pub type UnboundedDecimal = Decimal<28, 28>;
+pub type UnboundedDecimal = Decimal<{ u32::MAX }, 28>;
 
 impl<const MAX_DIGITS: u32, const DECIMAL_PLACES: u32> Decimal<MAX_DIGITS, DECIMAL_PLACES> {
     /// Validate digit constraints and wrap `value`.

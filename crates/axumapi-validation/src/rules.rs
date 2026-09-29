@@ -251,12 +251,31 @@ pub fn decimal_digits(
             format!("ensure this value has at most {max_digits} digits in total"),
         ));
     }
+    // Pydantic: at most `max_digits - decimal_places` digits before the point.
+    let max_whole = max_digits.saturating_sub(max_places);
+    if norm_digits.saturating_sub(norm_decimals) > max_whole {
+        return Err(FieldError::new(
+            "decimal_whole_digits",
+            format!("ensure this value has at most {max_whole} digits before the decimal point"),
+        ));
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decimal_whole_digits_are_capped() {
+        let d = |s: &str| s.parse::<rust_decimal::Decimal>().unwrap();
+        assert!(decimal_digits(d("123.45"), 5, 2).is_ok());
+        assert_eq!(
+            decimal_digits(d("1234.5"), 5, 2).unwrap_err().code,
+            "decimal_whole_digits"
+        );
+        assert!(decimal_digits(d("1230.00"), 6, 2).is_ok());
+    }
 
     #[test]
     fn min_length_counts_characters_not_bytes() {
@@ -378,6 +397,10 @@ mod tests {
             "decimal_max_digits"
         );
         let integer_part = Decimal::from_str("123").unwrap();
-        assert!(decimal_digits(integer_part, 28, 28).is_ok());
+        assert_eq!(
+            decimal_digits(integer_part, 28, 28).unwrap_err().code,
+            "decimal_whole_digits"
+        );
+        assert!(decimal_digits(integer_part, u32::MAX, 28).is_ok());
     }
 }
