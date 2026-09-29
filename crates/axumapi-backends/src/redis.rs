@@ -3,7 +3,7 @@
 //! [`RedisStore`] wraps a cloneable [`redis::aio::ConnectionManager`]. It is a
 //! specialised data API: relational plans are executed by the SQLite and
 //! PostgreSQL adapters. [`RedisStore::capabilities`] rejects every relational
-//! [`Feature`](axumapi_orm::Feature) before any I/O.
+//! [`Feature`] before any I/O.
 //!
 //! Keys are strings. A prefix (for example `"cache:"`) is prepended as-is, so
 //! include the separator in the prefix when one is wanted. Values are UTF-8.

@@ -85,7 +85,7 @@ Two details matter in practice:
 ## MongoDB notes
 
 * Requires MongoDB 5.0+; transactions need a replica set (a single-node one is enough). No savepoints, so `bulk_create` inside a transaction is a capability error.
-* A table is a collection. The primary key column (default `id`; register others with `Keys::with(..)`) is stored as `_id` and renamed back on read. Missing keys are generated as consecutive `i64` values from the `axumapi_counters` collection, outside the transaction, so rollbacks leave gaps; explicit keys do not advance the counter.
+* A table is a collection. The primary key column (default `id`; register others with `MongoBackend::with_keys(Keys::default().with(collection, column))`) is stored as `_id` and renamed back on read. Missing keys are generated as consecutive `i64` values from the `axumapi_counters` collection, outside the transaction, so rollbacks leave gaps; explicit keys do not advance the counter.
 * Reads compile to aggregation pipelines (`$match`, `$group`, `$sort`, `$skip`, `$limit`, `$project`). Plans are checked and compiled entirely before any I/O; see the module docs of `axumapi_backends::mongodb` for the full mapping of plan nodes.
 * Predicates follow SQL three-valued logic: negations carry explicit non-`NULL` guards, and `= NULL` means `IS NULL`.
 * `update()`/`delete()` on a queryset with a limit, `distinct` or joins becomes `pk IN (subquery)` and is therefore a `Subqueries` capability error.
