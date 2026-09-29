@@ -41,7 +41,7 @@ pub mod prelude {
         ws,
     };
     pub use axumapi_orm::{
-        Db, DbType, Expr, Field, ForeignKey, Model, OneToOne, OrmError, QuerySet,
+        Db, DbType, Expr, Field, ForeignKey, Model, ModelOps, OneToOne, OrmError, QuerySet, Related,
     };
     pub use axumapi_validation::{
         Schema, SchemaObject, SchemaRegistry, Validate, ValidationError, ValidationResult,

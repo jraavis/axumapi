@@ -143,8 +143,7 @@ pub fn number_f64(value: f64) -> Number {
 /// Reverse side of a many-to-many relation: the `S` rows joined to the
 /// target row `target_pk` through `relation`'s join table.
 ///
-/// Built as a correlated `EXISTS` over the join table (the query AST has no
-/// `IN (subquery)`): `EXISTS (SELECT 1 FROM through WHERE through.target =
+/// Built as a correlated `EXISTS` over the join table: `EXISTS (SELECT 1 FROM through WHERE through.target =
 /// ? AND through.source = S.pk)`.
 pub fn reverse_many_to_many<S: Model>(
     db: &Db,
