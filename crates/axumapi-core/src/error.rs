@@ -27,7 +27,9 @@ pub struct ApiError {
     title: &'static str,
     type_uri: String,
     detail: Option<String>,
-    errors: Option<Value>,
+    /// Boxed so `ApiError` stays small when `serde_json` is built with
+    /// `preserve_order` (pulled in by the MongoDB driver under `--all-features`).
+    errors: Option<Box<Value>>,
 }
 
 #[derive(Serialize)]
@@ -70,7 +72,7 @@ impl ApiError {
             StatusCode::UNPROCESSABLE_ENTITY,
             "The request could not be processed; see `errors` for details.",
         );
-        err.errors = Some(errors);
+        err.errors = Some(Box::new(errors));
         err
     }
 
@@ -104,7 +106,7 @@ impl ApiError {
 
     /// Structured error extension, if any.
     pub fn errors(&self) -> Option<&Value> {
-        self.errors.as_ref()
+        self.errors.as_deref()
     }
 }
 
@@ -115,7 +117,7 @@ impl IntoResponse for ApiError {
             title: self.title,
             status: self.status.as_u16(),
             detail: self.detail.as_deref(),
-            errors: self.errors.as_ref(),
+            errors: self.errors.as_deref(),
         };
         let body = serde_json::to_vec(&problem).unwrap_or_else(|_| FALLBACK_BODY.to_vec());
         let mut response = with_content_type(PROBLEM_JSON, body);
