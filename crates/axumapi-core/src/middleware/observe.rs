@@ -126,9 +126,9 @@ pub(crate) fn note_matched_path(parts: &Parts) {
     }
 }
 
-/// Emits a tracing span and a completion event per request with
-/// `request_id`, `method`, `path`, `route` (matched template), `status` and
-/// `latency_ms`.
+/// Emits an `http.request` tracing span per request with `request_id`,
+/// `method`, `route` (matched path template via axum `MatchedPath`, or
+/// `"<unmatched>"`), `status` and `latency_ms`.
 ///
 /// **Privacy:** only those fields are recorded. Headers (Authorization,
 /// Cookie, API keys, ...), the query string and bodies are never logged.
@@ -151,16 +151,22 @@ impl RequestLogging {
                 .extensions()
                 .get::<RequestId>()
                 .map_or_else(|| "-".to_owned(), |id| id.0.clone());
+            let method = req.method().clone();
             let span = tracing::info_span!(
-                "http_request",
-                %request_id,
-                method = %req.method(),
-                path = req.uri().path(),
+                "http.request",
+                request_id = %request_id,
+                method = %method,
+                route = tracing::field::Empty,
+                status = tracing::field::Empty,
+                latency_ms = tracing::field::Empty,
             );
             let response: Response = next.run(req).instrument(span.clone()).await;
             let status = response.status().as_u16();
             let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             let route = slot.get().unwrap_or_else(|| "<unmatched>".to_owned());
+            span.record("route", tracing::field::display(&route));
+            span.record("status", status);
+            span.record("latency_ms", latency_ms);
             tracing::info!(parent: &span, %route, status, latency_ms, "request completed");
             response
         })
@@ -169,3 +175,169 @@ impl RequestLogging {
 }
 
 impl_layer!(RequestIdLayer, RequestLogging);
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use crate::app::App;
+    use crate::body::Body;
+    use crate::routing::get;
+    use http::Request;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tower::ServiceExt;
+
+    #[derive(Clone, Default)]
+    struct Capture {
+        lines: Arc<Mutex<Vec<String>>>,
+        next_id: Arc<AtomicUsize>,
+    }
+
+    struct Fields(String);
+
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, "{}={value:?} ", field.name());
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, "{}={value} ", field.name());
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, "{}={value} ", field.name());
+        }
+
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, "{}={value} ", field.name());
+        }
+
+        fn record_u128(&mut self, field: &tracing::field::Field, value: u128) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, "{}={value} ", field.name());
+        }
+    }
+
+    impl tracing::Subscriber for Capture {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            let mut fields = Fields(format!("span {} ", attrs.metadata().name()));
+            attrs.record(&mut fields);
+            self.lines.lock().unwrap().push(fields.0);
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst) as u64 + 1;
+            tracing::span::Id::from_u64(id)
+        }
+
+        fn record(&self, _: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+            let mut fields = Fields("record ".to_owned());
+            values.record(&mut fields);
+            self.lines.lock().unwrap().push(fields.0);
+        }
+
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = Fields("event ".to_owned());
+            event.record(&mut fields);
+            self.lines.lock().unwrap().push(fields.0);
+        }
+
+        fn enter(&self, _: &tracing::span::Id) {}
+
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    async fn send(app: App, path: &str, headers: &[(&str, &str)]) -> crate::http::StatusCode {
+        let mut req = Request::builder().method("GET").uri(path);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let service = app.into_router_service().unwrap();
+        service
+            .oneshot(req.body(Body::from("")).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn http_request_span_records_fields_and_never_secrets() {
+        let capture = Capture::default();
+        let _guard = tracing::subscriber::set_default(capture.clone());
+        let app = App::new()
+            .route("/users/{id}", get(|| async { "u" }))
+            .request_id()
+            .request_logging();
+        let status = send(
+            app,
+            "/users/42?api_key=QUERYSECRET",
+            &[
+                ("authorization", "Bearer TOPSECRET"),
+                ("cookie", "session=COOKIESECRET"),
+                ("x-api-key", "KEYSECRET"),
+                ("x-request-id", "req-1"),
+            ],
+        )
+        .await;
+        assert_eq!(status, crate::http::StatusCode::OK);
+        let logged = capture.lines.lock().unwrap().join("\n");
+        assert!(logged.contains("span http.request"), "span name:\n{logged}");
+        for secret in [
+            "TOPSECRET",
+            "COOKIESECRET",
+            "KEYSECRET",
+            "QUERYSECRET",
+            "api_key=",
+        ] {
+            assert!(
+                !logged.contains(secret),
+                "{secret} leaked into logs:\n{logged}"
+            );
+        }
+        assert!(
+            logged.contains("request_id=req-1") || logged.contains("request_id=\"req-1\""),
+            "{logged}"
+        );
+        assert!(logged.contains("/users/{id}"), "matched route:\n{logged}");
+        assert!(logged.contains("status=200"), "{logged}");
+        assert!(logged.contains("latency_ms="), "{logged}");
+        assert!(
+            logged.contains("method=GET") || logged.contains("method=\"GET\""),
+            "{logged}"
+        );
+        assert!(!logged.contains("/users/42?"), "{logged}");
+        assert!(
+            !logged.contains("Authorization") && !logged.contains("Bearer "),
+            "{logged}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unmatched_route_is_recorded() {
+        let capture = Capture::default();
+        let _guard = tracing::subscriber::set_default(capture.clone());
+        let app = App::new()
+            .route("/hello", get(|| async { "h" }))
+            .request_id()
+            .request_logging();
+        let status = send(
+            app,
+            "/missing?token=QUERYSECRET",
+            &[("authorization", "Bearer TOPSECRET")],
+        )
+        .await;
+        assert_eq!(status, crate::http::StatusCode::NOT_FOUND);
+        let logged = capture.lines.lock().unwrap().join("\n");
+        assert!(logged.contains("<unmatched>"), "{logged}");
+        assert!(logged.contains("status=404"), "{logged}");
+        assert!(!logged.contains("QUERYSECRET"), "{logged}");
+        assert!(!logged.contains("TOPSECRET"), "{logged}");
+    }
+}
