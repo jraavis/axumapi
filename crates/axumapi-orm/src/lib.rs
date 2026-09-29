@@ -20,6 +20,8 @@ pub mod db;
 pub mod error;
 pub mod expr;
 pub mod model;
+pub mod ops;
+mod persist;
 pub mod plan;
 pub mod queryset;
 pub mod relations;
@@ -38,6 +40,7 @@ pub use model::{
     ConstraintMeta, DbDefault, FieldMeta, IndexMeta, ManyToManyMeta, MetaRef, Model, ModelMeta,
     OnDelete, RelationKind, RelationMeta, read_column,
 };
+pub use ops::ModelOps;
 pub use plan::{
     DistinctMode, JoinExpr, JoinKind, LockMode, OrderDirection, OrderExpr, QueryPlan, QuerySource,
     SelectExpr,
