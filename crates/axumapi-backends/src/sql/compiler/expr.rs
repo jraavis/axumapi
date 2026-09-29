@@ -27,7 +27,7 @@ impl Compiler<'_> {
             }
             Expr::Subquery(p) => {
                 self.push("(");
-                self.plan(p);
+                self.operand_subquery(p, true);
                 self.push(")");
             }
             Expr::Func { func, args } => self.function(*func, args),

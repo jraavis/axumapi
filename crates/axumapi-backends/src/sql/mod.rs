@@ -4,4 +4,4 @@ mod compiler;
 mod dialect;
 
 pub use compiler::{CompiledQuery, compile, compile_write};
-pub use dialect::{Dialect, Postgres, Sqlite};
+pub use dialect::{Dialect, MySql, Postgres, Sqlite};

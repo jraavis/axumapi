@@ -10,12 +10,14 @@ mod function;
 mod lookup;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_mysql;
 
 use super::dialect::Dialect;
 use axumapi_orm::expr::Ident;
 use axumapi_orm::{
-    BackendKind, DistinctMode, JoinKind, LockMode, OrderDirection, OrmError, QueryError, QueryPlan,
-    QuerySource, SetOp, Value, WritePlan,
+    BackendKind, DistinctMode, Expr, JoinKind, LockMode, OrderDirection, OrmError, QueryError,
+    QueryPlan, QuerySource, SetOp, Value, WritePlan,
 };
 use std::fmt::Write;
 
@@ -68,7 +70,7 @@ pub fn compile_write(plan: &WritePlan, dialect: &dyn Dialect) -> Result<Compiled
                     )
                     .into());
                 }
-                c.push(" DEFAULT VALUES");
+                c.push(dialect.default_values_sql());
             } else {
                 c.push(" (");
                 c.list(&p.columns, ", ", |c, col| c.ident(col));
@@ -84,11 +86,16 @@ pub fn compile_write(plan: &WritePlan, dialect: &dyn Dialect) -> Result<Compiled
             if p.assignments.is_empty() {
                 return Err(QueryError::InvalidPlan("update without assignments".into()).into());
             }
+            let assignments = if dialect.evaluates_assignments_in_order() {
+                order_assignments(&p.assignments)?
+            } else {
+                p.assignments.clone()
+            };
             c.write_scope(&p.table);
             c.push("UPDATE ");
             c.ident(&p.table);
             c.push(" SET ");
-            c.list(&p.assignments, ", ", |c, (col, e)| {
+            c.list(&assignments, ", ", |c, (col, e)| {
                 c.ident(col);
                 c.push(" = ");
                 c.expr(e);
@@ -102,8 +109,110 @@ pub fn compile_write(plan: &WritePlan, dialect: &dyn Dialect) -> Result<Compiled
             c.where_clause(p.filter.as_ref());
         }
     }
+    // Dialects without `RETURNING` fail the capability check above, so this
+    // only ever writes a clause the dialect supports.
     c.returning(plan.returning());
     c.finish()
+}
+
+/// Reorder `SET` assignments for a dialect that evaluates them left to right
+/// (MySQL), so that each right-hand side still reads the *old* value of every
+/// column, as the SQL standard (and PostgreSQL / SQLite) specify: an
+/// assignment that reads column `c` is placed before the one that sets `c`.
+///
+/// # Errors
+/// [`QueryError::InvalidPlan`] if the assignments read each other's columns in
+/// a cycle (`SET a = b, b = a`), which no order can express.
+fn order_assignments(assignments: &[(Ident, Expr)]) -> Result<Vec<(Ident, Expr)>, OrmError> {
+    let reads: Vec<Vec<String>> = assignments
+        .iter()
+        .map(|(_, e)| {
+            let mut columns = Vec::new();
+            expr_reads(e, 0, &mut columns);
+            columns
+        })
+        .collect();
+    let n = assignments.len();
+    // `before[i]`: assignments that must come before `i` (they read its column).
+    let before: Vec<Vec<usize>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .filter(|&j| j != i && reads[j].iter().any(|c| *c == *assignments[i].0))
+                .collect()
+        })
+        .collect();
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    while order.len() < n {
+        let next =
+            (0..n).find(|i| !order.contains(i) && before[*i].iter().all(|j| order.contains(j)));
+        match next {
+            Some(i) => order.push(i),
+            None => {
+                return Err(QueryError::InvalidPlan(
+                    "MySQL evaluates SET assignments left to right; assignments that read \
+                     each other's columns in a cycle cannot be expressed"
+                        .into(),
+                )
+                .into());
+            }
+        }
+    }
+    Ok(order.into_iter().map(|i| assignments[i].clone()).collect())
+}
+
+/// Columns of the statement's own row that `expr` reads: plain columns at
+/// `depth` 0, and `OuterRef`s of first-level subqueries.
+fn expr_reads(expr: &Expr, depth: usize, out: &mut Vec<String>) {
+    match expr {
+        Expr::Column(c) if depth == 0 => out.push(c.name.to_string()),
+        Expr::OuterRef(c) if depth == 1 => out.push(c.name.to_string()),
+        _ => {}
+    }
+    for child in expr.children() {
+        expr_reads(child, depth, out);
+    }
+    if let Some(plan) = expr.subplan() {
+        plan_reads(plan, depth + 1, out);
+    }
+}
+
+fn plan_reads(plan: &QueryPlan, depth: usize, out: &mut Vec<String>) {
+    let distinct_on = match &plan.distinct {
+        DistinctMode::On(exprs) => exprs.as_slice(),
+        _ => &[],
+    };
+    let exprs = plan
+        .projection
+        .iter()
+        .map(|s| &s.expr)
+        .chain(plan.joins.iter().map(|j| &j.on))
+        .chain(plan.filter.iter())
+        .chain(plan.having.iter())
+        .chain(plan.grouping.iter())
+        .chain(plan.ordering.iter().map(|o| &o.expr))
+        .chain(distinct_on);
+    for e in exprs {
+        expr_reads(e, depth, out);
+    }
+    if let Some(inner) = plan.source.subquery.as_deref() {
+        plan_reads(inner, depth + 1, out);
+    }
+    for member in &plan.compound {
+        plan_reads(&member.plan, depth, out);
+    }
+}
+
+/// Whether `plan` (or a derived source, join or set-operation member of it)
+/// reads `table`.
+fn reads_table(plan: &QueryPlan, table: &str) -> bool {
+    plan.source.name == table
+        || plan.joins.iter().any(|j| j.source.name == table)
+        || plan
+            .source
+            .subquery
+            .as_deref()
+            .is_some_and(|inner| reads_table(inner, table))
+        || plan.compound.iter().any(|c| reads_table(&c.plan, table))
 }
 
 /// A query being compiled: the name its columns are qualified with, and
@@ -123,6 +232,8 @@ struct Compiler<'d> {
     scopes: Vec<Scope>,
     /// Counter for generated derived-table aliases (`u1`, `u2`, ...).
     derived: usize,
+    /// Target table of the `UPDATE` / `DELETE` being compiled, if any.
+    write_table: Option<String>,
     /// First structural problem found; reported by [`finish`](Self::finish).
     error: Option<QueryError>,
 }
@@ -138,6 +249,7 @@ impl<'d> Compiler<'d> {
             params: Vec::new(),
             scopes: Vec::new(),
             derived: 0,
+            write_table: None,
             error: None,
         }
     }
@@ -183,10 +295,34 @@ impl<'d> Compiler<'d> {
     /// The scope of an `UPDATE` / `DELETE` target, so correlated subqueries in
     /// its assignments and filter can refer to the row with `OuterRef`.
     fn write_scope(&mut self, table: &str) {
+        self.write_table = Some(table.to_owned());
         self.scopes.push(Scope {
             reference: table.to_owned(),
             qualify: false,
         });
+    }
+
+    /// A subquery used as an operand (`IN (..)`, scalar).
+    ///
+    /// MySQL rejects `LIMIT` inside `IN (subquery)` (error 1235) and any
+    /// subquery over the table an `UPDATE` / `DELETE` modifies (error 1093).
+    /// Both are avoided by selecting from the subquery as a derived table.
+    fn operand_subquery(&mut self, plan: &QueryPlan, scalar: bool) {
+        let wrap = self.kind == BackendKind::MySql
+            && match &self.write_table {
+                Some(table) => !scalar || reads_table(plan, table),
+                None => !scalar && (plan.limit.is_some() || plan.offset.is_some()),
+            };
+        if !wrap {
+            self.plan(plan);
+            return;
+        }
+        self.derived += 1;
+        let alias = format!("u{}", self.derived);
+        self.push("SELECT * FROM (");
+        self.plan(plan);
+        self.push(") AS ");
+        self.ident(&alias);
     }
 
     /// A value operand: `NULL` is written as the keyword, everything else is bound.
@@ -327,7 +463,9 @@ impl<'d> Compiler<'d> {
             (Some(l), _) => {
                 let _ = write!(self.sql, " LIMIT {l}");
             }
-            (None, Some(_)) if self.dialect.offset_requires_limit() => self.push(" LIMIT -1"),
+            (None, Some(_)) if self.dialect.offset_requires_limit() => {
+                let _ = write!(self.sql, " LIMIT {}", self.dialect.unbounded_limit());
+            }
             _ => {}
         }
         if let Some(o) = p.offset {

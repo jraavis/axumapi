@@ -30,6 +30,37 @@ pub trait Dialect: Send + Sync {
     fn offset_requires_limit(&self) -> bool {
         false
     }
+
+    /// The `LIMIT` written before a bare `OFFSET` when
+    /// [`offset_requires_limit`](Self::offset_requires_limit) is set.
+    fn unbounded_limit(&self) -> &'static str {
+        "-1"
+    }
+
+    /// The SQL string literal used as the `LIKE .. ESCAPE` character (one
+    /// backslash).
+    fn like_escape_literal(&self) -> &'static str {
+        r"'\'"
+    }
+
+    /// The tail of an `INSERT INTO t` that stores one row of defaults.
+    fn default_values_sql(&self) -> &'static str {
+        " DEFAULT VALUES"
+    }
+
+    /// Whether aggregates accept `FILTER (WHERE ..)`. When not, the compiler
+    /// rewrites `AGG(x) FILTER (WHERE f)` as `AGG(CASE WHEN f THEN x END)`.
+    fn supports_aggregate_filter(&self) -> bool {
+        true
+    }
+
+    /// Whether `UPDATE .. SET a = .., b = ..` evaluates the assignments left
+    /// to right, so a later right-hand side sees the *new* value of an
+    /// earlier column (standard SQL reads the old values). The compiler then
+    /// reorders assignments to keep the standard meaning.
+    fn evaluates_assignments_in_order(&self) -> bool {
+        false
+    }
 }
 
 /// PostgreSQL dialect (`$1` placeholders, `ILIKE`, `~` regex).
@@ -94,6 +125,86 @@ impl Dialect for Sqlite {
     }
 
     fn offset_requires_limit(&self) -> bool {
+        true
+    }
+}
+
+/// MySQL 8.0.31+ dialect: backtick identifiers, `?` placeholders,
+/// `REGEXP_LIKE`, `GROUP_CONCAT`, and no `RETURNING`.
+///
+/// The dialect declares `returning: false`, so compiling a plan that asks for
+/// `RETURNING` is a capability error; the MySQL adapter emulates it by
+/// stripping the clause and re-reading the rows.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MySql;
+
+impl Dialect for MySql {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            returning: false,
+            ..BackendCapabilities::mysql()
+        }
+    }
+
+    fn write_placeholder(&self, out: &mut String, _index: usize) {
+        out.push('?');
+    }
+
+    fn write_ident(&self, out: &mut String, ident: &str) {
+        out.push('`');
+        for ch in ident.chars() {
+            if ch == '`' {
+                out.push('`');
+            }
+            out.push(ch);
+        }
+        out.push('`');
+    }
+
+    fn cast_type(&self, ty: SqlType) -> &'static str {
+        match ty {
+            SqlType::SmallInt
+            | SqlType::Integer
+            | SqlType::BigInt
+            | SqlType::Duration
+            | SqlType::Bool => "SIGNED",
+            SqlType::Real => "FLOAT",
+            SqlType::Double => "DOUBLE",
+            // A bare DECIMAL is DECIMAL(10,0) and would round to an integer.
+            SqlType::Decimal => "DECIMAL(38,10)",
+            SqlType::Binary => "BINARY",
+            SqlType::Date => "DATE",
+            SqlType::Time => "TIME(6)",
+            SqlType::Timestamp => "DATETIME(6)",
+            SqlType::Uuid => "CHAR(36)",
+            SqlType::Json => "JSON",
+            _ => "CHAR",
+        }
+    }
+
+    fn offset_requires_limit(&self) -> bool {
+        true
+    }
+
+    fn unbounded_limit(&self) -> &'static str {
+        "18446744073709551615"
+    }
+
+    fn like_escape_literal(&self) -> &'static str {
+        // In a MySQL string literal `\\` is one backslash; a lone `\'` would
+        // escape the closing quote.
+        r"'\\'"
+    }
+
+    fn default_values_sql(&self) -> &'static str {
+        " () VALUES ()"
+    }
+
+    fn supports_aggregate_filter(&self) -> bool {
+        false
+    }
+
+    fn evaluates_assignments_in_order(&self) -> bool {
         true
     }
 }

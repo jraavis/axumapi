@@ -172,6 +172,37 @@ impl BackendCapabilities {
         }
     }
 
+    /// Capabilities of MySQL 8.0.31+ (tested on 9.x).
+    ///
+    /// * `returning` is `true` although MySQL has no `RETURNING` clause: the
+    ///   adapter emulates it (generated keys via `LAST_INSERT_ID()`, other
+    ///   writes by re-reading the affected rows in the same transaction).
+    /// * There is no `DISTINCT ON`, no native array type or array aggregate
+    ///   and no `ILIKE` (emulated with `LOWER(..) LIKE LOWER(..)`).
+    /// * Regex uses `REGEXP_LIKE`; row locking supports `NOWAIT` and
+    ///   `SKIP LOCKED`; all three isolation levels can be requested.
+    pub const fn mysql() -> Self {
+        Self {
+            kind: BackendKind::MySql,
+            transactions: TransactionSupport::Savepoints,
+            row_locking: RowLocking::Full,
+            joins: true,
+            returning: true,
+            window_functions: true,
+            regex: true,
+            arrays: false,
+            distinct_on: false,
+            ilike: false,
+            statistical_aggregates: true,
+            max_params: 65_535,
+            isolation_levels: &[
+                IsolationLevel::ReadCommitted,
+                IsolationLevel::RepeatableRead,
+                IsolationLevel::Serializable,
+            ],
+        }
+    }
+
     /// Capabilities of MongoDB (5.0+; transactions need a replica set).
     ///
     /// The plan is compiled to filters and aggregation pipelines: no joins,
@@ -361,5 +392,17 @@ mod tests {
         }
         assert!(BackendCapabilities::sqlite().supports(Feature::Subqueries));
         assert!(BackendCapabilities::postgres().supports(Feature::RawSql));
+    }
+
+    #[test]
+    fn mysql_rejects_distinct_on_and_arrays() {
+        let caps = BackendCapabilities::mysql();
+        assert!(caps.require(Feature::DistinctOn).is_err());
+        assert!(caps.require(Feature::Arrays).is_err());
+        assert!(caps.require(Feature::LockModifiers).is_ok());
+        assert!(
+            caps.require(Feature::Isolation(IsolationLevel::Serializable))
+                .is_ok()
+        );
     }
 }
