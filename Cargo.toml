@@ -23,6 +23,7 @@ axumapi-testkit = { path = "crates/axumapi-testkit" }
 
 async-trait = "0.1"
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 cookie = { version = "0.18", features = ["percent-encode"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 jsonschema = { version = "0.58", default-features = false }
@@ -43,7 +44,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_path_to_error = "0.1"
 serde_urlencoded = "0.7"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "macros", "chrono", "uuid", "rust_decimal", "json"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tower = { version = "0.5", features = ["util"] }

@@ -46,6 +46,12 @@ pub enum QueryError {
     /// Structural problem in the plan.
     #[error("invalid query plan: {0}")]
     InvalidPlan(String),
+    /// A statement ran on a transaction that was already committed or rolled back.
+    #[error("the transaction is already closed")]
+    TransactionClosed,
+    /// A model or relation was used in a way its metadata does not allow.
+    #[error("{0}")]
+    Model(String),
     /// A decoded value had an unexpected type.
     #[error("cannot decode column `{column}`: {reason}")]
     Decode {
@@ -57,6 +63,9 @@ pub enum QueryError {
 }
 
 /// Driver / connection level failure.
+///
+/// Messages come from the driver and may contain SQL fragments; they are
+/// logged, never returned to HTTP clients (see `ApiError: From<OrmError>`).
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum BackendError {

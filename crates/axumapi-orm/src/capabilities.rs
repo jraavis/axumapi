@@ -44,6 +44,19 @@ pub enum RowLocking {
     Full,
 }
 
+/// Transaction isolation level. Backends list the levels they honour in
+/// [`BackendCapabilities::isolation_levels`]; requesting another one is a
+/// capability error, never a silent downgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IsolationLevel {
+    /// `READ COMMITTED`.
+    ReadCommitted,
+    /// `REPEATABLE READ`.
+    RepeatableRead,
+    /// `SERIALIZABLE`.
+    Serializable,
+}
+
 /// A single optional query feature that a plan may require.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -66,6 +79,10 @@ pub enum Feature {
     DistinctOn,
     /// `ILIKE` style case-insensitive matching natively.
     CaseInsensitiveLike,
+    /// Nested transactions via savepoints.
+    Savepoints,
+    /// A specific transaction isolation level.
+    Isolation(IsolationLevel),
 }
 
 /// Declared capabilities of a backend.
@@ -91,6 +108,8 @@ pub struct BackendCapabilities {
     pub distinct_on: bool,
     /// Native `ILIKE`.
     pub ilike: bool,
+    /// Isolation levels that can be requested explicitly.
+    pub isolation_levels: &'static [IsolationLevel],
 }
 
 impl BackendCapabilities {
@@ -107,12 +126,18 @@ impl BackendCapabilities {
             arrays: true,
             distinct_on: true,
             ilike: true,
+            isolation_levels: &[
+                IsolationLevel::ReadCommitted,
+                IsolationLevel::RepeatableRead,
+                IsolationLevel::Serializable,
+            ],
         }
     }
 
     /// Capabilities of SQLite (3.35+ for `RETURNING`, 3.25+ for windows).
     ///
-    /// SQLite has no row locking and no built-in `REGEXP` function.
+    /// SQLite has no row locking and no built-in `REGEXP` function. Its
+    /// transactions are always serializable.
     pub const fn sqlite() -> Self {
         Self {
             kind: BackendKind::Sqlite,
@@ -125,6 +150,7 @@ impl BackendCapabilities {
             arrays: false,
             distinct_on: false,
             ilike: false,
+            isolation_levels: &[IsolationLevel::Serializable],
         }
     }
 
@@ -141,6 +167,8 @@ impl BackendCapabilities {
             Feature::DistinctOn => self.distinct_on,
             // Emulated with LOWER(..) LIKE LOWER(..) where not native.
             Feature::CaseInsensitiveLike => true,
+            Feature::Savepoints => self.transactions >= TransactionSupport::Savepoints,
+            Feature::Isolation(level) => self.isolation_levels.contains(&level),
         }
     }
 

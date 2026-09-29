@@ -15,6 +15,7 @@ axumapi-orm.workspace = true
 async-trait.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [features]
 default = ["sqlite"]

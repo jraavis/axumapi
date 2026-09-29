@@ -10,7 +10,7 @@
 //!   are checked at compile time: `icontains` exists only on text fields,
 //!   comparison values must convert into the field's type.
 
-use crate::plan::QueryPlan;
+use crate::plan::{OrderDirection, OrderExpr, QueryPlan};
 use crate::value::Value;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -246,6 +246,22 @@ impl Expr {
     pub fn is_null(self, yes: bool) -> Self {
         self.lookup(Lookup::IsNull(yes))
     }
+
+    /// Ascending ordering term.
+    pub fn asc(self) -> OrderExpr {
+        OrderExpr {
+            expr: self,
+            direction: OrderDirection::Asc,
+        }
+    }
+
+    /// Descending ordering term.
+    pub fn desc(self) -> OrderExpr {
+        OrderExpr {
+            expr: self,
+            direction: OrderDirection::Desc,
+        }
+    }
 }
 
 impl std::ops::Not for Expr {
@@ -323,6 +339,16 @@ impl<M, T> Field<M, T> {
     /// Untyped expression for this column.
     pub fn expr(self) -> Expr {
         Expr::col(self.name)
+    }
+
+    /// Ascending ordering on this column.
+    pub fn asc(self) -> OrderExpr {
+        self.expr().asc()
+    }
+
+    /// Descending ordering on this column.
+    pub fn desc(self) -> OrderExpr {
+        self.expr().desc()
     }
 }
 

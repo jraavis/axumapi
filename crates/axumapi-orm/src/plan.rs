@@ -263,6 +263,19 @@ impl QueryPlan {
     }
 }
 
+impl Expr {
+    /// Features this expression (including nested subqueries) needs.
+    pub fn required_features(&self) -> Vec<Feature> {
+        let mut out = Vec::new();
+        visit(self, &mut |f| {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        });
+        out
+    }
+}
+
 fn visit(expr: &Expr, need: &mut impl FnMut(Feature)) {
     match expr {
         Expr::Lookup { expr, lookup } => {

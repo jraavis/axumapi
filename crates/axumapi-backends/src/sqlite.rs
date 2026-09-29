@@ -1,13 +1,21 @@
 //! SQLite backend built on SQLx.
+//!
+//! Types without a native SQLite storage class are bound in their canonical
+//! text form ([`canonical_text`]), so they compare and sort correctly and
+//! decode through [`DbType::from_value`](axumapi_orm::DbType::from_value).
 
-use crate::sql::{Sqlite, compile};
+use crate::sql::{CompiledQuery, Sqlite, compile, compile_write};
 use async_trait::async_trait;
+use axumapi_orm::types::canonical_text;
 use axumapi_orm::{
-    Backend, BackendCapabilities, BackendError, OrmError, QueryError, QueryPlan, QueryResult, Row,
-    Value,
+    Backend, BackendCapabilities, BackendError, ExecResult, Executor, IsolationLevel, OrmError,
+    QueryError, QueryPlan, QueryResult, Row, Transaction, Value, WritePlan,
 };
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::{SqliteArguments, SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
+use tokio::sync::Mutex;
+
+type SqlxTx = sqlx::Transaction<'static, sqlx::Sqlite>;
 
 /// SQLite adapter executing compiled plans on a connection pool.
 #[derive(Debug, Clone)]
@@ -16,7 +24,9 @@ pub struct SqliteBackend {
 }
 
 impl SqliteBackend {
-    /// Connect to `url` (e.g. `sqlite::memory:` or `sqlite://app.db`).
+    /// Connect to `url` (e.g. `sqlite::memory:` or `sqlite://app.db?mode=rwc`).
+    ///
+    /// SQLx enables foreign-key enforcement on every SQLite connection.
     ///
     /// # Errors
     /// Returns [`BackendError::Connection`] if the pool cannot be created.
@@ -31,49 +41,196 @@ impl SqliteBackend {
             .map_err(|e| BackendError::Connection(e.to_string()))?;
         Ok(Self { pool })
     }
-
-    /// Execute raw DDL/DML with **no** parameters (schema setup, migrations).
-    ///
-    /// # Errors
-    /// Returns [`BackendError::Database`] on failure.
-    pub async fn execute_script(&self, sql: &str) -> Result<(), BackendError> {
-        sqlx::raw_sql(sql)
-            .execute(&self.pool)
-            .await
-            .map(|_| ())
-            .map_err(map_err)
-    }
 }
 
 #[async_trait]
-impl Backend for SqliteBackend {
+impl Executor for SqliteBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::sqlite()
     }
 
     async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
         let compiled = compile(plan, &Sqlite)?;
-        let mut query = sqlx::query(&compiled.sql);
-        for param in compiled.params {
-            query = match param {
-                Value::Null => query.bind(None::<i64>),
-                Value::Bool(b) => query.bind(b),
-                Value::Int(i) => query.bind(i),
-                Value::Float(f) => query.bind(f),
-                Value::Text(s) => query.bind(s),
-                Value::Bytes(b) => query.bind(b),
-                Value::Json(j) => query.bind(j.to_string()),
-            };
-        }
-        let rows = query.fetch_all(&self.pool).await.map_err(map_err)?;
-        let rows = rows.iter().map(decode_row).collect::<Result<_, _>>()?;
-        Ok(QueryResult { rows })
+        fetch_rows(&self.pool, &compiled.sql, compiled.params).await
     }
+
+    async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
+        let compiled = compile_write(plan, &Sqlite)?;
+        run_write(&self.pool, compiled, !plan.returning().is_empty()).await
+    }
+
+    async fn fetch_raw(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError> {
+        fetch_rows(&self.pool, sql, params).await
+    }
+
+    async fn execute_raw(&self, sql: &str, params: Vec<Value>) -> Result<u64, OrmError> {
+        execute_rows(&self.pool, sql, params).await
+    }
+
+    async fn execute_script(&self, sql: &str) -> Result<(), OrmError> {
+        script_result(sqlx::Executor::execute(&self.pool, sql).await)
+    }
+}
+
+#[async_trait]
+impl Backend for SqliteBackend {
+    async fn begin(
+        &self,
+        isolation: Option<IsolationLevel>,
+    ) -> Result<Box<dyn Transaction>, OrmError> {
+        if let Some(level) = isolation {
+            self.capabilities()
+                .require(axumapi_orm::Feature::Isolation(level))?;
+        }
+        let tx = self.pool.begin().await.map_err(map_err)?;
+        Ok(Box::new(SqliteTransaction {
+            tx: Mutex::new(Some(tx)),
+        }))
+    }
+}
+
+/// An open SQLite transaction. Dropped without commit, it rolls back.
+struct SqliteTransaction {
+    tx: Mutex<Option<SqlxTx>>,
+}
+
+/// Run `$body` with `$conn` bound to the open transaction's connection.
+macro_rules! with_tx {
+    ($self:ident, $conn:ident => $body:expr) => {{
+        let mut guard = $self.tx.lock().await;
+        let tx = guard.as_mut().ok_or(QueryError::TransactionClosed)?;
+        let $conn = &mut **tx;
+        $body
+    }};
+}
+
+#[async_trait]
+impl Executor for SqliteTransaction {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::sqlite()
+    }
+
+    async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
+        let compiled = compile(plan, &Sqlite)?;
+        with_tx!(self, conn => fetch_rows(conn, &compiled.sql, compiled.params).await)
+    }
+
+    async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
+        let compiled = compile_write(plan, &Sqlite)?;
+        let returning = !plan.returning().is_empty();
+        with_tx!(self, conn => run_write(conn, compiled, returning).await)
+    }
+
+    async fn fetch_raw(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError> {
+        with_tx!(self, conn => fetch_rows(conn, sql, params).await)
+    }
+
+    async fn execute_raw(&self, sql: &str, params: Vec<Value>) -> Result<u64, OrmError> {
+        with_tx!(self, conn => execute_rows(conn, sql, params).await)
+    }
+
+    async fn execute_script(&self, sql: &str) -> Result<(), OrmError> {
+        with_tx!(self, conn => script_result(sqlx::Executor::execute(conn, sql).await))
+    }
+}
+
+#[async_trait]
+impl Transaction for SqliteTransaction {
+    async fn commit(&self) -> Result<(), OrmError> {
+        let tx = self
+            .tx
+            .lock()
+            .await
+            .take()
+            .ok_or(QueryError::TransactionClosed)?;
+        tx.commit().await.map_err(|e| map_err(e).into())
+    }
+
+    async fn rollback(&self) -> Result<(), OrmError> {
+        let tx = self
+            .tx
+            .lock()
+            .await
+            .take()
+            .ok_or(QueryError::TransactionClosed)?;
+        tx.rollback().await.map_err(|e| map_err(e).into())
+    }
+}
+
+fn bind_all(
+    sql: &str,
+    params: Vec<Value>,
+) -> sqlx::query::Query<'_, sqlx::Sqlite, SqliteArguments<'_>> {
+    params.into_iter().fold(sqlx::query(sql), |query, param| {
+        if let Some(text) = canonical_text(&param) {
+            return query.bind(text);
+        }
+        match param {
+            Value::Bool(b) => query.bind(b),
+            Value::Int(i) => query.bind(i),
+            Value::Float(f) => query.bind(f),
+            Value::Text(s) => query.bind(s),
+            Value::Bytes(b) => query.bind(b),
+            // `canonical_text` covered every other variant.
+            _ => query.bind(None::<i64>),
+        }
+    })
+}
+
+async fn fetch_rows<'c, E>(ex: E, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+{
+    let rows = bind_all(sql, params).fetch_all(ex).await.map_err(map_err)?;
+    let rows = rows.iter().map(decode_row).collect::<Result<_, _>>()?;
+    Ok(QueryResult { rows })
+}
+
+async fn execute_rows<'c, E>(ex: E, sql: &str, params: Vec<Value>) -> Result<u64, OrmError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+{
+    let done = bind_all(sql, params).execute(ex).await.map_err(map_err)?;
+    Ok(done.rows_affected())
+}
+
+async fn run_write<'c, E>(
+    ex: E,
+    compiled: CompiledQuery,
+    returning: bool,
+) -> Result<ExecResult, OrmError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+{
+    if returning {
+        let rows = fetch_rows(ex, &compiled.sql, compiled.params).await?.rows;
+        Ok(ExecResult {
+            rows_affected: rows.len() as u64,
+            returning: rows,
+        })
+    } else {
+        let rows_affected = execute_rows(ex, &compiled.sql, compiled.params).await?;
+        Ok(ExecResult {
+            rows_affected,
+            returning: Vec::new(),
+        })
+    }
+}
+
+fn script_result(
+    done: Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error>,
+) -> Result<(), OrmError> {
+    done.map(|_| ()).map_err(|e| map_err(e).into())
 }
 
 fn map_err(e: sqlx::Error) -> BackendError {
     match &e {
-        sqlx::Error::Database(db) if db.constraint().is_some() || db.is_unique_violation() => {
+        sqlx::Error::Database(db)
+            if db.constraint().is_some()
+                || db.is_unique_violation()
+                || db.is_foreign_key_violation()
+                || db.is_check_violation() =>
+        {
             BackendError::Constraint(db.message().to_owned())
         }
         _ => BackendError::Database(e.to_string()),
@@ -122,7 +279,7 @@ mod tests {
 
     async fn seeded() -> SqliteBackend {
         let db = SqliteBackend::connect("sqlite::memory:").await.unwrap();
-        db.execute_script(
+        Executor::execute_script(&db,
             "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER);
              INSERT INTO users (name, age) VALUES ('Alice', 30), ('bob', NULL), ('ALINA', 22), ('50%', 1);",
         )

@@ -1,9 +1,10 @@
 //! `QueryPlan` → SQL compiler.
 
 use super::dialect::Dialect;
+use axumapi_orm::expr::Ident;
 use axumapi_orm::{
     BackendKind, BinaryOp, Column, DistinctMode, Expr, JoinKind, LockMode, Lookup, OrderDirection,
-    OrmError, QueryPlan, QuerySource, UnaryOp, Value,
+    OrmError, QueryError, QueryPlan, QuerySource, UnaryOp, Value, WritePlan,
 };
 use std::fmt::Write;
 
@@ -25,20 +26,76 @@ pub struct CompiledQuery {
 /// Returns [`OrmError::Capability`] if the plan needs a feature the dialect
 /// does not declare.
 pub fn compile(plan: &QueryPlan, dialect: &dyn Dialect) -> Result<CompiledQuery, OrmError> {
-    let caps = dialect.capabilities();
-    plan.check(&caps)?;
-    let mut c = Compiler {
-        dialect,
-        native_ilike: caps.ilike,
-        kind: caps.kind,
-        sql: String::new(),
-        params: Vec::new(),
-    };
+    plan.check(&dialect.capabilities())?;
+    let mut c = Compiler::new(dialect);
     c.plan(plan);
-    Ok(CompiledQuery {
-        sql: c.sql,
-        params: c.params,
-    })
+    Ok(c.finish())
+}
+
+/// Compile a write `plan` for `dialect`.
+///
+/// # Errors
+/// [`OrmError::Capability`] for unsupported features (e.g. `RETURNING`), and
+/// [`QueryError::InvalidPlan`] for an insert without rows or with rows whose
+/// length differs from the column list.
+pub fn compile_write(plan: &WritePlan, dialect: &dyn Dialect) -> Result<CompiledQuery, OrmError> {
+    plan.check(&dialect.capabilities())?;
+    let mut c = Compiler::new(dialect);
+    match plan {
+        WritePlan::Insert(p) => {
+            if p.rows.is_empty() || p.rows.iter().any(|r| r.len() != p.columns.len()) {
+                return Err(QueryError::InvalidPlan(
+                    "insert rows must be non-empty and match the column list".into(),
+                )
+                .into());
+            }
+            c.push("INSERT INTO ");
+            c.ident(&p.table);
+            if p.columns.is_empty() {
+                // Only generated columns: one `DEFAULT VALUES` row per statement.
+                if p.rows.len() > 1 {
+                    return Err(QueryError::InvalidPlan(
+                        "multi-row insert needs at least one explicit column".into(),
+                    )
+                    .into());
+                }
+                c.push(" DEFAULT VALUES");
+            } else {
+                c.push(" (");
+                c.list(&p.columns, ", ", |c, col| c.ident(col));
+                c.push(") VALUES ");
+                c.list(&p.rows, ", ", |c, row| {
+                    c.push("(");
+                    c.list(row, ", ", |c, v| c.bind(v.clone()));
+                    c.push(")");
+                });
+            }
+        }
+        WritePlan::Update(p) => {
+            c.push("UPDATE ");
+            c.ident(&p.table);
+            c.push(" SET ");
+            c.list(&p.assignments, ", ", |c, (col, e)| {
+                c.ident(col);
+                c.push(" = ");
+                c.expr(e);
+            });
+            if let Some(f) = &p.filter {
+                c.push(" WHERE ");
+                c.expr(f);
+            }
+        }
+        WritePlan::Delete(p) => {
+            c.push("DELETE FROM ");
+            c.ident(&p.table);
+            if let Some(f) = &p.filter {
+                c.push(" WHERE ");
+                c.expr(f);
+            }
+        }
+    }
+    c.returning(plan.returning());
+    Ok(c.finish())
 }
 
 struct Compiler<'d> {
@@ -57,7 +114,32 @@ enum Anchor {
     End,
 }
 
-impl Compiler<'_> {
+impl<'d> Compiler<'d> {
+    fn new(dialect: &'d dyn Dialect) -> Self {
+        let caps = dialect.capabilities();
+        Self {
+            dialect,
+            native_ilike: caps.ilike,
+            kind: caps.kind,
+            sql: String::new(),
+            params: Vec::new(),
+        }
+    }
+
+    fn finish(self) -> CompiledQuery {
+        CompiledQuery {
+            sql: self.sql,
+            params: self.params,
+        }
+    }
+
+    fn returning(&mut self, columns: &[Ident]) {
+        if !columns.is_empty() {
+            self.push(" RETURNING ");
+            self.list(columns, ", ", |c, col| c.ident(col));
+        }
+    }
+
     fn push(&mut self, s: &str) {
         self.sql.push_str(s);
     }
