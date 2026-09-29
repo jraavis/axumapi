@@ -1,0 +1,16 @@
+[package]
+name = "axumapi-macros"
+description = "Procedural macros for axumapi (Phase 2 scaffolding)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[lib]
+proc-macro = true

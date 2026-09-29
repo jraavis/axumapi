@@ -1,0 +1,17 @@
+[package]
+name = "axumapi"
+description = "Public facade and prelude for the axumapi web framework"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axumapi-core.workspace = true
+axumapi-orm.workspace = true
+axumapi-openapi.workspace = true
+serde.workspace = true

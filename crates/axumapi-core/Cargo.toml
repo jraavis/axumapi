@@ -1,0 +1,25 @@
+[package]
+name = "axumapi-core"
+description = "App, routing, extractors, responses and errors for axumapi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axumapi-orm.workspace = true
+axum.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+axumapi-testkit.workspace = true

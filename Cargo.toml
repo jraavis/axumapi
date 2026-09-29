@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "examples/hello_world"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jraavis/axumapi"
+authors = ["jraavis"]
+
+[workspace.dependencies]
+axumapi = { path = "crates/axumapi" }
+axumapi-core = { path = "crates/axumapi-core" }
+axumapi-macros = { path = "crates/axumapi-macros" }
+axumapi-validation = { path = "crates/axumapi-validation" }
+axumapi-orm = { path = "crates/axumapi-orm" }
+axumapi-backends = { path = "crates/axumapi-backends" }
+axumapi-migrations = { path = "crates/axumapi-migrations" }
+axumapi-openapi = { path = "crates/axumapi-openapi" }
+axumapi-testkit = { path = "crates/axumapi-testkit" }
+
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "matched-path"] }
+http = "1"
+http-body-util = "0.1"
+hyper = "1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "macros"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

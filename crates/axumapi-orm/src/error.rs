@@ -1,0 +1,87 @@
+//! ORM error hierarchy. HTTP mapping lives in `axumapi-core`.
+
+use crate::capabilities::{BackendKind, Feature};
+use thiserror::Error;
+
+/// A feature was requested that the backend does not support.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum BackendCapabilityError {
+    /// `select_for_update` on a backend without row locking.
+    #[error("row locking is not supported by {backend:?}")]
+    RowLockingUnsupported {
+        /// Backend that rejected the request.
+        backend: BackendKind,
+    },
+    /// Any other unsupported feature.
+    #[error("{feature:?} is not supported by {backend:?}")]
+    Unsupported {
+        /// Backend that rejected the request.
+        backend: BackendKind,
+        /// The unsupported feature.
+        feature: Feature,
+    },
+}
+
+impl BackendCapabilityError {
+    /// Build the most specific error variant for `feature`.
+    pub fn from_feature(backend: BackendKind, feature: Feature) -> Self {
+        match feature {
+            Feature::RowLocking => Self::RowLockingUnsupported { backend },
+            feature => Self::Unsupported { backend, feature },
+        }
+    }
+}
+
+/// The query plan is invalid independent of any backend.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum QueryError {
+    /// `get()` matched no rows.
+    #[error("no rows matched the query")]
+    DoesNotExist,
+    /// `get()` matched more than one row.
+    #[error("expected exactly one row, found {0}")]
+    MultipleObjectsReturned(u64),
+    /// Structural problem in the plan.
+    #[error("invalid query plan: {0}")]
+    InvalidPlan(String),
+    /// A decoded value had an unexpected type.
+    #[error("cannot decode column `{column}`: {reason}")]
+    Decode {
+        /// Column name.
+        column: String,
+        /// Reason.
+        reason: String,
+    },
+}
+
+/// Driver / connection level failure.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum BackendError {
+    /// Could not connect or acquire a connection.
+    #[error("database connection error: {0}")]
+    Connection(String),
+    /// The database rejected or failed a statement.
+    #[error("database error: {0}")]
+    Database(String),
+    /// A constraint (unique, foreign key, check) was violated.
+    #[error("constraint violation: {0}")]
+    Constraint(String),
+}
+
+/// Top-level ORM error.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum OrmError {
+    /// Query-construction or result error.
+    #[error(transparent)]
+    Query(#[from] QueryError),
+    /// Backend failure.
+    #[error(transparent)]
+    Backend(#[from] BackendError),
+    /// Capability mismatch.
+    #[error(transparent)]
+    Capability(#[from] BackendCapabilityError),
+}

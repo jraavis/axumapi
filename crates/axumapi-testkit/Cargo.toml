@@ -1,0 +1,19 @@
+[package]
+name = "axumapi-testkit"
+description = "Testing helpers for axumapi applications"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axumapi-core.workspace = true
+http.workspace = true
+tower.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
