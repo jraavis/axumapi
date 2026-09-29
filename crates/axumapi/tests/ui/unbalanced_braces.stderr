@@ -1,0 +1,23 @@
+error: unbalanced `{` at byte 7 of path `/users/{id`
+ --> tests/ui/unbalanced_braces.rs:3:7
+  |
+3 | #[get("/users/{id")]
+  |       ^^^^^^^^^^^^
+
+error: unbalanced `}` at byte 9 of path `/users/id}`
+ --> tests/ui/unbalanced_braces.rs:6:7
+  |
+6 | #[get("/users/id}")]
+  |       ^^^^^^^^^^^^
+
+error: duplicate path parameter `id`
+ --> tests/ui/unbalanced_braces.rs:9:7
+  |
+9 | #[get("/users/{id}/{id}")]
+  |       ^^^^^^^^^^^^^^^^^^
+
+error: invalid path parameter name `{1bad}`: expected an identifier such as `{id}`
+  --> tests/ui/unbalanced_braces.rs:12:7
+   |
+12 | #[get("/users/{1bad}")]
+   |       ^^^^^^^^^^^^^^^

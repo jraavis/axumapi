@@ -1,0 +1,5 @@
+error: flatten is not supported by derive(Schema) yet
+  --> tests/ui/flatten_unsupported.rs:10:13
+   |
+10 |     #[serde(flatten)]
+   |             ^^^^^^^

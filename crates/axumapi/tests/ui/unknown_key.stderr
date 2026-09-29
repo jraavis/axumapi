@@ -1,0 +1,17 @@
+error: unknown route argument `stauts`; expected one of: status, response_model, tag, tags, summary, description, operation_id, deprecated, hidden
+ --> tests/ui/unknown_key.rs:3:18
+  |
+3 | #[post("/users", stauts = 201, tag = "users", tag = "again", tag = "x")]
+  |                  ^^^^^^
+
+error: duplicate `tag` argument
+ --> tests/ui/unknown_key.rs:3:47
+  |
+3 | #[post("/users", stauts = 201, tag = "users", tag = "again", tag = "x")]
+  |                                               ^^^
+
+error: duplicate `tag` argument
+ --> tests/ui/unknown_key.rs:3:62
+  |
+3 | #[post("/users", stauts = 201, tag = "users", tag = "again", tag = "x")]
+  |                                                              ^^^

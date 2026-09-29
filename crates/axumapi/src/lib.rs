@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub use axumapi_core::*;
+pub use axumapi_macros::{Schema, delete, get, head, options, patch, post, put, routes, ws};
 pub use axumapi_openapi as openapi;
 pub use axumapi_orm as orm;
 pub use axumapi_validation as validation;
@@ -25,9 +26,14 @@ pub mod prelude {
         MethodRouter, NoContent, Path, PlainText, Query, Route, ServerError, State, WithStatus,
         delete, get, head, options, patch, post, put,
     };
+    pub use axumapi_macros::{Schema, delete, get, head, options, patch, post, put, routes, ws};
     pub use axumapi_orm as orm;
     pub use axumapi_validation::{
         Schema, SchemaObject, SchemaRegistry, Validate, ValidationError, ValidationResult,
     };
     pub use serde::{Deserialize, Serialize};
 }
+
+/// Support code for macro expansions. Not part of the public API.
+#[doc(hidden)]
+pub mod __private;

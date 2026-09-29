@@ -1,0 +1,5 @@
+error: `#[get]` handlers must be `async fn`
+ --> tests/ui/not_async.rs:4:1
+  |
+4 | fn users() {}
+  | ^^
