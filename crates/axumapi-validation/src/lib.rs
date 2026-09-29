@@ -17,6 +17,6 @@ pub mod validate;
 
 pub use error::{FieldError, LocationItem, ValidationError, ValidationResult};
 pub use rules::{email, ge, gt, le, lt, max_length, min_length, multiple_of, pattern};
-pub use schema::{Schema, SchemaObject};
+pub use schema::{Schema, SchemaConflict, SchemaObject, SchemaRegistry, schema_for};
 pub use types::{BoundedI64, ConstrainedString, Email, PositiveInt, SecretString};
 pub use validate::Validate;

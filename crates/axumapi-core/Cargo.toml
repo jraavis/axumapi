@@ -11,7 +11,14 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+axumapi-openapi.workspace = true
 axumapi-orm.workspace = true
+axumapi-validation.workspace = true
+bytes.workspace = true
+cookie.workspace = true
+futures-util.workspace = true
+tower-http.workspace = true
+uuid.workspace = true
 axum.workspace = true
 http.workspace = true
 serde.workspace = true
@@ -22,4 +29,5 @@ tower.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+jsonschema.workspace = true
 axumapi-testkit.workspace = true

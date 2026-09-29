@@ -22,7 +22,17 @@ axumapi-openapi = { path = "crates/axumapi-openapi" }
 axumapi-testkit = { path = "crates/axumapi-testkit" }
 
 async-trait = "0.1"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "matched-path"] }
+bytes = "1"
+cookie = { version = "0.18", features = ["percent-encode"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+jsonschema = { version = "0.58", default-features = false }
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "compression-br", "request-id", "trace", "timeout", "fs", "limit", "set-header", "util", "normalize-path"] }
+trybuild = "1"
+uuid = { version = "1", features = ["v4"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "form", "multipart", "ws", "tokio", "matched-path", "original-uri"] }
 http = "1"
 http-body-util = "0.1"
 hyper = "1"

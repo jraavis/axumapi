@@ -1,7 +1,7 @@
 //! Shared application state extractor.
 
 use crate::error::ApiError;
-use axum::extract::FromRequestParts;
+use crate::extract::FromRequestParts;
 use http::request::Parts;
 use std::sync::Arc;
 
@@ -9,14 +9,14 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct State<T>(pub Arc<T>);
 
-impl<T, S> FromRequestParts<S> for State<T>
-where
-    T: Send + Sync + 'static,
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
+impl<T> Clone for State<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, ApiError> {
+impl<T: Send + Sync + 'static> FromRequestParts for State<T> {
+    async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
         parts
             .extensions
             .get::<Arc<T>>()

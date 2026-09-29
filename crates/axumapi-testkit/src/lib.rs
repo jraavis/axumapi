@@ -61,9 +61,25 @@ pub struct TestClient {
 
 impl TestClient {
     /// Wrap `app`.
+    ///
+    /// # Errors
+    /// Returns the app's configuration error (duplicate routes, invalid
+    /// paths, OpenAPI generation failures).
+    pub fn try_new(app: App) -> Result<Self, axumapi_core::ServerError> {
+        Ok(Self {
+            service: app.into_router_service()?,
+        })
+    }
+
+    /// Wrap `app`, for use in tests.
+    ///
+    /// # Panics
+    /// Panics if the app is misconfigured; use [`TestClient::try_new`] to
+    /// assert on configuration errors.
     pub fn new(app: App) -> Self {
-        Self {
-            service: app.into_router_service(),
+        match Self::try_new(app) {
+            Ok(client) => client,
+            Err(err) => panic!("invalid app configuration: {err}"),
         }
     }
 

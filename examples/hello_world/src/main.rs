@@ -12,6 +12,30 @@ struct Message {
     message: String,
 }
 
+// `#[derive(Schema)]` replaces these impls once the macros land.
+impl Schema for Greeting {
+    fn schema(r: &mut SchemaRegistry) -> SchemaObject {
+        SchemaObject::of_type("object").with(
+            "properties",
+            serde_json::json!({ "shout": r.subschema::<Option<bool>>() }),
+        )
+    }
+}
+
+impl Schema for Message {
+    fn schema_name() -> Option<&'static str> {
+        Some("Message")
+    }
+    fn schema(r: &mut SchemaRegistry) -> SchemaObject {
+        SchemaObject::of_type("object")
+            .with(
+                "properties",
+                serde_json::json!({ "message": r.subschema::<String>() }),
+            )
+            .with("required", serde_json::json!(["message"]))
+    }
+}
+
 async fn index() -> PlainText<&'static str> {
     PlainText("Hello, axumapi!")
 }

@@ -1,6 +1,7 @@
 //! End-to-end HTTP behaviour through the in-process test client.
 
 use axumapi_core::*;
+use axumapi_openapi::{Schema, SchemaObject, SchemaRegistry};
 use axumapi_orm::{OrmError, QueryError};
 use axumapi_testkit::TestClient;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,25 @@ struct Params {
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct Item {
     id: u32,
+}
+
+impl Schema for Params {
+    fn schema(r: &mut SchemaRegistry) -> SchemaObject {
+        SchemaObject::of_type("object")
+            .with("properties", json!({ "shout": r.subschema::<bool>() }))
+            .with("required", json!(["shout"]))
+    }
+}
+
+impl Schema for Item {
+    fn schema_name() -> Option<&'static str> {
+        Some("Item")
+    }
+    fn schema(r: &mut SchemaRegistry) -> SchemaObject {
+        SchemaObject::of_type("object")
+            .with("properties", json!({ "id": r.subschema::<u32>() }))
+            .with("required", json!(["id"]))
+    }
 }
 
 async fn hello(Path(name): Path<String>, Query(p): Query<Params>) -> PlainText<String> {

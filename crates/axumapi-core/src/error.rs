@@ -1,8 +1,9 @@
 //! Error types: RFC 7807 problem details, server and body errors.
 
-use axum::response::{IntoResponse, Response};
+use crate::response::{IntoResponse, Response, with_content_type};
+use axumapi_openapi::{Operation, Schema, SchemaObject, SchemaRegistry};
 use axumapi_orm::{OrmError, QueryError};
-use http::{HeaderValue, StatusCode, header};
+use http::StatusCode;
 use serde::Serialize;
 use serde_json::Value;
 use std::fmt::Display;
@@ -117,12 +118,42 @@ impl IntoResponse for ApiError {
             errors: self.errors.as_ref(),
         };
         let body = serde_json::to_vec(&problem).unwrap_or_else(|_| FALLBACK_BODY.to_vec());
-        let mut response = Response::new(axum::body::Body::from(body));
+        let mut response = with_content_type(PROBLEM_JSON, body);
         *response.status_mut() = self.status;
         response
-            .headers_mut()
-            .insert(header::CONTENT_TYPE, HeaderValue::from_static(PROBLEM_JSON));
-        response
+    }
+
+    fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {
+        let schema = registry.subschema::<ProblemSchema>();
+        op.add_response(
+            "default",
+            "Error (RFC 7807 problem details)",
+            Some((PROBLEM_JSON, schema)),
+        );
+    }
+}
+
+/// Schema of the RFC 7807 document produced by [`ApiError`].
+struct ProblemSchema;
+
+impl Schema for ProblemSchema {
+    fn schema_name() -> Option<&'static str> {
+        Some("Problem")
+    }
+
+    fn schema(_: &mut SchemaRegistry) -> SchemaObject {
+        SchemaObject::of_type("object")
+            .with(
+                "properties",
+                serde_json::json!({
+                    "type": {"type": "string"},
+                    "title": {"type": "string"},
+                    "status": {"type": "integer"},
+                    "detail": {"type": "string"},
+                    "errors": {}
+                }),
+            )
+            .with("required", serde_json::json!(["type", "title", "status"]))
     }
 }
 
@@ -155,6 +186,12 @@ pub enum ServerError {
         #[source]
         source: std::io::Error,
     },
+    /// The application is misconfigured (detected before serving).
+    #[error("invalid application configuration: {0}")]
+    Configuration(String),
+    /// A startup or shutdown hook failed.
+    #[error("lifespan hook failed: {0}")]
+    Lifespan(#[source] ApiError),
     /// The server failed while serving connections.
     #[error("server error: {0}")]
     Serve(#[source] std::io::Error),
