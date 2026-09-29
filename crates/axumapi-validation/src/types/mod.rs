@@ -8,7 +8,119 @@ use serde::{Deserialize, Serialize};
 use crate::error::FieldError;
 use crate::rules;
 
+mod decimal;
+mod float;
+mod int;
+mod ip;
+mod url;
+mod uuid;
+mod vec;
+
+pub use decimal::{Decimal, UnboundedDecimal};
+pub use float::{BoundedFloat, FloatBounds, NonNegative, Positive, UnitInterval};
+pub use int::{NegativeInt, NonNegativeInt};
+pub use ip::{IpAddress, Ipv4Address, Ipv6Address};
+pub use url::{HttpUrl, Url};
+pub use uuid::Uuid;
+pub use vec::ConstrainedVec;
+
 const REDACTED: &str = "**********";
+
+/// Shared `into_inner` / `AsRef` / `Deref` / `Display` / `From` for wrapper newtypes.
+///
+/// `TryFrom` is left to each type because the input of `new` is not always
+/// the inner stored type (string-parsed wrappers store a parsed value).
+macro_rules! impl_wrapper {
+    (<$($gen:tt)+> $ty:ty => $inner:ty) => {
+        impl<$($gen)+> $ty {
+            /// Unwrap the inner value.
+            pub fn into_inner(self) -> $inner {
+                self.0
+            }
+        }
+
+        impl<$($gen)+> AsRef<$inner> for $ty {
+            fn as_ref(&self) -> &$inner {
+                &self.0
+            }
+        }
+
+        impl<$($gen)+> ::std::ops::Deref for $ty {
+            type Target = $inner;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl<$($gen)+> ::std::fmt::Display for $ty
+        where
+            $inner: ::std::fmt::Display,
+        {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+
+        impl<$($gen)+> From<$ty> for $inner {
+            fn from(value: $ty) -> Self {
+                value.0
+            }
+        }
+    };
+    ($ty:ty => $inner:ty) => {
+        impl $ty {
+            /// Unwrap the inner value.
+            pub fn into_inner(self) -> $inner {
+                self.0
+            }
+        }
+
+        impl AsRef<$inner> for $ty {
+            fn as_ref(&self) -> &$inner {
+                &self.0
+            }
+        }
+
+        impl ::std::ops::Deref for $ty {
+            type Target = $inner;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl ::std::fmt::Display for $ty
+        where
+            $inner: ::std::fmt::Display,
+        {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+
+        impl From<$ty> for $inner {
+            fn from(value: $ty) -> Self {
+                value.0
+            }
+        }
+    };
+}
+pub(crate) use impl_wrapper;
+
+/// Run [`String`]'s prepare (type check + model string transforms).
+///
+/// Returns `true` when no new error was recorded, so callers can apply a
+/// constraint check to the (possibly rewritten) string slot.
+pub(super) fn prepare_as_string(
+    input: &mut serde_json::Value,
+    ctx: &mut crate::context::ValidationContext,
+) -> bool {
+    use crate::validate::Validate;
+    let before = ctx.error_count();
+    String::prepare(input, ctx);
+    ctx.error_count() == before
+}
 
 /// UTF-8 string whose character length is in `MIN..=MAX`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -282,7 +394,24 @@ impl crate::dump::Dump for Email {}
 impl crate::dump::Dump for SecretString {}
 
 #[cfg(test)]
+pub(super) fn prepare_codes<T: crate::validate::Validate>(
+    mut input: serde_json::Value,
+    mut ctx: crate::context::ValidationContext,
+) -> (serde_json::Value, Vec<String>) {
+    T::prepare(&mut input, &mut ctx);
+    let codes = ctx
+        .take_errors()
+        .errors
+        .into_iter()
+        .map(|e| e.code.into_owned())
+        .collect();
+    (input, codes)
+}
+
+#[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     type Username = ConstrainedString<2, 8>;
