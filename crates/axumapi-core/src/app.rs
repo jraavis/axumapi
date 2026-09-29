@@ -93,6 +93,8 @@ pub struct App {
     pub(crate) router_layers: Vec<RouterLayer>,
     /// Services mounted at prefixes (e.g. static files); not documented.
     pub(crate) services: Vec<RouterLayer>,
+    /// Replaces the default 404 problem fallback (e.g. root static files).
+    pub(crate) fallback: Option<RouterLayer>,
     pub(crate) startup_hooks: Vec<LifespanHook>,
     pub(crate) shutdown_hooks: Vec<LifespanHook>,
     /// Middleware; the first registered is the outermost.
@@ -123,7 +125,7 @@ impl Default for App {
     }
 }
 
-async fn route_not_found() -> axum::response::Response {
+pub(crate) async fn route_not_found() -> axum::response::Response {
     ApiError::not_found("No route matches the requested path.")
         .into_response()
         .map(Body::into_inner)
@@ -139,6 +141,7 @@ impl App {
             mounts: Vec::new(),
             router_layers: Vec::new(),
             services: Vec::new(),
+            fallback: None,
             startup_hooks: Vec::new(),
             shutdown_hooks: Vec::new(),
             middleware: Vec::new(),
@@ -305,7 +308,7 @@ impl App {
         mut self,
         hooks: &mut Lifespan,
         root: bool,
-    ) -> (axum::Router, Vec<RouterLayer>) {
+    ) -> (axum::Router, Vec<RouterLayer>, Option<RouterLayer>) {
         hooks.startup.append(&mut self.startup_hooks);
         // Own shutdown hooks come before the children's in the list; shutdown runs
         // the list reversed, so children stop first, mirroring startup.
@@ -324,11 +327,16 @@ impl App {
             router = router.route(&path, method_router);
         }
         for mount in self.mounts {
-            let (child, middleware) = mount.app.build_router(hooks, false);
+            let (child, middleware, _) = mount.app.build_router(hooks, false);
             router = router.nest(&mount.prefix, apply_middleware(child, middleware));
         }
         for service in self.services {
             router = service(router);
+        }
+        // The root app installs its fallback in `build`, after the docs routes.
+        let mut fallback = self.fallback;
+        if !root && let Some(f) = fallback.take() {
+            router = f(router);
         }
         if root || !self.di.is_empty() {
             router = di::install(router, self.di);
@@ -337,7 +345,7 @@ impl App {
             .router_layers
             .into_iter()
             .fold(router, |r, layer| layer(r));
-        (router, self.middleware)
+        (router, self.middleware, fallback)
     }
 
     /// Validate and build the root router, including documentation routes.
@@ -349,7 +357,7 @@ impl App {
         let docs = self.docs.clone();
         let title = self.meta.title.clone();
         let mut hooks = Lifespan::default();
-        let (mut router, middleware) = self.build_router(&mut hooks, true);
+        let (mut router, middleware, fallback) = self.build_router(&mut hooks, true);
         if let Some(spec_url) = docs.openapi_url {
             let json = serde_json::to_string(&openapi)
                 .map_err(|e| ServerError::Configuration(e.to_string()))?;
@@ -363,7 +371,11 @@ impl App {
                 router = router.route(&url, static_route("text/html; charset=utf-8", html));
             }
         }
-        let router = apply_middleware(router.fallback(route_not_found), middleware);
+        let router = match fallback {
+            Some(install) => install(router),
+            None => router.fallback(route_not_found),
+        };
+        let router = apply_middleware(router, middleware);
         Ok((router, hooks))
     }
 

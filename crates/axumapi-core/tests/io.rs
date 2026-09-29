@@ -603,3 +603,42 @@ fn temp_dir() -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+mod phase2_fixes {
+    use super::*;
+
+    async fn ua(
+        h: Option<axumapi_core::header::Header<axumapi_core::header::UserAgent>>,
+    ) -> &'static str {
+        if h.is_some() { "yes" } else { "no" }
+    }
+
+    #[test]
+    fn optional_header_is_documented_as_optional() {
+        let doc = App::new()
+            .route("/ua", get(ua))
+            .openapi()
+            .unwrap()
+            .to_value();
+        let p = &doc["paths"]["/ua"]["get"]["parameters"][0];
+        assert_eq!(p["in"], "header");
+        assert_eq!(p["required"], false);
+    }
+
+    #[tokio::test]
+    async fn root_static_files_serve_files_and_keep_problem_404() {
+        let dir = std::env::temp_dir().join(format!("axumapi-root-static-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("hello.txt"), "hi").unwrap();
+        let client = TestClient::new(
+            App::new()
+                .route("/api", get(|| async { "api" }))
+                .static_files("/", &dir),
+        );
+        assert_eq!(client.get("/hello.txt").await.unwrap().text(), "hi");
+        assert_eq!(client.get("/api").await.unwrap().text(), "api");
+        let missing = client.get("/nope.txt").await.unwrap();
+        assert_eq!(missing.status, 404);
+        assert_eq!(missing.content_type(), Some("application/problem+json"));
+    }
+}

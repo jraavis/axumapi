@@ -56,6 +56,22 @@ impl<T: FromRequestParts> FromRequestParts for Option<T> {
     async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
         Ok(T::from_request_parts(parts).await.ok())
     }
+
+    /// Documents `T`, with everything it adds marked optional.
+    fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {
+        let before = op.parameters.len();
+        let had_body = op.request_body.is_some();
+        <T as FromRequestParts>::describe(op, registry);
+        for p in &mut op.parameters[before..] {
+            // OpenAPI requires path parameters to be required.
+            if p.location != ParameterLocation::Path {
+                p.required = false;
+            }
+        }
+        if !had_body && let Some(body) = &mut op.request_body {
+            body.required = false;
+        }
+    }
 }
 
 /// Build a 422 error with one location-tagged entry.

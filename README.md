@@ -2,25 +2,34 @@
 
 A FastAPI-style Rust web framework with Pydantic-style validation and a Django-style ORM. It is async-first, type-safe, and targets stable Rust (edition 2024, MSRV 1.92).
 
-> **Status: Phase 1 (foundation), pre-alpha.** The APIs will change. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) lists what is implemented and what is scaffolding.
+> **Status: Phase 2 (HTTP framework), pre-alpha.** The APIs will change. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) lists what is implemented and what is scaffolding.
 
 ```rust
 use axumapi::prelude::*;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Schema)]
 struct Greeting { shout: Option<bool> }
 
-async fn hello(Path(name): Path<String>, Query(q): Query<Greeting>) -> ApiResult<PlainText<String>> {
+#[derive(Serialize, Deserialize, Schema)]
+struct Message { message: String }
+
+/// Greet somebody by name.
+#[get("/hello/{name}", tag = "greetings")]
+async fn hello(Path(name): Path<String>, Query(q): Query<Greeting>) -> PlainText<String> {
     let msg = format!("hello, {name}");
-    Ok(PlainText(if q.shout.unwrap_or(false) { msg.to_uppercase() } else { msg }))
+    PlainText(if q.shout.unwrap_or(false) { msg.to_uppercase() } else { msg })
 }
 
+#[post("/echo", status = 201)]
+async fn echo(Json(m): Json<Message>) -> Json<Message> { Json(m) }
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    App::new().title("Hello").route("/hello/{name}", get(hello)).run("127.0.0.1:8000").await?;
-    Ok(())
+async fn main() -> Result<(), ServerError> {
+    App::new().title("Hello").routes(routes![hello, echo]).run("127.0.0.1:8000").await
 }
 ```
+
+OpenAPI 3.1 is generated from the handler signatures and served at `/openapi.json`, `/docs` (Swagger UI) and `/redoc`.
 
 A typed query DSL compiles to a backend-neutral `QueryPlan`:
 
@@ -41,7 +50,9 @@ let plan = QueryPlan::from_table("posts")
 | `axumapi-orm` | QueryPlan IR, typed expressions, backend capabilities |
 | `axumapi-backends` | SQL compiler (PostgreSQL/SQLite) and SQLite executor |
 | `axumapi-testkit` | In-process `TestClient` |
-| `axumapi-macros`, `-openapi`, `-migrations`, `-cli` | Scaffolding for later phases |
+| `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Schema)]` |
+| `axumapi-openapi` | OpenAPI 3.1 model, builder, docs UIs |
+| `axumapi-migrations`, `-cli` | Scaffolding for later phases |
 
 ## Development
 
@@ -54,8 +65,8 @@ cargo run -p hello_world
 
 ## Roadmap
 
-1. **Foundation**: done
-2. HTTP framework: route macros, DI, middleware, WebSockets, OpenAPI
+1. Foundation: done
+2. HTTP framework: done (route macros, DI, middleware, lifespan, WebSockets, OpenAPI 3.1)
 3. Validation derives and serialization
 4. ORM models, QuerySet, relations, transactions, migrations
 5. MySQL, MongoDB, Redis

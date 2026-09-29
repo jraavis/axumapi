@@ -27,16 +27,29 @@ pub mod static_files;
 pub mod ws;
 
 pub use app::{App, AppMeta, DocsConfig};
+pub use background::{BackgroundTasks, Task, TaskId, TaskQueue, TaskQueueError};
 pub use body::Body;
+pub use di::{Dependency, DependencyError, Depends, Provided, RequestHead, ResolveContext};
 pub use error::{ApiError, ApiResult, BodyError, ServerError};
 pub use extract::{FromRequest, FromRequestParts, Path, Query, RawRequest, Request};
+pub use form::{DEFAULT_MULTIPART_LIMIT, Form, Multipart, MultipartField};
 pub use handler::Handler;
+pub use header::{
+    Accept, Cookies, Header, NamedHeader, SameSite, SetCookie, UserAgent, WithCookies,
+};
+pub use lifespan::{Lifespan, Resource};
+pub use middleware::{
+    BodyLimit, BoxService, Compression, ConcurrencyLimit, Cors, HttpsRedirect, Next, RateLimit,
+    RequestId, RequestIdLayer, RequestLogging, Timeout, TrustedHosts, from_fn,
+};
 pub use response::{Html, IntoResponse, Json, NoContent, PlainText, Response, WithStatus};
+pub use responses::{FileResponse, Redirect, StreamingResponse, WithHeaders};
 pub use routing::{
     MethodRouter, OperationMeta, Route, delete, get, head, options, patch, post, put,
 };
 pub use service::RouterService;
 pub use state::State;
+pub use ws::{CloseFrame, Message, WebSocket, WebSocketResponse, WebSocketUpgrade, WsError};
 
 /// Re-exports of standard HTTP types used in the public API.
 pub mod http {

@@ -37,10 +37,11 @@ async fn echo(Json(message): Json<Message>) -> Json<Message> {
 
 #[tokio::main]
 async fn main() -> Result<(), ServerError> {
+    let addr = std::env::var("ADDR").unwrap_or_else(|_| "127.0.0.1:8000".to_owned());
     App::new()
         .title("Hello World")
         .version("1.0.0")
         .routes(routes![index, hello, echo])
-        .run("0.0.0.0:8000")
+        .run(&addr)
         .await
 }

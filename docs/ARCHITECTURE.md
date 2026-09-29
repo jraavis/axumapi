@@ -2,7 +2,7 @@
 
 `axumapi` is an async-first Rust web framework. It takes its API ergonomics from FastAPI, its validation model from Pydantic v2 and its ORM ergonomics from the Django ORM. It favours **compilable, idiomatic Rust** over Python look-alike syntax: where a Python feature has no natural Rust mapping, we design a Rust equivalent and document how it differs.
 
-> Status: **Phase 1 (foundation)**. The table in [Crate map](#crate-map) says what is real and what is scaffolding.
+> Status: **Phase 2 (HTTP framework) complete**. The table in [Crate map](#crate-map) says what is real and what is scaffolding.
 
 ## Crate map
 
@@ -28,22 +28,23 @@ flowchart TD
 | Crate | Owns | Phase 1 status |
 |---|---|---|
 | `axumapi` | Public facade, `prelude` | Implemented |
-| `axumapi-core` | `App`, routing, extractors, responses, `ApiError` (RFC 7807), `ApiResult` | Implemented (no macros yet) |
-| `axumapi-validation` | `Validate`, structured `ValidationError`, rules, constrained newtypes, `Schema`/`SchemaObject` | Implemented (no derive yet) |
+| `axumapi-core` | `App`, own `Handler`/extractor/response traits, DI, middleware, lifespan, WebSockets, forms, headers/cookies, background tasks, static files, RFC 7807 errors | Implemented |
+| `axumapi-validation` | `Validate`, structured `ValidationError`, rules, constrained newtypes, `Schema` + `SchemaRegistry` | Implemented (`Validate` derive: Phase 3) |
 | `axumapi-orm` | `QueryPlan` IR, `Expr` AST, typed `Field<M, T>`, `BackendCapabilities`, `Backend` trait, ORM errors | Implemented |
 | `axumapi-backends` | Dialect-aware SQL compiler (PostgreSQL, SQLite), SQLite executor | Implemented; PostgreSQL *execution* deferred |
-| `axumapi-macros` | Route macros, `Validate`/`Schema`/`Model` derives | Scaffolding (Phase 2–4) |
-| `axumapi-openapi` | OpenAPI 3.1 document generation | Scaffolding (Phase 2) |
+| `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Schema)]`; later `Validate`/`Model` | Route + Schema macros implemented |
+| `axumapi-openapi` | Typed OpenAPI 3.1 model, document builder, Swagger UI / ReDoc | Implemented |
 | `axumapi-migrations` | Migration graph, operations, schema diff | Scaffolding (Phase 4) |
 | `axumapi-cli` | `axumapi` binary | Scaffolding (Phase 6) |
-| `axumapi-testkit` | `TestClient` for in-process HTTP tests | Implemented |
+| `axumapi-testkit` | `TestClient` (in-process), lifespan-aware `start`/`shutdown` | Implemented |
 
 ### Dependency rules
 
 1. **The ORM has no HTTP knowledge.** `axumapi-orm` does not depend on `axumapi-core`. The core crate implements `From<OrmError> for ApiError`; the orphan rule allows this because core owns `ApiError`.
 2. **Schema metadata lives in validation.** `Schema`/`SchemaObject` sit in `axumapi-validation` so that core (request bodies) and openapi (documents) share one definition without a cycle.
 3. **Backends depend on the ORM, never the reverse.** The ORM defines the `Backend` trait and the capability model; each backend implements them.
-4. **Axum and SQLx are internal.** Public types are axumapi newtypes (`Json`, `Path`, `Query`, `State`, `MethodRouter`, …). Users can therefore upgrade axum or SQLx without breaking changes, and non-SQL backends are not second-class citizens.
+4. **HTTP traits are axumapi's own.** `FromRequestParts`, `FromRequest`, `IntoResponse` and `Handler` carry `describe` hooks, so OpenAPI is derived from handler signatures and custom extractors document themselves. See [ROUTING.md](ROUTING.md) and [OPENAPI.md](OPENAPI.md).
+5. **Axum and SQLx are internal.** Public types are axumapi newtypes (`Json`, `Path`, `Query`, `State`, `MethodRouter`, …). Users can therefore upgrade axum or SQLx without breaking changes, and non-SQL backends are not second-class citizens.
 
 ## Key architectural decisions
 
