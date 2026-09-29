@@ -193,9 +193,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axumapi-orm",
+ "chrono",
+ "rust_decimal",
+ "serde_json",
  "sqlx",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

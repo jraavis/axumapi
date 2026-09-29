@@ -79,6 +79,8 @@ pub enum Feature {
     DistinctOn,
     /// `ILIKE` style case-insensitive matching natively.
     CaseInsensitiveLike,
+    /// `STDDEV` / `VARIANCE` aggregates.
+    StatisticalAggregates,
     /// Nested transactions via savepoints.
     Savepoints,
     /// A specific transaction isolation level.
@@ -108,6 +110,11 @@ pub struct BackendCapabilities {
     pub distinct_on: bool,
     /// Native `ILIKE`.
     pub ilike: bool,
+    /// `STDDEV` / `VARIANCE` aggregates.
+    pub statistical_aggregates: bool,
+    /// Most bind parameters one statement may carry; bulk operations chunk
+    /// their rows to stay below it.
+    pub max_params: usize,
     /// Isolation levels that can be requested explicitly.
     pub isolation_levels: &'static [IsolationLevel],
 }
@@ -126,6 +133,8 @@ impl BackendCapabilities {
             arrays: true,
             distinct_on: true,
             ilike: true,
+            statistical_aggregates: true,
+            max_params: 65_535,
             isolation_levels: &[
                 IsolationLevel::ReadCommitted,
                 IsolationLevel::RepeatableRead,
@@ -136,8 +145,9 @@ impl BackendCapabilities {
 
     /// Capabilities of SQLite (3.35+ for `RETURNING`, 3.25+ for windows).
     ///
-    /// SQLite has no row locking and no built-in `REGEXP` function. Its
-    /// transactions are always serializable.
+    /// SQLite has no row locking, no built-in `REGEXP` function and no
+    /// `STDDEV` / `VARIANCE`. Its transactions are always serializable. The
+    /// parameter limit is that of SQLite 3.32 and later.
     pub const fn sqlite() -> Self {
         Self {
             kind: BackendKind::Sqlite,
@@ -150,6 +160,8 @@ impl BackendCapabilities {
             arrays: false,
             distinct_on: false,
             ilike: false,
+            statistical_aggregates: false,
+            max_params: 32_766,
             isolation_levels: &[IsolationLevel::Serializable],
         }
     }
@@ -164,6 +176,7 @@ impl BackendCapabilities {
             Feature::WindowFunctions => self.window_functions,
             Feature::Regex => self.regex,
             Feature::Arrays => self.arrays,
+            Feature::StatisticalAggregates => self.statistical_aggregates,
             Feature::DistinctOn => self.distinct_on,
             // Emulated with LOWER(..) LIKE LOWER(..) where not native.
             Feature::CaseInsensitiveLike => true,
