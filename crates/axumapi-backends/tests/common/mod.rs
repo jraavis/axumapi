@@ -6,8 +6,8 @@ use axumapi_backends::sqlite::SqliteBackend;
 use axumapi_orm::types::decode;
 use axumapi_orm::{
     Db, DbDefault, DbType, Field, FieldMeta, ForeignKey, ManyToManyManager, ManyToManyMeta, Model,
-    ModelMeta, OnDelete, OrderDirection, QueryError, RelationKind, RelationMeta, Row, Value,
-    read_column,
+    ModelMeta, OnDelete, OrderDirection, QueryError, Relation, RelationKind, RelationMeta, Row,
+    Value, read_column,
 };
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use rust_decimal::Decimal;
@@ -113,6 +113,11 @@ impl Author {
             age,
             team: None,
         }
+    }
+
+    /// `select_related` / `prefetch_related` handle for `team`.
+    pub fn team_relation() -> Relation<Author, Team> {
+        Relation::new(Author::team, |a| &mut a.team)
     }
 
     pub fn books(&self, db: &Db) -> axumapi_orm::QuerySet<Book> {
@@ -271,6 +276,11 @@ impl Book {
             dislikes: 0,
             published: NaiveDate::from_ymd_opt(2020, 1, 15).unwrap(),
         }
+    }
+
+    /// `select_related` / `prefetch_related` handle for `author`.
+    pub fn author_relation() -> Relation<Book, Author> {
+        Relation::new(Book::author, |b| &mut b.author)
     }
 
     pub fn tags(&self, db: &Db) -> ManyToManyManager<Book, Tag> {

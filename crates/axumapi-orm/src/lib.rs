@@ -20,6 +20,7 @@ pub mod db;
 pub mod decode;
 pub mod error;
 pub mod expr;
+mod m2m;
 pub mod model;
 pub mod ops;
 mod persist;
@@ -54,7 +55,7 @@ pub use plan::{
     Compound, DistinctMode, JoinExpr, JoinKind, LockMode, OrderDirection, OrderExpr, QueryPlan,
     QuerySource, SelectExpr, SetOp,
 };
-pub use queryset::QuerySet;
+pub use queryset::{Page, Prefetch, QuerySet, Relation};
 pub use relations::{ForeignKey, ManyToManyManager, OneToOne};
 pub use types::{DbType, SqlType};
 pub use value::Value;

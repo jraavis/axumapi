@@ -1,6 +1,7 @@
 //! Terminal methods that read models.
 
 use super::QuerySet;
+use super::related::attach_all;
 use crate::backend::{QueryResult, Row};
 use crate::error::{OrmError, QueryError};
 use crate::expr::Expr;
@@ -88,11 +89,14 @@ impl<M: Model> QuerySet<M> {
             return Ok(Vec::new());
         }
         let result = self.db.fetch(&self.plan).await?;
-        result
-            .rows
-            .into_iter()
-            .map(|row| Ok((M::from_row(&row, "")?, row)))
-            .collect()
+        let mut models = Vec::with_capacity(result.rows.len());
+        for row in &result.rows {
+            let mut model = M::from_row(row, "")?;
+            attach_all(&mut model, &self.related, row)?;
+            models.push(model);
+        }
+        self.run_prefetches(&mut models).await?;
+        Ok(models.into_iter().zip(result.rows).collect())
     }
 
     /// The first row, if any. An unordered queryset is ordered by primary key.

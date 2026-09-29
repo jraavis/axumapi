@@ -21,17 +21,21 @@
 
 mod combine;
 mod fetch;
+mod related;
 mod rows;
 mod write;
 
 pub use fetch::Page;
+pub use related::{Prefetch, Relation};
 
 use crate::db::Db;
 use crate::error::QueryError;
 use crate::expr::{Column, Expr, Ident};
 use crate::model::Model;
 use crate::plan::{DistinctMode, LockMode, OrderDirection, OrderExpr, QueryPlan, SelectExpr};
+use related::{Prefetcher, RelNode};
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// Lazy query over model `M`.
 pub struct QuerySet<M: Model> {
@@ -44,6 +48,10 @@ pub struct QuerySet<M: Model> {
     default_ordering: bool,
     /// `none()`: terminals return empty results without touching the database.
     empty: bool,
+    /// Joined models loaded by `select_related`.
+    related: Vec<RelNode>,
+    /// Extra queries run by `prefetch_related`.
+    prefetches: Vec<Arc<dyn Prefetcher<M>>>,
     /// First problem found while building; returned by terminals.
     error: Option<QueryError>,
     _model: PhantomData<fn() -> M>,
@@ -57,6 +65,8 @@ impl<M: Model> Clone for QuerySet<M> {
             annotations: self.annotations.clone(),
             default_ordering: self.default_ordering,
             empty: self.empty,
+            related: self.related.clone(),
+            prefetches: self.prefetches.clone(),
             error: self.error.clone(),
             _model: PhantomData,
         }
@@ -85,6 +95,8 @@ impl<M: Model> QuerySet<M> {
             annotations: Vec::new(),
             default_ordering: !M::META.ordering.is_empty(),
             empty: false,
+            related: Vec::new(),
+            prefetches: Vec::new(),
             error: None,
             _model: PhantomData,
         }
