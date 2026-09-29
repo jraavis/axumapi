@@ -1,6 +1,6 @@
 [package]
 name = "axumapi-cli"
-description = "The axumapi command-line tool (scaffolding)"
+description = "The axumapi command-line tool"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,14 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+axumapi-backends = { workspace = true, features = ["sqlite"] }
+axumapi-migrations.workspace = true
+axumapi-orm.workspace = true
+tokio.workspace = true
+
+[features]
+default = []
+postgres = ["axumapi-backends/postgres"]
 
 [[bin]]
 name = "axumapi"

@@ -201,6 +201,12 @@ dependencies = [
 [[package]]
 name = "axumapi-cli"
 version = "0.1.0"
+dependencies = [
+ "axumapi-backends",
+ "axumapi-migrations",
+ "axumapi-orm",
+ "tokio",
+]
 
 [[package]]
 name = "axumapi-core"
@@ -241,8 +247,13 @@ dependencies = [
 name = "axumapi-migrations"
 version = "0.1.0"
 dependencies = [
+ "axumapi-backends",
  "axumapi-orm",
+ "chrono",
+ "serde",
+ "serde_json",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
