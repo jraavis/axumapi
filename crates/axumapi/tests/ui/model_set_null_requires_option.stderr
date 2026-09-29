@@ -1,0 +1,5 @@
+error: `on_delete = "set_null"` requires a nullable field: use `Option<ForeignKey<..>>`
+  --> tests/ui/model_set_null_requires_option.rs:13:25
+   |
+13 |     #[field(on_delete = "set_null")]
+   |                         ^^^^^^^^^^

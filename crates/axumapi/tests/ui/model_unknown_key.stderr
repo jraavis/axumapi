@@ -1,0 +1,5 @@
+error: unknown `model` key `tabel`; valid keys: table, ordering, indexes, unique_together, checks, managed, many_to_many
+ --> tests/ui/model_unknown_key.rs:4:9
+  |
+4 | #[model(tabel = "users")]
+  |         ^^^^^

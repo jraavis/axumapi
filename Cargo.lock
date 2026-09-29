@@ -169,18 +169,22 @@ dependencies = [
 name = "axumapi"
 version = "0.1.0"
 dependencies = [
+ "axumapi-backends",
  "axumapi-core",
  "axumapi-macros",
  "axumapi-openapi",
  "axumapi-orm",
  "axumapi-testkit",
  "axumapi-validation",
+ "chrono",
  "jsonschema",
  "regex",
+ "rust_decimal",
  "serde",
  "serde_json",
  "tokio",
  "trybuild",
+ "uuid",
 ]
 
 [[package]]

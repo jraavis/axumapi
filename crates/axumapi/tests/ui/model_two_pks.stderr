@@ -1,0 +1,5 @@
+error: a model has exactly one primary key (composite keys are not supported)
+ --> tests/ui/model_two_pks.rs:8:5
+  |
+8 |     other: i64,
+  |     ^^^^^

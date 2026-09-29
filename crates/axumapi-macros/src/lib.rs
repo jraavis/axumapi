@@ -12,6 +12,8 @@
 //!   with the common `serde` attributes, plus the matching `Dump`.
 //! * `#[derive(Validate)]`: request validation (coercion, constraints,
 //!   aliases, string transforms) generated from the same attributes.
+//! * `#[derive(Model)]`: ORM model metadata, typed field handles, the `Model`
+//!   implementation and relation accessors.
 //! * `#[model_hooks]`: field/model validators, computed fields and
 //!   serializers on an inherent `impl` block.
 #![forbid(unsafe_code)]
@@ -22,6 +24,7 @@ mod docs;
 mod generics;
 mod hooks;
 mod meta;
+mod model;
 mod probe;
 mod route;
 mod routes;
@@ -179,4 +182,81 @@ pub fn derive_validate(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn model_hooks(args: TokenStream, item: TokenStream) -> TokenStream {
     hooks::expand(args.into(), item.into()).into()
+}
+
+/// Derive `axumapi::orm::Model`: static column metadata, one typed
+/// `Field<Self, T>` constant per field (`User::name`), `to_values` /
+/// `from_row`, and the relation accessors.
+///
+/// One struct can derive `Model, Validate, Schema, Serialize, Deserialize`
+/// together: the ORM keys of `#[field(...)]` are ignored by the other derives,
+/// and `Model` ignores their validation keys (except `max_length`,
+/// `max_digits` and `decimal_places`, which become column metadata).
+///
+/// # `#[model(...)]` on the struct
+/// * `table = "users"`: table name. Default: the snake_case of the type
+///   name (`BlogPost` becomes `blog_post`); there is no app prefix or
+///   pluralisation.
+/// * `ordering = ["name", "-created_at"]`: default ordering; a leading `-`
+///   is descending. Entries are field names (or column names).
+/// * `indexes(idx_name(columns = ["a", "b"], unique))`: named indexes.
+/// * `unique_together(["a", "b"], ["c", "d"])`: unique constraints, named
+///   `{table}_{columns}_uniq`.
+/// * `checks(age_positive = "age >= 0")`: named `CHECK` constraints. The SQL
+///   is written by the model author, never built from user input.
+/// * `managed = false`: migrations leave the table alone.
+/// * `many_to_many(tags(Tag, through_table = "post_tags", source_column = "..",
+///   target_column = "..", related_name = "posts"))`: many-to-many relations
+///   (not struct fields). Defaults: `through_table` is `{table}_{name}`,
+///   `source_column` is `{snake(Model)}_id` and `target_column` is
+///   `{snake(Target)}_id` (set both explicitly for a self-referential
+///   relation). `through = Model` uses an explicit through model: its table
+///   is the join table (`through_table` must then be omitted).
+///
+/// Indexes, unique groups and ordering are checked at compile time: unknown
+/// fields are errors.
+///
+/// # `#[field(...)]` ORM keys
+/// * `primary_key`: exactly one field must have it. Without a declared key
+///   the derive suggests `#[field(primary_key, auto)] id: i64`.
+/// * `auto`: database-generated integer primary key (`i16`, `i32`, `i64`).
+///   The model is unsaved while the key equals `Default::default()`; a
+///   primary key without `auto` is never "unsaved".
+/// * `unique`, `index`: constraint and single-column index.
+/// * `column = "name"`: column name (default: the field name, or
+///   `{field}_id` for relations).
+/// * `db_default = <int | bool | "text">`: server-side default.
+/// * `auto_now_add` / `auto_now`: `DbDefault::Now` at insert / refresh on
+///   every save (the queryset layer fills the value; the derive only emits
+///   metadata).
+/// * `on_delete = "cascade" | "protect" | "set_null" | "set_default" |
+///   "do_nothing"` and `related_name = ".."`: relation fields only.
+///   `set_null` requires `Option<ForeignKey<..>>`.
+/// * `skip`: not a column; the field is `Default::default()` when loaded.
+/// * `max_length`, `max_digits`, `decimal_places`: column metadata.
+///
+/// # Relations
+/// Fields typed `ForeignKey<T>`, `OneToOne<T>` or `Option<..>` of those are
+/// relations; a `OneToOne` is unique. The field's constant is a
+/// `Field<Self, ForeignKey<T>>` over the `{field}_id` column, and an async
+/// `fetch_{field}(&self, &Db)` loads the target (the name differs from the
+/// field's because an associated constant and a method cannot share a name).
+/// With `related_name`, the target type gets a reverse accessor
+/// (`author.books(&db)` returning a `QuerySet`, or an async `Option` lookup
+/// for a `OneToOne`); the target model must be defined in the same crate.
+/// Each many-to-many gets `post.tags(&db)` returning a
+/// `ManyToManyManager`, and with `related_name` a reverse
+/// `tag.posts(&db)` queryset.
+///
+/// Generated accessors can clash with methods you write yourself; the
+/// compiler reports the duplicate.
+///
+/// Generic types are not supported.
+#[proc_macro_derive(Model, attributes(model, field, serde))]
+pub fn derive_model(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    match model::derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
 }

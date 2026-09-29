@@ -1,0 +1,5 @@
+error: `nmae` is not a field of this model
+ --> tests/ui/model_ordering_unknown_field.rs:4:21
+  |
+4 | #[model(ordering = ["-nmae"])]
+  |                     ^^^^^^^
