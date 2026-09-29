@@ -39,6 +39,15 @@ impl Compiler<'_> {
             } => self.text_match(target, needle, *case_insensitive, Anchor::End),
             Lookup::Regex(pattern) => {
                 // Capability check guarantees only regex-capable dialects get here.
+                if self.kind == BackendKind::MySql {
+                    // `c`: case-sensitive, whatever the column collation.
+                    self.push("REGEXP_LIKE(");
+                    self.expr(target);
+                    self.push(", ");
+                    self.bind(Value::Text(pattern.clone()));
+                    self.push(", 'c')");
+                    return;
+                }
                 self.push("(");
                 self.expr(target);
                 self.push(" ~ ");
@@ -57,7 +66,7 @@ impl Compiler<'_> {
                 self.push("(");
                 self.expr(target);
                 self.push(" IN (");
-                self.plan(plan);
+                self.operand_subquery(plan, false);
                 self.push("))");
             }
             Lookup::Range(lo, hi) => {
@@ -122,12 +131,20 @@ impl Compiler<'_> {
             self.push(") LIKE LOWER(");
             self.bind(Value::Text(pattern));
             self.push(")");
+        } else if !ci && self.kind == BackendKind::MySql {
+            // Default collations are case-insensitive; comparing as binary
+            // strings makes the match case-sensitive.
+            self.expr(target);
+            self.push(" LIKE CAST(");
+            self.bind(Value::Text(pattern));
+            self.push(" AS BINARY)");
         } else {
             self.expr(target);
             self.push(if ci { " ILIKE " } else { " LIKE " });
             self.bind(Value::Text(pattern));
         }
-        let _ = write!(self.sql, " ESCAPE '{LIKE_ESCAPE}')");
+        let escape = self.dialect.like_escape_literal();
+        let _ = write!(self.sql, " ESCAPE {escape})");
     }
 }
 

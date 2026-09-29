@@ -2,7 +2,9 @@
 
 use super::Compiler;
 use axumapi_orm::expr::functions::{DatePart, Function};
-use axumapi_orm::{AggFunc, Aggregate, BackendKind, Expr, OrderDirection, Window, WindowFunc};
+use axumapi_orm::{
+    AggFunc, Aggregate, BackendKind, Expr, OrderDirection, SqlType, Window, WindowFunc,
+};
 use std::fmt::Write;
 
 impl Compiler<'_> {
@@ -23,21 +25,25 @@ impl Compiler<'_> {
         match func {
             Function::Lower => self.call("LOWER", args),
             Function::Upper => self.call("UPPER", args),
+            // MySQL's LENGTH counts bytes; CHAR_LENGTH counts characters.
+            Function::Length if self.kind == BackendKind::MySql => self.call("CHAR_LENGTH", args),
             Function::Length => self.call("LENGTH", args),
             Function::Trim => self.call("TRIM", args),
             Function::Replace => self.call("REPLACE", args),
             Function::Coalesce => self.call("COALESCE", args),
             Function::Concat if self.kind == BackendKind::Sqlite => self.sqlite_concat(args),
+            Function::Concat if self.kind == BackendKind::MySql => self.mysql_concat(args),
             Function::Concat => self.call("CONCAT", args),
             Function::Substr => {
                 // Positions are bound as 64-bit integers; PostgreSQL's
                 // `substr` takes `integer`.
+                let integer = self.dialect.cast_type(SqlType::Integer);
                 self.push("SUBSTR(");
                 self.expr(&args[0]);
                 for position in &args[1..] {
                     self.push(", CAST(");
                     self.expr(position);
-                    self.push(" AS INTEGER)");
+                    let _ = write!(self.sql, " AS {integer})");
                 }
                 self.push(")");
             }
@@ -63,6 +69,18 @@ impl Compiler<'_> {
         self.push(")");
     }
 
+    /// MySQL's `CONCAT` returns `NULL` if any argument is `NULL`; the contract
+    /// is `NULL` as empty text, as in PostgreSQL.
+    fn mysql_concat(&mut self, args: &[Expr]) {
+        self.push("CONCAT(");
+        self.list(args, ", ", |c, arg| {
+            c.push("COALESCE(");
+            c.expr(arg);
+            c.push(", '')");
+        });
+        self.push(")");
+    }
+
     pub(super) fn case(&mut self, branches: &[(Expr, Expr)], otherwise: Option<&Expr>) {
         if branches.is_empty() {
             self.fail("CASE without branches");
@@ -83,6 +101,7 @@ impl Compiler<'_> {
 
     pub(super) fn aggregate(&mut self, agg: &Aggregate) {
         let sqlite = self.kind == BackendKind::Sqlite;
+        let mysql = self.kind == BackendKind::MySql;
         let name = match &agg.func {
             AggFunc::Count => "COUNT",
             AggFunc::Sum => "SUM",
@@ -94,34 +113,77 @@ impl Compiler<'_> {
             AggFunc::Variance { sample: false } => "VAR_POP",
             AggFunc::Variance { sample: true } => "VAR_SAMP",
             AggFunc::ArrayAgg => "ARRAY_AGG",
-            AggFunc::StringAgg { .. } if sqlite => "GROUP_CONCAT",
+            AggFunc::StringAgg { .. } if sqlite || mysql => "GROUP_CONCAT",
             AggFunc::StringAgg { .. } => "STRING_AGG",
+        };
+        // Without `FILTER (WHERE ..)`, the filter moves into the argument:
+        // aggregates skip the NULLs that a filtered-out `CASE` yields.
+        let inline_filter = if self.dialect.supports_aggregate_filter() {
+            None
+        } else {
+            agg.filter.as_deref()
         };
         self.push(name);
         self.push("(");
         match agg.arg.as_deref() {
-            None if agg.func == AggFunc::Count && !agg.distinct => self.push("*"),
+            None if agg.func == AggFunc::Count && !agg.distinct => match inline_filter {
+                Some(filter) => {
+                    self.push("CASE WHEN ");
+                    self.expr(filter);
+                    self.push(" THEN 1 END");
+                }
+                None => self.push("*"),
+            },
             None => self.fail(format!("{name} needs an argument")),
             Some(arg) => {
                 if agg.distinct {
                     self.push("DISTINCT ");
                 }
-                self.expr(arg);
+                match inline_filter {
+                    Some(filter) => {
+                        self.push("CASE WHEN ");
+                        self.expr(filter);
+                        self.push(" THEN ");
+                        self.expr(arg);
+                        self.push(" END");
+                    }
+                    None => self.expr(arg),
+                }
             }
         }
         if let AggFunc::StringAgg { separator } = &agg.func {
             if sqlite && agg.distinct {
                 self.fail("SQLite cannot combine DISTINCT with a separator");
             }
-            self.push(", ");
-            self.bind(separator.clone().into());
+            if mysql {
+                // `SEPARATOR` takes a literal, not a bind parameter.
+                self.push(" SEPARATOR ");
+                self.mysql_string_literal(separator);
+            } else {
+                self.push(", ");
+                self.bind(separator.clone().into());
+            }
         }
         self.push(")");
-        if let Some(filter) = agg.filter.as_deref() {
+        if let (Some(filter), None) = (agg.filter.as_deref(), inline_filter) {
             self.push(" FILTER (WHERE ");
             self.expr(filter);
             self.push(")");
         }
+    }
+
+    /// A MySQL string literal for text known at compile time (never user
+    /// input at run time). Backslashes and quotes are doubled; the adapter
+    /// keeps `NO_BACKSLASH_ESCAPES` off so `\\` means one backslash.
+    fn mysql_string_literal(&mut self, text: &str) {
+        self.push("'");
+        for ch in text.chars() {
+            if matches!(ch, '\'' | '\\') {
+                self.sql.push(ch);
+            }
+            self.sql.push(ch);
+        }
+        self.push("'");
     }
 
     pub(super) fn window(&mut self, w: &Window) {
@@ -183,11 +245,34 @@ impl Compiler<'_> {
     }
 
     pub(super) fn date_part(&mut self, part: DatePart, expr: &Expr) {
-        if self.kind == BackendKind::Sqlite {
-            self.sqlite_date_part(part, expr);
-        } else {
-            self.extract_date_part(part, expr);
+        match self.kind {
+            BackendKind::Sqlite => self.sqlite_date_part(part, expr),
+            BackendKind::MySql => self.mysql_date_part(part, expr),
+            _ => self.extract_date_part(part, expr),
         }
+    }
+
+    /// MySQL's extraction functions; timestamps are read in the session time
+    /// zone, which the adapter pins to UTC. `WEEK(x, 3)` is the ISO week.
+    fn mysql_date_part(&mut self, part: DatePart, expr: &Expr) {
+        let function = match part {
+            DatePart::Date => "DATE",
+            DatePart::Year => "YEAR",
+            DatePart::Month => "MONTH",
+            DatePart::Day => "DAY",
+            DatePart::Week => "WEEK",
+            DatePart::Quarter => "QUARTER",
+            DatePart::Hour => "HOUR",
+            DatePart::Minute => "MINUTE",
+            DatePart::Second => "SECOND",
+        };
+        self.push(function);
+        self.push("(");
+        self.expr(expr);
+        if part == DatePart::Week {
+            self.push(", 3");
+        }
+        self.push(")");
     }
 
     /// `EXTRACT` yields `numeric` on PostgreSQL 14+; cast so it decodes as an

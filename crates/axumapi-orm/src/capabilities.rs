@@ -85,6 +85,12 @@ pub enum Feature {
     Savepoints,
     /// A specific transaction isolation level.
     Isolation(IsolationLevel),
+    /// Subqueries: `EXISTS (..)`, scalar subqueries and `IN (subquery)`.
+    Subqueries,
+    /// Set operations (`UNION`, `INTERSECT`, `EXCEPT`).
+    SetOperations,
+    /// Raw SQL text (`fetch_raw`, `execute_raw`, `execute_script`).
+    RawSql,
 }
 
 /// Declared capabilities of a backend.
@@ -166,6 +172,88 @@ impl BackendCapabilities {
         }
     }
 
+    /// Capabilities of MySQL 8.0.31+ (tested on 9.x).
+    ///
+    /// * `returning` is `true` although MySQL has no `RETURNING` clause: the
+    ///   adapter emulates it (generated keys via `LAST_INSERT_ID()`, other
+    ///   writes by re-reading the affected rows in the same transaction).
+    /// * There is no `DISTINCT ON`, no native array type or array aggregate
+    ///   and no `ILIKE` (emulated with `LOWER(..) LIKE LOWER(..)`).
+    /// * Regex uses `REGEXP_LIKE`; row locking supports `NOWAIT` and
+    ///   `SKIP LOCKED`; all three isolation levels can be requested.
+    pub const fn mysql() -> Self {
+        Self {
+            kind: BackendKind::MySql,
+            transactions: TransactionSupport::Savepoints,
+            row_locking: RowLocking::Full,
+            joins: true,
+            returning: true,
+            window_functions: true,
+            regex: true,
+            arrays: false,
+            distinct_on: false,
+            ilike: false,
+            statistical_aggregates: true,
+            max_params: 65_535,
+            isolation_levels: &[
+                IsolationLevel::ReadCommitted,
+                IsolationLevel::RepeatableRead,
+                IsolationLevel::Serializable,
+            ],
+        }
+    }
+
+    /// Capabilities of MongoDB (5.0+; transactions need a replica set).
+    ///
+    /// The plan is compiled to filters and aggregation pipelines: no joins,
+    /// row locking, window functions, arrays, `DISTINCT ON`, subqueries, set
+    /// operations or raw SQL. `RETURNING` is emulated by the adapter.
+    /// Transactions are flat (no savepoints) and no isolation level can be
+    /// requested. `max_params` bounds the rows per `insert_many` batch.
+    pub const fn mongodb() -> Self {
+        Self {
+            kind: BackendKind::MongoDb,
+            transactions: TransactionSupport::Flat,
+            row_locking: RowLocking::None,
+            joins: false,
+            returning: true,
+            window_functions: false,
+            regex: true,
+            arrays: false,
+            distinct_on: false,
+            ilike: false,
+            statistical_aggregates: true,
+            max_params: 50_000,
+            isolation_levels: &[],
+        }
+    }
+
+    /// Capabilities of Redis as a key, hash and set store.
+    ///
+    /// Redis is not a QuerySet backend. Every relational feature is
+    /// unsupported, so a plan checked against these capabilities fails with a
+    /// [`BackendCapabilityError`] before any I/O. Multi-key atomicity is one
+    /// `MULTI`/`EXEC` ([`TransactionSupport::Flat`]): there are no savepoints
+    /// and no SQL isolation levels. `max_params` is `0` because Redis does not
+    /// bind SQL parameters.
+    pub const fn redis() -> Self {
+        Self {
+            kind: BackendKind::Redis,
+            transactions: TransactionSupport::Flat,
+            row_locking: RowLocking::None,
+            joins: false,
+            returning: false,
+            window_functions: false,
+            regex: false,
+            arrays: false,
+            distinct_on: false,
+            ilike: false,
+            statistical_aggregates: false,
+            max_params: 0,
+            isolation_levels: &[],
+        }
+    }
+
     /// Whether `feature` is supported.
     pub fn supports(&self, feature: Feature) -> bool {
         match feature {
@@ -178,10 +266,25 @@ impl BackendCapabilities {
             Feature::Arrays => self.arrays,
             Feature::StatisticalAggregates => self.statistical_aggregates,
             Feature::DistinctOn => self.distinct_on,
-            // Emulated with LOWER(..) LIKE LOWER(..) where not native.
-            Feature::CaseInsensitiveLike => true,
+            // Relational backends emulate this with LOWER(x) LIKE LOWER(?)
+            // when native ILIKE is absent, MongoDB with a case-insensitive `$regex`.
+            // Redis has no LIKE.
+            Feature::CaseInsensitiveLike => {
+                self.ilike
+                    || matches!(
+                        self.kind,
+                        BackendKind::Postgres
+                            | BackendKind::Sqlite
+                            | BackendKind::MySql
+                            | BackendKind::MongoDb
+                    )
+            }
             Feature::Savepoints => self.transactions >= TransactionSupport::Savepoints,
             Feature::Isolation(level) => self.isolation_levels.contains(&level),
+            // Query languages other than SQL cannot express these.
+            Feature::Subqueries | Feature::SetOperations | Feature::RawSql => {
+                !matches!(self.kind, BackendKind::MongoDb | BackendKind::Redis)
+            }
         }
     }
 
@@ -218,8 +321,88 @@ mod tests {
             Feature::Regex,
             Feature::LockModifiers,
             Feature::DistinctOn,
+            Feature::CaseInsensitiveLike,
         ] {
             assert!(caps.supports(f), "{f:?}");
         }
+        assert!(BackendCapabilities::sqlite().supports(Feature::CaseInsensitiveLike));
+    }
+
+    #[test]
+    fn redis_rejects_relational_features_without_io() {
+        let caps = BackendCapabilities::redis();
+        assert_eq!(caps.kind, BackendKind::Redis);
+        assert_eq!(caps.transactions, TransactionSupport::Flat);
+        assert_eq!(caps.max_params, 0);
+        assert!(matches!(
+            caps.require(Feature::RowLocking),
+            Err(BackendCapabilityError::RowLockingUnsupported {
+                backend: BackendKind::Redis
+            })
+        ));
+        for feature in [
+            Feature::Joins,
+            Feature::Returning,
+            Feature::WindowFunctions,
+            Feature::Regex,
+            Feature::Arrays,
+            Feature::DistinctOn,
+            Feature::StatisticalAggregates,
+            Feature::Savepoints,
+            Feature::CaseInsensitiveLike,
+            Feature::Isolation(IsolationLevel::ReadCommitted),
+        ] {
+            assert!(
+                matches!(
+                    caps.require(feature),
+                    Err(BackendCapabilityError::Unsupported {
+                        backend: BackendKind::Redis,
+                        ..
+                    })
+                ),
+                "{feature:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mongodb_declares_its_subset() {
+        let caps = BackendCapabilities::mongodb();
+        for f in [
+            Feature::Joins,
+            Feature::RowLocking,
+            Feature::WindowFunctions,
+            Feature::Arrays,
+            Feature::DistinctOn,
+            Feature::Savepoints,
+            Feature::Subqueries,
+            Feature::SetOperations,
+            Feature::RawSql,
+            Feature::Isolation(IsolationLevel::Serializable),
+        ] {
+            assert!(!caps.supports(f), "{f:?}");
+        }
+        for f in [
+            Feature::Returning,
+            Feature::Regex,
+            Feature::StatisticalAggregates,
+            Feature::CaseInsensitiveLike,
+        ] {
+            assert!(caps.supports(f), "{f:?}");
+        }
+        assert!(BackendCapabilities::sqlite().supports(Feature::Subqueries));
+        assert!(BackendCapabilities::postgres().supports(Feature::RawSql));
+    }
+
+    #[test]
+    fn mysql_rejects_distinct_on_and_arrays() {
+        let caps = BackendCapabilities::mysql();
+        assert!(caps.require(Feature::DistinctOn).is_err());
+        assert!(caps.require(Feature::Arrays).is_err());
+        assert!(caps.require(Feature::LockModifiers).is_ok());
+        assert!(
+            caps.require(Feature::Isolation(IsolationLevel::Serializable))
+                .is_ok()
+        );
     }
 }

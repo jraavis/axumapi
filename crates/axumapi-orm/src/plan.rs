@@ -330,6 +330,9 @@ impl QueryPlan {
         if matches!(self.distinct, DistinctMode::On(_)) {
             need(Feature::DistinctOn);
         }
+        if !self.compound.is_empty() {
+            need(Feature::SetOperations);
+        }
         let nested = self
             .compound
             .iter()
@@ -421,6 +424,7 @@ fn visit(expr: &Expr, need: &mut impl FnMut(Feature)) {
         _ => {}
     }
     if let Some(plan) = expr.subplan() {
+        need(Feature::Subqueries);
         plan.required_features().into_iter().for_each(&mut *need);
     }
     for child in expr.children() {
