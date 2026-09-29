@@ -222,8 +222,8 @@ async fn form_invalid_is_422() {
         .unwrap();
     assert_eq!(res.status, 422);
     let body = problem(&res);
-    assert_eq!(body["errors"][0]["location"], json!(["body"]));
-    assert_eq!(body["errors"][0]["code"], "form_invalid");
+    assert_eq!(body["errors"][0]["location"], json!(["body", "n"]));
+    assert_eq!(body["errors"][0]["code"], "int_parsing");
 }
 
 #[tokio::test]
@@ -642,3 +642,26 @@ mod phase2_fixes {
         assert_eq!(missing.content_type(), Some("application/problem+json"));
     }
 }
+
+// Opt-in impls; `#[derive(Validate)]` generates these in application code.
+/// Hand-written equivalent of `#[derive(Validate)]` for `FormData`.
+impl axumapi_validation::Validate for FormData {
+    fn prepare(input: &mut Value, ctx: &mut axumapi_validation::ValidationContext) {
+        use axumapi_validation::model::{FieldSpec, prepare_object};
+        const FIELDS: &[FieldSpec] = &[FieldSpec {
+            key: "n",
+            aliases: &[],
+            required: true,
+        }];
+        prepare_object(
+            input,
+            ctx,
+            axumapi_validation::ModelConfig::DEFAULT,
+            FIELDS,
+            |_, slot, ctx| {
+                <i32 as axumapi_validation::Validate>::prepare(slot, ctx);
+            },
+        );
+    }
+}
+impl axumapi_validation::Dump for FormData {}

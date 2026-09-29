@@ -2,8 +2,9 @@
 
 use crate::body::Body;
 use crate::error::ApiError;
-use crate::extract::{FromRequest, Request, invalid};
+use crate::extract::{FromRequest, Request, invalid, validated};
 use axumapi_openapi::{Operation, Schema, SchemaObject, SchemaRegistry};
+use axumapi_validation::{Validate, ValidationContext, text_pairs_to_value};
 use bytes::Bytes;
 use http::StatusCode;
 use serde::de::DeserializeOwned;
@@ -21,13 +22,19 @@ pub struct Form<T>(pub T);
 
 impl<T> FromRequest for Form<T>
 where
-    T: DeserializeOwned + Send + Schema + 'static,
+    T: DeserializeOwned + Send + Schema + Validate + 'static,
 {
     async fn from_request(req: Request) -> Result<Self, ApiError> {
         use axum::extract::FromRequest as _;
         use axum::extract::rejection::FormRejection;
-        match axum::Form::<T>::from_request(req.map(Body::into_inner), &()).await {
-            Ok(axum::Form(value)) => Ok(Form(value)),
+        match axum::Form::<Vec<(String, String)>>::from_request(req.map(Body::into_inner), &())
+            .await
+        {
+            Ok(axum::Form(pairs)) => validated(
+                text_pairs_to_value(pairs),
+                ValidationContext::for_text().at_root("body"),
+            )
+            .map(Form),
             Err(rejection) => {
                 let message = rejection.body_text();
                 Err(match rejection {

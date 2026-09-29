@@ -236,3 +236,8 @@ fn misconfiguration_is_an_error_not_a_panic() {
 }
 
 fn tracing_stub(_: &str) {}
+
+// Opt-in impls; `#[derive(Validate)]` generates these in application code.
+impl axumapi_validation::Validate for User {}
+impl axumapi_validation::Dump for User {}
+impl axumapi_validation::Validate for Paging {}

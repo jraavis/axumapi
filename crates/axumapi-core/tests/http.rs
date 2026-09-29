@@ -100,8 +100,10 @@ async fn bad_json_is_422_problem() {
     assert_eq!(res.status, 422);
     assert_eq!(res.content_type(), Some("application/problem+json"));
     let body = res.json::<Value>().unwrap();
-    assert_eq!(body["errors"][0]["location"], json!(["body"]));
-    assert_eq!(body["errors"][0]["code"], "json_invalid");
+    // `Item` has an empty `Validate` impl, so the Serde error is reported
+    // with its path (derived models report typed codes such as `int_parsing`).
+    assert_eq!(body["errors"][0]["location"], json!(["body", "id"]));
+    assert_eq!(body["errors"][0]["code"], "invalid");
 }
 
 #[tokio::test]
@@ -116,7 +118,8 @@ async fn bad_query_is_422() {
     let res = client().get("/hello/bob?shout=maybe").await.unwrap();
     assert_eq!(res.status, 422);
     let body = res.json::<Value>().unwrap();
-    assert_eq!(body["errors"][0]["location"], json!(["query"]));
+    assert_eq!(body["errors"][0]["location"], json!(["query", "shout"]));
+    assert_eq!(body["errors"][0]["code"], "bool_parsing");
 }
 
 #[tokio::test]
@@ -169,4 +172,40 @@ async fn state_applies_regardless_of_registration_order() {
         .route("/counter", get(counter));
     let res = TestClient::new(app).get("/counter").await.unwrap();
     assert_eq!(res.status, 200);
+}
+
+// Opt-in impls; `#[derive(Validate)]` generates these in application code.
+/// Hand-written equivalent of `#[derive(Validate)]` for `Params`.
+impl axumapi_validation::Validate for Params {
+    fn prepare(input: &mut Value, ctx: &mut axumapi_validation::ValidationContext) {
+        use axumapi_validation::model::{FieldSpec, prepare_object};
+        const FIELDS: &[FieldSpec] = &[FieldSpec {
+            key: "shout",
+            aliases: &[],
+            required: true,
+        }];
+        prepare_object(
+            input,
+            ctx,
+            axumapi_validation::ModelConfig::DEFAULT,
+            FIELDS,
+            |_, slot, ctx| {
+                <bool as axumapi_validation::Validate>::prepare(slot, ctx);
+            },
+        );
+    }
+}
+impl axumapi_validation::Validate for Item {}
+impl axumapi_validation::Dump for Item {}
+
+#[tokio::test]
+async fn malformed_json_is_still_json_invalid() {
+    let res = client()
+        .post_raw("/items", "application/json", b"{not json".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(res.status, 422);
+    let body = res.json::<Value>().unwrap();
+    assert_eq!(body["errors"][0]["code"], "json_invalid");
+    assert_eq!(body["errors"][0]["location"], json!(["body"]));
 }

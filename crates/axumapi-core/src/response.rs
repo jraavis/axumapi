@@ -7,8 +7,8 @@
 use crate::body::Body;
 use crate::error::ApiError;
 use axumapi_openapi::{Operation, Schema, SchemaRegistry};
+use axumapi_validation::{Dump, DumpOptions};
 use http::{HeaderValue, StatusCode, header};
-use serde::Serialize;
 
 /// An HTTP response with an axumapi [`Body`].
 pub type Response = http::Response<Body>;
@@ -67,12 +67,36 @@ impl IntoResponse for Response {
     }
 }
 
-impl<T: Serialize + Schema + 'static> IntoResponse for Json<T> {
+/// Serialize `value` with `opts` into a JSON response.
+fn dump_response<T: Dump + ?Sized>(value: &T, opts: &DumpOptions) -> Response {
+    match value
+        .dump(opts)
+        .and_then(|v| serde_json::to_vec(&v).map_err(Into::into))
+    {
+        Ok(bytes) => with_content_type("application/json", bytes),
+        Err(err) => ApiError::internal(err).into_response(),
+    }
+}
+
+/// JSON response serialized with explicit [`DumpOptions`]
+/// (FastAPI `response_model_exclude_none` and friends).
+#[derive(Debug, Clone)]
+pub struct JsonDump<T>(pub T, pub DumpOptions);
+
+impl<T: Dump + Schema + 'static> IntoResponse for JsonDump<T> {
     fn into_response(self) -> Response {
-        match serde_json::to_vec(&self.0) {
-            Ok(bytes) => with_content_type("application/json", bytes),
-            Err(err) => ApiError::internal(err).into_response(),
-        }
+        dump_response(&self.0, &self.1)
+    }
+
+    fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {
+        <Json<T> as IntoResponse>::describe(op, registry);
+    }
+}
+
+impl<T: Dump + Schema + 'static> IntoResponse for Json<T> {
+    /// Serialized through [`Dump`], so computed fields and serializers apply.
+    fn into_response(self) -> Response {
+        dump_response(&self.0, &DumpOptions::default())
     }
 
     fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {

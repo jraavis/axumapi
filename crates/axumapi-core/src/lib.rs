@@ -42,7 +42,9 @@ pub use middleware::{
     BodyLimit, BoxService, Compression, ConcurrencyLimit, Cors, HttpsRedirect, Next, RateLimit,
     RequestId, RequestIdLayer, RequestLogging, Timeout, TrustedHosts, from_fn,
 };
-pub use response::{Html, IntoResponse, Json, NoContent, PlainText, Response, WithStatus};
+pub use response::{
+    Html, IntoResponse, Json, JsonDump, NoContent, PlainText, Response, WithStatus,
+};
 pub use responses::{FileResponse, Redirect, StreamingResponse, WithHeaders};
 pub use routing::{
     MethodRouter, OperationMeta, Route, delete, get, head, options, patch, post, put,

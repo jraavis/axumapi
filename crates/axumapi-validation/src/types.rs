@@ -275,6 +275,12 @@ impl fmt::Display for SecretString {
     }
 }
 
+impl<const MIN: usize, const MAX: usize> crate::dump::Dump for ConstrainedString<MIN, MAX> {}
+impl<const MIN: i64, const MAX: i64> crate::dump::Dump for BoundedI64<MIN, MAX> {}
+impl crate::dump::Dump for PositiveInt {}
+impl crate::dump::Dump for Email {}
+impl crate::dump::Dump for SecretString {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

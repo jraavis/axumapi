@@ -1,21 +1,34 @@
-//! Pydantic v2-inspired validation and JSON Schema metadata for axumapi.
+//! Pydantic v2-inspired validation, serialization options and JSON Schema
+//! metadata for axumapi.
 //!
-//! This crate provides:
-//!
-//! - Structured [`ValidationError`] values with location / code / message
-//! - The [`Validate`] trait, including blanket impls for [`Option`] and [`Vec`]
-//! - Reusable field [`rules`]
-//! - Constrained newtypes in [`types`] that validate on construction and deserialize
-//! - JSON Schema / OpenAPI 3.1 metadata via [`Schema`]
+//! - [`Validate`]: type-driven `prepare` (coercion and checks on raw input,
+//!   every error collected) plus `validate` (constraints and validators on the
+//!   typed value).
+//! - [`parse_value`] / [`parse_json`]: the full pipeline, like `model_validate`.
+//! - [`ValidationContext`] / [`ModelConfig`]: locations, strictness, string
+//!   transforms, extra-key policy and user data.
+//! - [`ModelHooks`]: field/model validators, computed fields, serializers.
+//! - [`Dump`] / [`DumpOptions`]: `model_dump`-style output options.
+//! - [`Schema`]: JSON Schema / OpenAPI 3.1 metadata.
+//! - [`rules`] and constrained [`types`].
 #![forbid(unsafe_code)]
 
+pub mod context;
+pub mod dump;
 pub mod error;
+pub mod hooks;
+pub mod model;
+pub mod pipeline;
 pub mod rules;
 pub mod schema;
 pub mod types;
 pub mod validate;
 
+pub use context::{Extra, InputKind, ModelConfig, ValidationContext};
+pub use dump::{Dump, DumpError, DumpOptions, FieldSet};
 pub use error::{FieldError, LocationItem, ValidationError, ValidationResult};
+pub use hooks::ModelHooks;
+pub use pipeline::{parse_json, parse_value, text_pairs_to_value, validate};
 pub use rules::{email, ge, gt, le, lt, max_length, min_length, multiple_of, pattern};
 pub use schema::{Schema, SchemaConflict, SchemaObject, SchemaRegistry, schema_for};
 pub use types::{BoundedI64, ConstrainedString, Email, PositiveInt, SecretString};

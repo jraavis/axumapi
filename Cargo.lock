@@ -198,6 +198,7 @@ dependencies = [
  "jsonschema",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "thiserror",
  "tokio",
  "tower",
@@ -263,6 +264,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "thiserror",
 ]
 
@@ -2413,6 +2415,7 @@ checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

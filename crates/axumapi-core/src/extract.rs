@@ -12,6 +12,9 @@ use crate::error::ApiError;
 use axumapi_openapi::{
     Operation, Parameter, ParameterLocation, Schema, SchemaObject, SchemaRegistry,
 };
+use axumapi_validation::{
+    Validate, ValidationContext, ValidationError, parse_value, text_pairs_to_value,
+};
 use http::request::Parts;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -83,6 +86,24 @@ pub(crate) fn invalid(location: &str, code: &str, message: impl Into<String>) ->
     }]))
 }
 
+/// Map a [`ValidationError`] to a 422 problem document.
+pub(crate) fn validation_problem(error: &ValidationError) -> ApiError {
+    ApiError::unprocessable(serde_json::to_value(&error.errors).unwrap_or(Value::Null))
+}
+
+/// Run the validation pipeline (`prepare` → deserialize → `validate`).
+pub(crate) fn validated<T>(input: Value, ctx: ValidationContext) -> Result<T, ApiError>
+where
+    T: DeserializeOwned + Validate,
+{
+    parse_value(input, ctx).map_err(|e| validation_problem(&e))
+}
+
+/// Parse `a=1&a=2&b=x` into a JSON object (repeated keys become arrays).
+pub(crate) fn urlencoded_to_value(text: &str) -> Result<Value, serde_urlencoded::de::Error> {
+    serde_urlencoded::from_str::<Vec<(String, String)>>(text).map(text_pairs_to_value)
+}
+
 /// Path parameter extractor (`/users/{id}`).
 ///
 /// `T` may be a scalar, a tuple (positional) or a struct (by name).
@@ -91,13 +112,21 @@ pub struct Path<T>(pub T);
 
 impl<T> FromRequestParts for Path<T>
 where
-    T: DeserializeOwned + Send + Schema + 'static,
+    T: DeserializeOwned + Send + Schema + Validate + 'static,
 {
     async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
         use axum::extract::FromRequestParts as _;
         use axum::extract::rejection::PathRejection;
         match axum::extract::Path::<T>::from_request_parts(parts, &()).await {
-            Ok(axum::extract::Path(value)) => Ok(Path(value)),
+            Ok(axum::extract::Path(value)) => {
+                let mut ctx = ValidationContext::for_text().at_root("path");
+                value.validate(&mut ctx);
+                if ctx.has_errors() {
+                    Err(validation_problem(&ctx.take_errors()))
+                } else {
+                    Ok(Path(value))
+                }
+            }
             Err(PathRejection::FailedToDeserializePathParams(err)) => {
                 Err(invalid("path", "path_invalid", err.body_text()))
             }
@@ -128,14 +157,12 @@ pub struct Query<T>(pub T);
 
 impl<T> FromRequestParts for Query<T>
 where
-    T: DeserializeOwned + Send + Schema + 'static,
+    T: DeserializeOwned + Send + Schema + Validate + 'static,
 {
     async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
-        use axum::extract::FromRequestParts as _;
-        match axum::extract::Query::<T>::from_request_parts(parts, &()).await {
-            Ok(axum::extract::Query(value)) => Ok(Query(value)),
-            Err(rejection) => Err(invalid("query", "query_invalid", rejection.body_text())),
-        }
+        let input = urlencoded_to_value(parts.uri.query().unwrap_or_default())
+            .map_err(|e| invalid("query", "query_invalid", e.to_string()))?;
+        validated(input, ValidationContext::for_text().at_root("query")).map(Query)
     }
 
     fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {
@@ -176,16 +203,18 @@ pub(crate) fn object_properties(
 
 impl<T> FromRequest for Json<T>
 where
-    T: DeserializeOwned + Send + Schema + 'static,
+    T: DeserializeOwned + Send + Schema + Validate + 'static,
 {
     async fn from_request(req: Request) -> Result<Self, ApiError> {
         use axum::extract::FromRequest as _;
         use axum::extract::rejection::JsonRejection;
-        match axum::Json::<T>::from_request(req.map(Body::into_inner), &()).await {
-            Ok(axum::Json(value)) => Ok(Json(value)),
+        // Read through the size-limited JSON extractor (keeps 413/415), then
+        // run the validation pipeline on the raw value.
+        let input = match axum::Json::<Value>::from_request(req.map(Body::into_inner), &()).await {
+            Ok(axum::Json(value)) => value,
             Err(rejection) => {
                 let message = rejection.body_text();
-                Err(match rejection {
+                return Err(match rejection {
                     JsonRejection::JsonDataError(_) | JsonRejection::JsonSyntaxError(_) => {
                         invalid("body", "json_invalid", message)
                     }
@@ -193,9 +222,10 @@ where
                         ApiError::new(http::StatusCode::UNSUPPORTED_MEDIA_TYPE, message)
                     }
                     other => ApiError::new(other.status(), message),
-                })
+                });
             }
-        }
+        };
+        validated(input, ValidationContext::new().at_root("body")).map(Json)
     }
 
     fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {
