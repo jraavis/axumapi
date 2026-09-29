@@ -6,12 +6,22 @@
 //! * [`sqlite`] (feature `sqlite`, default) executes plans with SQLx.
 //! * [`postgres`] (feature `postgres`) executes plans with SQLx.
 //!
-//! MySQL, MongoDB and Redis adapters are later phases.
+//! * [`mysql`] (feature `mysql`) executes plans with SQLx.
+//! * [`mongodb`] (feature `mongodb`) compiles the supported plan subset to
+//!   filters and aggregation pipelines.
+//! * [`redis`] (feature `redis`) is a key/hash/set store, not a QuerySet
+//!   backend.
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "mongodb")]
+pub mod mongodb;
+#[cfg(feature = "mysql")]
+pub mod mysql;
 #[cfg(feature = "postgres")]
 pub mod postgres;
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[cfg(feature = "redis")]
+pub mod redis;
+#[cfg(any(feature = "sqlite", feature = "postgres", feature = "mysql"))]
 mod shared;
 pub mod sql;
 #[cfg(feature = "sqlite")]

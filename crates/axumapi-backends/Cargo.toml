@@ -16,11 +16,16 @@ async-trait.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+mongodb = { workspace = true, optional = true }
+redis = { workspace = true, optional = true }
 
 [features]
 default = ["sqlite"]
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]
+mysql = ["sqlx/mysql"]
+mongodb = ["dep:mongodb"]
+redis = ["dep:redis"]
 
 [dev-dependencies]
 chrono.workspace = true
