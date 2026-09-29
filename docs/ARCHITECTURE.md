@@ -2,7 +2,7 @@
 
 `axumapi` is an async-first Rust web framework. It takes its API ergonomics from FastAPI, its validation model from Pydantic v2 and its ORM ergonomics from the Django ORM. It favours **compilable, idiomatic Rust** over Python look-alike syntax: where a Python feature has no natural Rust mapping, we design a Rust equivalent and document how it differs.
 
-> Status: **Phase 2 (HTTP framework) complete**. The table in [Crate map](#crate-map) says what is real and what is scaffolding.
+> Status: **Phase 3 (validation and serialization) complete**. The table in [Crate map](#crate-map) says what is real and what is scaffolding.
 
 ## Crate map
 
@@ -29,10 +29,10 @@ flowchart TD
 |---|---|---|
 | `axumapi` | Public facade, `prelude` | Implemented |
 | `axumapi-core` | `App`, own `Handler`/extractor/response traits, DI, middleware, lifespan, WebSockets, forms, headers/cookies, background tasks, static files, RFC 7807 errors | Implemented |
-| `axumapi-validation` | `Validate`, structured `ValidationError`, rules, constrained newtypes, `Schema` + `SchemaRegistry` | Implemented (`Validate` derive: Phase 3) |
+| `axumapi-validation` | `Validate`, structured `ValidationError`, rules, constrained newtypes, `Schema` + `SchemaRegistry` | Implemented: pipeline, hooks, dump options, constrained types |
 | `axumapi-orm` | `QueryPlan` IR, `Expr` AST, typed `Field<M, T>`, `BackendCapabilities`, `Backend` trait, ORM errors | Implemented |
 | `axumapi-backends` | Dialect-aware SQL compiler (PostgreSQL, SQLite), SQLite executor | Implemented; PostgreSQL *execution* deferred |
-| `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Schema)]`; later `Validate`/`Model` | Route + Schema macros implemented |
+| `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Schema)]`; later `Validate`/`Model` | Route, `Schema`, `Validate`, `#[model_hooks]` implemented; `Model` derive: Phase 4 |
 | `axumapi-openapi` | Typed OpenAPI 3.1 model, document builder, Swagger UI / ReDoc | Implemented |
 | `axumapi-migrations` | Migration graph, operations, schema diff | Scaffolding (Phase 4) |
 | `axumapi-cli` | `axumapi` binary | Scaffolding (Phase 6) |

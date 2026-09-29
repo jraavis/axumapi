@@ -1,10 +1,10 @@
 //! Serialization options (Pydantic `model_dump` equivalents).
 //!
 //! axumapi composes with Serde instead of replacing it: a value is first
-//! serialized by Serde, then [`DumpOptions`] are applied. Derived models
-//! override [`Schema::dump`](crate::Schema::dump) to add computed fields and
-//! field/model serializers and to recurse into nested models, so nested
-//! computed fields also appear.
+//! serialized by Serde, then [`DumpOptions`] are applied. `#[derive(Schema)]`
+//! implements [`Dump`] for models to add computed fields and field/model
+//! serializers and to recurse into nested models, so nested computed fields
+//! also appear.
 
 use serde::Serialize;
 use serde_json::{Map, Value};

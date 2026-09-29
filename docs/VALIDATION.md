@@ -65,7 +65,7 @@ Query strings, forms and path segments count as *text input*: string-to-number c
 | Key | Meaning |
 |---|---|
 | `strict` | No lax coercion: `"1"` is not an integer, and `1` is not a bool. |
-| `extra = "ignore" \| "forbid" \| "allow"` | What happens to unknown keys. Rust structs cannot store extra keys, so `allow` accepts them and then drops them. |
+| `extra = "ignore" \| "forbid" \| "allow"` | What happens to unknown keys. Rust structs cannot store extra keys, so `allow` accepts them and then drops them. `#[serde(deny_unknown_fields)]` implies `forbid`, and `forbid` sets `additionalProperties: false` in the schema. |
 | `populate_by_name` | For fields that have an alias, the Rust field name is also accepted as an input key. |
 | `str_strip_whitespace`, `str_to_lower`, `str_to_upper` | Transforms applied to every string field of this model. |
 | `hooks` | Required on **generic** models that have `#[model_hooks]`; see below. |
@@ -118,13 +118,13 @@ Hooks always run in this order:
 4. Field after-validators, in declaration order.
 5. Model after-validators.
 
-The derives find `#[model_hooks]` without being told, as long as the model type is concrete. A **generic** model such as `Page<T>` with hooks must declare `#[model_config(hooks)]`.
+The derives find `#[model_hooks]` without being told, as long as the model type is concrete. A **generic** model such as `Page<T>` with hooks must declare `#[model_config(hooks)]`; without it, hooks on a generic model are not called. Field validators and serializers take `(value: &FieldTy)`. A reusable `#[field(validator = path)]` runs right after the field's own checks, before the `#[model_hooks]` validators. `#[field_validator]` requires `#[derive(Validate)]`.
 
 ## Serialization: `Dump`
 
 `Json<T>` responses are serialized through `Dump`, not directly with Serde:
 
-* `#[derive(Schema)]` implements `Dump` for any type that also derives `Serialize`.
+* `#[derive(Schema)]` implements `Dump` for any type that also derives `Serialize`. The impl is emitted under a trait bound, so input-only types still compile. `#[schema(no_dump)]` opts out explicitly.
 * Computed fields, field serializers and model serializers are included, including those of nested models inside `Vec`, `Option` or maps.
 * Use `JsonDump(value, DumpOptions::new().exclude_none())` to control the output per response. The available options are `exclude_none`, `exclude_defaults`, `include(FieldSet)` and `exclude(FieldSet)`.
 * A hand-written type opts in with `impl Dump for T {}`, which uses plain Serde output.
@@ -141,7 +141,15 @@ Computed fields appear in the OpenAPI schema as `readOnly` properties.
 | `BoundedI64<MIN, MAX>` | An integer in MIN..=MAX |
 | `PositiveInt` | An integer > 0 |
 
-The Phase 3 types branch adds: URL and HTTP URL, IPv4/IPv6/any IP, UUID, `Decimal<MAX_DIGITS, DECIMAL_PLACES>`, `BoundedFloat<Bounds>`, non-negative and negative integers, and `ConstrainedVec<T, MIN, MAX>`.
+| `Url`, `HttpUrl` | Any URL the `url` crate parses; `HttpUrl` only `http`/`https` |
+| `IpAddress`, `Ipv4Address`, `Ipv6Address` | IP address strings |
+| `Uuid` | Hyphenated or simple UUID, any version |
+| `Decimal<MAX_DIGITS, DECIMAL_PLACES>` | Exact decimals. Strict mode accepts only strings. Enforces Pydantic's total-digit, decimal-place and whole-digit limits. |
+| `BoundedFloat<B: FloatBounds>` | Finite floats within bounds (`UnitInterval`, `NonNegative`, `Positive`, or your own) |
+| `NonNegativeInt`, `NegativeInt` | Integers >= 0 and < 0 |
+| `ConstrainedVec<T, MIN, MAX>` | A list with MIN..=MAX items |
+
+`#[field(max_digits, decimal_places)]` on a plain field only documents the limits (as `x-` schema extensions). Use the `Decimal` type to enforce them.
 
 ## Hand-written implementations
 

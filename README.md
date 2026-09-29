@@ -2,16 +2,19 @@
 
 A FastAPI-style Rust web framework with Pydantic-style validation and a Django-style ORM. It is async-first, type-safe, and targets stable Rust (edition 2024, MSRV 1.92).
 
-> **Status: Phase 2 (HTTP framework), pre-alpha.** The APIs will change. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) lists what is implemented and what is scaffolding.
+> **Status: Phase 3 (validation and serialization), pre-alpha.** The APIs will change. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) lists what is implemented and what is scaffolding.
 
 ```rust
 use axumapi::prelude::*;
 
-#[derive(Deserialize, Schema)]
+#[derive(Deserialize, Validate, Schema)]
 struct Greeting { shout: Option<bool> }
 
-#[derive(Serialize, Deserialize, Schema)]
-struct Message { message: String }
+#[derive(Serialize, Deserialize, Validate, Schema)]
+struct Message {
+    #[field(min_length = 1, max_length = 280)]
+    message: String,
+}
 
 /// Greet somebody by name.
 #[get("/hello/{name}", tag = "greetings")]
@@ -29,7 +32,7 @@ async fn main() -> Result<(), ServerError> {
 }
 ```
 
-OpenAPI 3.1 is generated from the handler signatures and served at `/openapi.json`, `/docs` (Swagger UI) and `/redoc`.
+Invalid input is rejected with a `422` that lists every error with its location. OpenAPI 3.1 is generated from the handler signatures and served at `/openapi.json`, `/docs` (Swagger UI) and `/redoc`.
 
 A typed query DSL compiles to a backend-neutral `QueryPlan`:
 
@@ -67,7 +70,7 @@ cargo run -p hello_world
 
 1. Foundation: done
 2. HTTP framework: done (route macros, DI, middleware, lifespan, WebSockets, OpenAPI 3.1)
-3. Validation derives and serialization
+3. Validation and serialization: done (Pydantic-style pipeline, validators, computed fields, dump options, constrained types)
 4. ORM models, QuerySet, relations, transactions, migrations
 5. MySQL, MongoDB, Redis
 6. CLI, benchmarks, release tooling
