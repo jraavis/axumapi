@@ -10,10 +10,11 @@ use crate::db::Db;
 use crate::error::OrmError;
 use crate::expr::Expr;
 use crate::model::Model;
-use crate::persist::value_key;
+use crate::persist::{pk_field, value_key};
 use crate::plan::QueryPlan;
 use crate::queryset::QuerySet;
 use crate::relations::ManyToManyManager;
+use crate::signals::{M2mAction, SignalKind, SignalName};
 use crate::types::DbType;
 use crate::value::Value;
 use crate::write::{DeletePlan, InsertPlan, WritePlan};
@@ -114,7 +115,9 @@ impl<S: Model, T: Model> ManyToManyManager<S, T> {
     /// # Errors
     /// Capability or backend errors.
     pub async fn clear(&self) -> Result<u64, OrmError> {
-        self.unlink(self.db(), None).await
+        self.db()
+            .transaction(|tx| async move { self.unlink(&tx, None).await })
+            .await
     }
 
     /// Make `objects` exactly the related set: add the missing, remove the rest.
@@ -176,7 +179,40 @@ impl<S: Model, T: Model> ManyToManyManager<S, T> {
         Ok(linked)
     }
 
+    /// Send `m2m_changed` for `action` to receivers typed on the source model.
+    ///
+    /// The source object is loaded by primary key, and only when a receiver is
+    /// connected, so unobserved relations pay nothing.
+    async fn notify(&self, db: &Db, action: M2mAction, keys: &[Value]) -> Result<(), OrmError> {
+        let signals = db.signals();
+        if !signals.has_receivers::<S>(SignalName::M2mChanged) {
+            return Ok(());
+        }
+        let pk = pk_field::<S>()?;
+        let source = S::objects(db)
+            .get(Expr::col(pk.column).eq(Expr::Value(self.source_pk().clone())))
+            .await?;
+        signals
+            .send(
+                db,
+                &source,
+                SignalKind::M2mChanged { action },
+                Some(self.meta().name),
+                keys,
+            )
+            .await
+    }
+
     async fn link(&self, db: &Db, keys: Vec<Value>) -> Result<(), OrmError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        self.notify(db, M2mAction::PreAdd, &keys).await?;
+        self.insert_links(db, &keys).await?;
+        self.notify(db, M2mAction::PostAdd, &keys).await
+    }
+
+    async fn insert_links(&self, db: &Db, keys: &[Value]) -> Result<(), OrmError> {
         let meta = self.meta();
         let per_statement = (db.capabilities().max_params / 2).max(1);
         for keys in keys.chunks(per_statement) {
@@ -194,10 +230,23 @@ impl<S: Model, T: Model> ManyToManyManager<S, T> {
         Ok(())
     }
 
+    /// Remove the links to `keys`, or every link for `None`.
     async fn unlink(&self, db: &Db, keys: Option<Vec<Value>>) -> Result<u64, OrmError> {
+        let (pre, post, pk_set) = match &keys {
+            Some(keys) if keys.is_empty() => return Ok(0),
+            Some(keys) => (M2mAction::PreRemove, M2mAction::PostRemove, keys.as_slice()),
+            None => (M2mAction::PreClear, M2mAction::PostClear, [].as_slice()),
+        };
+        self.notify(db, pre, pk_set).await?;
+        let removed = self.delete_links(db, keys.as_deref()).await?;
+        self.notify(db, post, pk_set).await?;
+        Ok(removed)
+    }
+
+    async fn delete_links(&self, db: &Db, keys: Option<&[Value]>) -> Result<u64, OrmError> {
         let meta = self.meta();
         let per_statement = db.capabilities().max_params.saturating_sub(1).max(1);
-        let batches: Vec<Option<&[Value]>> = match &keys {
+        let batches: Vec<Option<&[Value]>> = match keys {
             Some(keys) => keys.chunks(per_statement).map(Some).collect(),
             None => vec![None],
         };

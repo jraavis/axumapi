@@ -3,10 +3,16 @@
 //!
 //! # Semantics
 //!
-//! * **One statement, no hooks.** Each operation is a single SQL statement
-//!   (`save` may be two, see below). There are no pre/post-save signals; put
-//!   such logic in the calling code, and use [`Db::on_commit`] for work that
-//!   must run only after the surrounding transaction commits.
+//! * **One statement, signals around it.** Each operation is a single SQL
+//!   statement (`save` may be two, see below). `save` sends `pre_save` before
+//!   and `post_save` (with the `created` flag) after it; `delete` sends
+//!   `pre_delete` before and `post_delete` after a row was removed. Receivers
+//!   are those connected to [`Db::signals`]; see [`signals`](crate::signals)
+//!   for ordering and failure rules. A failing `pre_*` receiver aborts the
+//!   operation; a failing `post_*` receiver errors after the statement ran,
+//!   so wrap the call in [`Db::transaction`] to roll it back. Use
+//!   [`Db::on_commit`] for work that must run only after the surrounding
+//!   transaction commits. Bulk `QuerySet` writes send no signals.
 //! * **Atomicity.** A single statement is atomic. `save` on a manual primary
 //!   key runs `UPDATE` and, if no row matched, `INSERT`; outside a transaction
 //!   another writer can slip in between the two, so wrap concurrent upserts in
@@ -22,6 +28,7 @@ use crate::db::Db;
 use crate::error::{OrmError, QueryError};
 use crate::model::Model;
 use crate::persist::{insert_one, pk_filter, update_one};
+use crate::signals::SignalKind;
 use crate::write::{DeletePlan, WritePlan};
 use std::future::Future;
 
@@ -35,7 +42,9 @@ pub trait ModelOps: Model {
     ///
     /// # Errors
     /// Capability or backend errors; [`BackendError::Constraint`](crate::BackendError::Constraint)
-    /// for unique / foreign-key violations.
+    /// for unique / foreign-key violations; [`OrmError::Signal`] when a
+    /// `pre_save` receiver aborts the save (nothing is written) or a
+    /// `post_save` receiver fails (the row is already written).
     fn save(&mut self, db: &Db) -> impl Future<Output = Result<(), OrmError>> + Send;
 
     /// Delete this object's row, returning the number of rows removed
@@ -43,7 +52,9 @@ pub trait ModelOps: Model {
     /// foreign-key actions.
     ///
     /// # Errors
-    /// Capability or backend errors (e.g. a `RESTRICT` foreign key).
+    /// Capability or backend errors (e.g. a `RESTRICT` foreign key);
+    /// [`OrmError::Signal`] from `pre_delete` (aborts) or `post_delete`
+    /// (after the row is gone). `post_delete` is skipped when no row matched.
     fn delete(&self, db: &Db) -> impl Future<Output = Result<u64, OrmError>> + Send;
 
     /// Reload every column from the database, replacing `*self`.
@@ -55,10 +66,19 @@ pub trait ModelOps: Model {
 
 impl<M: Model> ModelOps for M {
     async fn save(&mut self, db: &Db) -> Result<(), OrmError> {
-        if self.is_unsaved() || !update_one(db, self).await? {
+        let signals = db.signals();
+        signals
+            .send(db, &*self, SignalKind::PreSave, None, &[])
+            .await?;
+        let created = if self.is_unsaved() || !update_one(db, self).await? {
             insert_one(db, self).await?;
-        }
-        Ok(())
+            true
+        } else {
+            false
+        };
+        signals
+            .send(db, &*self, SignalKind::PostSave { created }, None, &[])
+            .await
     }
 
     async fn delete(&self, db: &Db) -> Result<u64, OrmError> {
@@ -67,7 +87,17 @@ impl<M: Model> ModelOps for M {
             filter: Some(pk_filter::<M>(&self.pk())?),
             returning: Vec::new(),
         });
-        Ok(db.execute(&plan).await?.rows_affected)
+        let signals = db.signals();
+        signals
+            .send(db, self, SignalKind::PreDelete, None, &[])
+            .await?;
+        let removed = db.execute(&plan).await?.rows_affected;
+        if removed > 0 {
+            signals
+                .send(db, self, SignalKind::PostDelete, None, &[])
+                .await?;
+        }
+        Ok(removed)
     }
 
     async fn refresh(&mut self, db: &Db) -> Result<(), OrmError> {

@@ -1,6 +1,7 @@
 //! ORM error hierarchy. HTTP mapping lives in `axumapi-core`.
 
 use crate::capabilities::{BackendKind, Feature};
+use crate::signals::SignalError;
 use thiserror::Error;
 
 /// A feature was requested that the backend does not support.
@@ -93,4 +94,15 @@ pub enum OrmError {
     /// Capability mismatch.
     #[error(transparent)]
     Capability(#[from] BackendCapabilityError),
+    /// A signal receiver failed. A failing `pre_*` receiver aborted the
+    /// operation; a failing `post_*` receiver ran after the statement.
+    /// Maps to HTTP 500 (`ApiError: From<OrmError>` falls through to internal).
+    #[error(transparent)]
+    Signal(#[from] SignalError),
+    /// A database alias is not registered in [`Databases`](crate::Databases).
+    ///
+    /// A configuration problem (a router named an alias that was never
+    /// registered, or there is no `"default"`), so it maps to HTTP 500.
+    #[error("no database is registered under the alias `{0}`")]
+    UnknownDatabase(String),
 }

@@ -22,6 +22,19 @@ pub enum BackendKind {
     Redis,
 }
 
+impl BackendKind {
+    /// Value of the `db.system` tracing attribute for this backend.
+    pub fn system_name(self) -> &'static str {
+        match self {
+            Self::Postgres => "postgresql",
+            Self::Sqlite => "sqlite",
+            Self::MySql => "mysql",
+            Self::MongoDb => "mongodb",
+            Self::Redis => "redis",
+        }
+    }
+}
+
 /// Transaction support level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TransactionSupport {

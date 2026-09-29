@@ -15,7 +15,9 @@ impl<M: Model> QuerySet<M> {
     /// and `order_by` terms must name output columns.
     ///
     /// # Errors
-    /// [`QueryError::InvalidPlan`] if the projections differ.
+    /// [`QueryError::InvalidPlan`] if the projections differ or the querysets
+    /// are bound to different databases (see
+    /// [`Db::same_database`](crate::Db::same_database)).
     pub fn union(self, other: QuerySet<M>) -> Result<Self, QueryError> {
         self.combine(SetOp::Union, other)
     }
@@ -47,6 +49,11 @@ impl<M: Model> QuerySet<M> {
     fn combine(self, op: SetOp, other: QuerySet<M>) -> Result<Self, QueryError> {
         self.ready()?;
         other.ready()?;
+        if !self.db.same_database(&other.db) {
+            return Err(QueryError::InvalidPlan(
+                "querysets bound to different databases cannot be combined".into(),
+            ));
+        }
         let (mut base, mut member) = (self.materialize_empty(), other.materialize_empty());
         if shape::<M>(&base.plan) != shape::<M>(&member.plan) {
             return Err(QueryError::InvalidPlan(
