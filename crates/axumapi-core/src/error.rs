@@ -3,7 +3,7 @@
 use crate::response::{IntoResponse, Response, with_content_type};
 use axumapi_openapi::{Operation, Schema, SchemaObject, SchemaRegistry};
 use axumapi_orm::{BackendError, OrmError, QueryError};
-use http::StatusCode;
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use serde::Serialize;
 use serde_json::Value;
 use std::fmt::Display;
@@ -30,6 +30,9 @@ pub struct ApiError {
     /// Boxed so `ApiError` stays small when `serde_json` is built with
     /// `preserve_order` (pulled in by the MongoDB driver under `--all-features`).
     errors: Option<Box<Value>>,
+    /// Extra response headers (for example `WWW-Authenticate`); boxed for the
+    /// same reason as `errors`.
+    headers: Option<Box<HeaderMap>>,
 }
 
 #[derive(Serialize)]
@@ -53,6 +56,7 @@ impl ApiError {
             type_uri: "about:blank".to_owned(),
             detail: Some(detail.into()),
             errors: None,
+            headers: None,
         }
     }
 
@@ -89,6 +93,20 @@ impl ApiError {
         self
     }
 
+    /// Attach a response header (appended if the name is already set).
+    #[must_use]
+    pub fn with_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
+        self.headers
+            .get_or_insert_with(Default::default)
+            .append(name, value);
+        self
+    }
+
+    /// Extra response headers attached with [`with_header`](Self::with_header).
+    pub fn headers(&self) -> Option<&HeaderMap> {
+        self.headers.as_deref()
+    }
+
     /// The HTTP status code.
     pub fn status(&self) -> StatusCode {
         self.status
@@ -122,6 +140,9 @@ impl IntoResponse for ApiError {
         let body = serde_json::to_vec(&problem).unwrap_or_else(|_| FALLBACK_BODY.to_vec());
         let mut response = with_content_type(PROBLEM_JSON, body);
         *response.status_mut() = self.status;
+        if let Some(extra) = self.headers {
+            response.headers_mut().extend(*extra);
+        }
         response
     }
 

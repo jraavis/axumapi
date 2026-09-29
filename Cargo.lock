@@ -261,6 +261,7 @@ dependencies = [
  "axumapi-orm",
  "axumapi-testkit",
  "axumapi-validation",
+ "base64",
  "bytes",
  "cookie",
  "futures-util",

@@ -50,6 +50,10 @@ pub use responses::{FileResponse, Redirect, StreamingResponse, WithHeaders};
 pub use routing::{
     MethodRouter, OperationMeta, Route, delete, get, head, options, patch, post, put,
 };
+pub use security::{
+    ApiKey, ApiKeyLocation, ApiKeySpec, Authenticate, HttpBasic, HttpBearer, NoScopes,
+    OAuth2PasswordBearer, OAuth2PasswordRequestForm, OAuth2Spec, Scopes, Security,
+};
 pub use service::RouterService;
 pub use state::State;
 pub use ws::{CloseFrame, Message, WebSocket, WebSocketResponse, WebSocketUpgrade, WsError};

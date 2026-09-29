@@ -14,6 +14,7 @@ workspace = true
 axumapi-openapi.workspace = true
 axumapi-orm.workspace = true
 axumapi-validation.workspace = true
+base64.workspace = true
 bytes.workspace = true
 cookie.workspace = true
 futures-util.workspace = true
