@@ -16,3 +16,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 regex.workspace = true
 serde_path_to_error.workspace = true
+url.workspace = true
+uuid.workspace = true
+rust_decimal.workspace = true
