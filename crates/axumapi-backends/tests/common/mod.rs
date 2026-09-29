@@ -116,7 +116,7 @@ impl Author {
     }
 
     pub fn books(&self, db: &Db) -> axumapi_orm::QuerySet<Book> {
-        Book::objects(db).filter(Book::author.expr().eq(self.id))
+        Book::objects(db).filter(Book::author.eq(self.id))
     }
 }
 
@@ -541,4 +541,93 @@ pub async fn db() -> Db {
     let db = Db::new(SqliteBackend::connect("sqlite::memory:").await.unwrap());
     db.execute_script(SCHEMA).await.unwrap();
     db
+}
+
+/// Rows created by [`seed`].
+pub struct Seed {
+    pub red: Team,
+    pub blue: Team,
+    pub ann: Author,
+    pub bob: Author,
+    pub cy: Author,
+    pub dee: Author,
+    pub books: Vec<Book>,
+}
+
+impl Seed {
+    /// The seeded book called `title`.
+    pub fn book(&self, title: &str) -> &Book {
+        self.books.iter().find(|b| b.title == title).unwrap()
+    }
+}
+
+/// Two teams, four authors (ages 30, 25, none, 41) and five books.
+pub async fn seed(db: &Db) -> Seed {
+    use axumapi_orm::ModelOps;
+    async fn saved<T: Model + Send>(db: &Db, mut model: T) -> T {
+        model.save(db).await.unwrap();
+        model
+    }
+    let red = saved(
+        db,
+        Team {
+            id: 0,
+            name: "Red".into(),
+        },
+    )
+    .await;
+    let blue = saved(
+        db,
+        Team {
+            id: 0,
+            name: "Blue".into(),
+        },
+    )
+    .await;
+    let author = |name: &str, age: Option<i32>, team: Option<&Team>| Author {
+        team: team.map(|t| ForeignKey::new(t.id)),
+        ..Author::new(name, age)
+    };
+    let ann = saved(db, author("Ann", Some(30), Some(&red))).await;
+    let bob = saved(db, author("Bob", Some(25), Some(&blue))).await;
+    let cy = saved(db, author("Cy", None, None)).await;
+    let dee = saved(db, author("Dee", Some(41), Some(&red))).await;
+    let book = |title: &str,
+                by: &Author,
+                likes,
+                dislikes,
+                pages,
+                price: (i64, u32),
+                published: (i32, u32, u32)| Book {
+        likes,
+        dislikes,
+        pages,
+        price: Decimal::new(price.0, price.1),
+        published: NaiveDate::from_ymd_opt(published.0, published.1, published.2).unwrap(),
+        ..Book::new(title, by.id)
+    };
+    let mut books = Vec::new();
+    for b in [
+        book("Rust", &ann, 10, 2, Some(300), (3000, 2), (2020, 3, 15)),
+        book("Async", &ann, 5, 5, None, (1250, 2), (2021, 7, 1)),
+        book("SQL", &bob, 8, 1, Some(150), (2000, 2), (2019, 12, 31)),
+        book("Go", &dee, 1, 0, Some(200), (4599, 2), (2022, 11, 20)),
+        book("Zig", &dee, 3, 3, Some(120), (999, 2), (2022, 2, 2)),
+    ] {
+        books.push(saved(db, b).await);
+    }
+    Seed {
+        red,
+        blue,
+        ann,
+        bob,
+        cy,
+        dee,
+        books,
+    }
+}
+
+/// Titles of `books`, in order.
+pub fn titles(books: &[Book]) -> Vec<&str> {
+    books.iter().map(|b| b.title.as_str()).collect()
 }

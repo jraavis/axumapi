@@ -17,6 +17,7 @@
 pub mod backend;
 pub mod capabilities;
 pub mod db;
+pub mod decode;
 pub mod error;
 pub mod expr;
 pub mod model;
@@ -34,16 +35,24 @@ pub use capabilities::{
     BackendCapabilities, BackendKind, Feature, IsolationLevel, RowLocking, TransactionSupport,
 };
 pub use db::{Databases, Db};
+pub use decode::FromValues;
 pub use error::{BackendCapabilityError, BackendError, OrmError, QueryError};
-pub use expr::{BinaryOp, Column, Expr, Field, Lookup, Operand, UnaryOp};
+pub use expr::functions;
+pub use expr::{
+    AggFunc, Aggregate, ArrayAgg, Avg, BinaryOp, Calc, CaseBuilder, Column, Count, CumeDist,
+    DateLike, DatePart, DenseRank, Expr, Field, FirstValue, FkSlot, Function, Joined, Lag,
+    LastValue, Lead, Literal, Lookup, Max, Min, Ntile, Numeric, Operand, PercentRank, Rank, RelHop,
+    Related, RelatedColumn, RowNumber, StdDev, StringAgg, Sum, TextLike, TimeLike, UnaryOp,
+    Variance, Window, WindowFunc,
+};
 pub use model::{
     ConstraintMeta, DbDefault, FieldMeta, IndexMeta, ManyToManyMeta, MetaRef, Model, ModelMeta,
     OnDelete, RelationKind, RelationMeta, read_column,
 };
 pub use ops::ModelOps;
 pub use plan::{
-    DistinctMode, JoinExpr, JoinKind, LockMode, OrderDirection, OrderExpr, QueryPlan, QuerySource,
-    SelectExpr,
+    Compound, DistinctMode, JoinExpr, JoinKind, LockMode, OrderDirection, OrderExpr, QueryPlan,
+    QuerySource, SelectExpr, SetOp,
 };
 pub use queryset::QuerySet;
 pub use relations::{ForeignKey, ManyToManyManager, OneToOne};

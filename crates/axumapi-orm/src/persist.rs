@@ -125,3 +125,35 @@ async fn replace_from_returning<M: Model>(
         None => Ok(false),
     }
 }
+
+/// Stable map key for a primary-key value (`Value` is not `Hash`).
+pub(crate) fn value_key(value: &Value) -> String {
+    format!("{value:?}")
+}
+
+/// Put `returned` rows of a multi-row `INSERT .. RETURNING` back in the order
+/// of `inputs`, without relying on the database's `RETURNING` order.
+///
+/// Generated (auto) keys are assigned in insertion order, so sorting by key
+/// restores it; manual keys are matched against the inputs.
+pub(crate) fn restore_order<M: Model>(inputs: &[M], mut returned: Vec<M>) -> Vec<M> {
+    if pk_field::<M>().is_ok_and(|f| f.auto) {
+        returned.sort_by_key(|m| match m.pk().to_value() {
+            Value::Int(i) => i,
+            _ => 0,
+        });
+    } else {
+        let positions: std::collections::HashMap<String, usize> = inputs
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (value_key(&m.pk().to_value()), i))
+            .collect();
+        returned.sort_by_key(|m| {
+            positions
+                .get(&value_key(&m.pk().to_value()))
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+    }
+    returned
+}
