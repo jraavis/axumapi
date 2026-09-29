@@ -1,7 +1,8 @@
 //! `derive(Schema)` for enums.
 
-use super::attrs::{ContainerAttrs, VariantAttrs};
-use super::fields::{object_expr, tuple_items};
+use super::fields::{ObjectSpec, elements, object_expr};
+use crate::attrs::model::Container;
+use crate::attrs::serde::VariantSerde;
 use crate::diag::Errors;
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -16,8 +17,12 @@ enum Repr {
     Untagged,
 }
 
-fn representation(container: &ContainerAttrs, errors: &mut Errors) -> Repr {
-    match (&container.tag, &container.content, container.untagged) {
+fn representation(container: &Container, errors: &mut Errors) -> Repr {
+    match (
+        &container.serde.tag,
+        &container.serde.content,
+        container.serde.untagged,
+    ) {
         (Some(tag), _, true) => {
             errors.spanned(tag, "`untagged` cannot be combined with `tag`");
             Repr::Untagged
@@ -34,18 +39,19 @@ fn representation(container: &ContainerAttrs, errors: &mut Errors) -> Repr {
 }
 
 /// Body of `Schema::schema` (before the type's own annotations).
-pub fn body(data: &DataEnum, container: &ContainerAttrs, errors: &mut Errors) -> TokenStream {
+pub fn body(data: &DataEnum, container: &Container, errors: &mut Errors) -> TokenStream {
     let repr = representation(container, errors);
     let mut seen = HashSet::new();
     let mut variants = Vec::new();
     for variant in &data.variants {
-        let attrs = VariantAttrs::parse(&variant.attrs, errors);
+        let attrs = VariantSerde::parse(&variant.attrs, errors);
         if attrs.skipped() {
             continue;
         }
         let raw = syn::ext::IdentExt::unraw(&variant.ident).to_string();
         let name = attrs.rename.clone().unwrap_or_else(|| {
             container
+                .serde
                 .rename_all
                 .map_or(raw.clone(), |r| r.apply_to_variant(&raw))
         });
@@ -72,9 +78,9 @@ pub fn body(data: &DataEnum, container: &ContainerAttrs, errors: &mut Errors) ->
 
 fn variant_schema(
     repr: &Repr,
-    container: &ContainerAttrs,
+    container: &Container,
     variant: &Variant,
-    attrs: &VariantAttrs,
+    attrs: &VariantSerde,
     name: &str,
     errors: &mut Errors,
 ) -> TokenStream {
@@ -83,7 +89,7 @@ fn variant_schema(
     let payload: Option<TokenStream> = match &variant.fields {
         Fields::Unit => None,
         Fields::Unnamed(fields) => {
-            let mut items = tuple_items(fields, errors);
+            let mut items = elements(fields, errors);
             Some(if items.len() == 1 {
                 items.remove(0)
             } else {
@@ -91,19 +97,19 @@ fn variant_schema(
             })
         }
         Fields::Named(fields) => {
-            let rule = attrs.rename_all.or(container.rename_all_fields);
+            let rule = attrs.rename_all.or(container.serde.rename_all_fields);
             let tag = match repr {
                 Repr::Internal(tag) => Some((tag.as_str(), name)),
                 _ => None,
             };
-            let object = object_expr(
-                fields,
+            let spec = ObjectSpec {
                 rule,
-                false,
-                container.deny_unknown_fields,
+                container_default: false,
+                deny_unknown_fields: container.forbids_extra(),
                 tag,
-                errors,
-            );
+                computed: None,
+            };
+            let object = object_expr(fields, &spec, errors);
             if tag.is_some() {
                 // Internally tagged struct variants are already complete.
                 return object;

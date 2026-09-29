@@ -1,0 +1,11 @@
+error: `default` needs a matching serde default so deserialization agrees: add `#[serde(default)]` or `#[serde(default = "path")]` to this field
+ --> tests/ui/field_default_without_serde_default.rs:5:23
+  |
+5 |     #[field(default = 5)]
+  |                       ^
+
+error: `default_factory` needs a matching serde default so deserialization agrees: add `#[serde(default)]` or `#[serde(default = "path")]` to this field
+ --> tests/ui/field_default_without_serde_default.rs:7:31
+  |
+7 |     #[field(default_factory = String::new)]
+  |                               ^^^^^^

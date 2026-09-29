@@ -2,12 +2,12 @@
 
 use axumapi::prelude::*;
 
-#[derive(Deserialize, Schema)]
+#[derive(Deserialize, Validate, Schema)]
 struct Greeting {
     shout: Option<bool>,
 }
 
-#[derive(Serialize, Deserialize, Schema)]
+#[derive(Serialize, Deserialize, Validate, Schema)]
 struct Message {
     message: String,
 }

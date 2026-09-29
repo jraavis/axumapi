@@ -1,13 +1,13 @@
 //! Code generation for fields: properties, tuple items and annotations.
 
-use super::attrs::{FieldAttrs, Keyword};
-use super::rename::RenameRule;
+use crate::attrs::field::Keyword;
+use crate::attrs::plan::{TupleElement, resolve_named};
+use crate::attrs::rename::RenameRule;
 use crate::diag::Errors;
-use crate::docs;
+use crate::probe::Hooks;
 use proc_macro2::TokenStream;
 use quote::quote;
-use std::collections::HashSet;
-use syn::{Field, FieldsNamed, FieldsUnnamed, Type};
+use syn::{FieldsNamed, FieldsUnnamed, Type};
 
 /// Wrap `base` (an expression producing a `SchemaObject`) with schema keywords.
 pub fn annotate(base: TokenStream, keywords: &[Keyword]) -> TokenStream {
@@ -28,100 +28,61 @@ pub fn doc_keywords(description: Option<String>) -> Vec<Keyword> {
         .collect()
 }
 
-fn field_schema(ty: &Type, attrs: &FieldAttrs) -> TokenStream {
-    annotate(quote!(registry.subschema::<#ty>()), &attrs.keywords)
-}
-
-/// Whether `ty` is syntactically `Option<..>`.
-fn is_option(ty: &Type) -> bool {
-    let Type::Path(path) = ty else { return false };
-    path.qself.is_none()
-        && path.path.segments.last().is_some_and(|seg| {
-            seg.ident == "Option" && matches!(seg.arguments, syn::PathArguments::AngleBracketed(_))
-        })
-}
-
-fn field_attrs(field: &Field, errors: &mut Errors) -> FieldAttrs {
-    FieldAttrs::parse(&field.attrs, docs::description(&field.attrs), errors)
-}
-
-/// Statements adding each non-skipped named field to `__object`.
-///
-/// `reserved` lists property names already taken (e.g. an enum tag).
-pub fn named_properties(
-    fields: &FieldsNamed,
-    rule: Option<RenameRule>,
-    container_default: bool,
-    reserved: &[String],
-    errors: &mut Errors,
-) -> Vec<TokenStream> {
-    let mut seen: HashSet<String> = reserved.iter().cloned().collect();
-    let mut out = Vec::new();
-    for field in &fields.named {
-        let attrs = field_attrs(field, errors);
-        if attrs.skipped() {
-            continue;
-        }
-        let Some(ident) = &field.ident else { continue };
-        let raw = syn::ext::IdentExt::unraw(ident).to_string();
-        let name = attrs
-            .rename
-            .clone()
-            .or_else(|| attrs.alias.clone())
-            .unwrap_or_else(|| rule.map_or(raw.clone(), |r| r.apply_to_field(&raw)));
-        if !seen.insert(name.clone()) {
-            errors.spanned(ident, format!("duplicate property name `{name}`"));
-            continue;
-        }
-        let required = !(is_option(&field.ty)
-            || attrs.default
-            || container_default
-            || attrs.skip_deserializing);
-        let schema = field_schema(&field.ty, &attrs);
-        out.push(quote!(__object.property(#name, #required, #schema);));
-    }
-    out
+fn field_schema(ty: &Type, keywords: &[Keyword]) -> TokenStream {
+    annotate(quote!(registry.subschema::<#ty>()), keywords)
 }
 
 /// Schema expressions for the elements of a tuple struct or variant.
-pub fn tuple_items(fields: &FieldsUnnamed, errors: &mut Errors) -> Vec<TokenStream> {
-    fields
-        .unnamed
+pub fn tuple_items(elements: &[TupleElement<'_>]) -> Vec<TokenStream> {
+    elements
         .iter()
-        .map(|field| {
-            let attrs = field_attrs(field, errors);
-            if attrs.skip_serializing || attrs.skip_deserializing {
-                errors.spanned(
-                    field,
-                    "`skip` is not supported on tuple fields by derive(Schema)",
-                );
-            }
-            field_schema(&field.ty, &attrs)
-        })
+        .map(|e| field_schema(e.ty, &e.schema_keywords()))
         .collect()
 }
 
+/// How an object schema is built.
+pub struct ObjectSpec<'a> {
+    pub rule: Option<RenameRule>,
+    pub container_default: bool,
+    pub deny_unknown_fields: bool,
+    /// Leading constant property `(tag_name, variant_name)` of internally
+    /// tagged variants.
+    pub tag: Option<(&'a str, &'a str)>,
+    /// Computed-field documentation (top-level structs only).
+    pub computed: Option<Hooks>,
+}
+
 /// Object schema expression for named fields.
-///
-/// `tag` optionally adds a leading required constant property
-/// `(tag_name, variant_name)` for internally tagged enums.
 pub fn object_expr(
     fields: &FieldsNamed,
-    rule: Option<RenameRule>,
-    container_default: bool,
-    deny_unknown_fields: bool,
-    tag: Option<(&str, &str)>,
+    spec: &ObjectSpec<'_>,
     errors: &mut Errors,
 ) -> TokenStream {
-    let reserved: Vec<String> = tag.iter().map(|(t, _)| (*t).to_owned()).collect();
-    let props = named_properties(fields, rule, container_default, &reserved, errors);
-    let tag_stmt = tag.map(|(tag, name)| {
+    let reserved: Vec<String> = spec.tag.iter().map(|(t, _)| (*t).to_owned()).collect();
+    let plans = resolve_named(fields, spec.rule, spec.container_default, &reserved, errors);
+    let props = plans.iter().map(|plan| {
+        let (key, required) = (&plan.key, plan.required);
+        let schema = field_schema(plan.ty, &plan.schema_keywords());
+        quote!(__object.property(#key, #required, #schema);)
+    });
+    let tag_stmt = spec.tag.map(|(tag, name)| {
         quote!(__object.property(#tag, true, ::axumapi::__private::const_string(#name));)
     });
+    let computed = spec
+        .computed
+        .map(|hooks| hooks.computed_schema(quote!(__object.properties_mut())));
+    let deny = spec.deny_unknown_fields;
     quote! {{
         let mut __object = ::axumapi::__private::ObjectBuilder::new();
         #tag_stmt
         #(#props)*
-        __object.build(#deny_unknown_fields)
+        #computed
+        __object.build(#deny)
     }}
+}
+
+/// Tuple elements of an unnamed field list.
+pub fn elements(fields: &FieldsUnnamed, errors: &mut Errors) -> Vec<TokenStream> {
+    let resolved = crate::attrs::plan::resolve_unnamed(fields, errors);
+    tuple_items(&resolved)
 }

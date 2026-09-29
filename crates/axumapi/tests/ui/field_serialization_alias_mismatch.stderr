@@ -1,0 +1,11 @@
+error: `serialization_alias` must equal the serde key `a`: validation and serialization share one schema, so use `#[serde(rename = "other")]` instead
+ --> tests/ui/field_serialization_alias_mismatch.rs:5:35
+  |
+5 |     #[field(serialization_alias = "other")]
+  |                                   ^^^^^^^
+
+error: `alias` must equal the serde key `b`; use `#[serde(rename = "renamed")]` to rename the field, or `validation_alias` for an extra accepted input name
+ --> tests/ui/field_serialization_alias_mismatch.rs:7:21
+  |
+7 |     #[field(alias = "renamed")]
+  |                     ^^^^^^^^^

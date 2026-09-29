@@ -23,6 +23,7 @@ struct UserOut {
     #[field(ge = 0, le = 150, examples(30, 40))]
     age: i32,
     #[serde(default)]
+    #[field(default_factory = String::new)]
     nickname: String,
     #[serde(skip)]
     internal: u8,
@@ -30,11 +31,12 @@ struct UserOut {
     hidden_both: u8,
     #[serde(skip_deserializing)]
     server_only: u8,
-    #[field(alias = "site", url, title = "Website", default_factory = String::new)]
+    #[serde(rename = "site")]
+    #[field(alias = "site", url, title = "Website")]
     website: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Schema)]
+#[derive(Serialize, Deserialize, Validate, Schema)]
 struct UserIn {
     name: String,
 }
