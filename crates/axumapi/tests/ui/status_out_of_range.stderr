@@ -1,0 +1,5 @@
+error: status must be an HTTP status code between 100 and 599, found `700`
+ --> tests/ui/status_out_of_range.rs:3:27
+  |
+3 | #[post("/users", status = 700)]
+  |                           ^^^

@@ -1,0 +1,198 @@
+# Routing
+
+axumapi routes are plain values. A path plus a `MethodRouter` makes a `Route`;
+an `App` collects routes, mounts other apps and generates the OpenAPI 3.1
+document from the same values, so docs cannot drift from the code.
+
+## Function API
+
+```rust
+use axumapi::prelude::*;
+
+let app = App::new()
+    .title("Users")
+    .version("1.0.0")
+    .route(
+        "/users",
+        post(create_user).status(StatusCode::CREATED).tag("users")
+            .get(list_users).summary("List users"),
+    );
+```
+
+* `get`, `post`, `put`, `patch`, `delete`, `head`, `options` create a
+  `MethodRouter` and can be chained (`.get(..).post(..)`); `.on(Method, h)`
+  takes any method.
+* Metadata builders `.summary() .description() .tag() .operation_id()
+  .deprecated() .hidden() .status(StatusCode) .response_model::<T>()` apply to
+  the **most recently added** method, so order matters.
+* `App::routes(iter)` accepts `Route`s (`Route::new(path, router)`), which is
+  what the macros below produce.
+* Path templates use `{name}` parameters (`{*rest}` for a catch-all). Duplicate
+  `(path, method)` pairs and paths without a leading `/` are rejected when
+  the app is built.
+
+## Route macros
+
+`#[get]`, `#[post]`, `#[put]`, `#[patch]`, `#[delete]`, `#[head]`,
+`#[options]` and `#[ws]` (a `GET`) attach a route to an `async fn`.
+
+```rust
+/// Create a user.
+///
+/// Stores the user and returns it.
+#[post("/users", status = 201, response_model = UserOut, tag = "users",
+       tags("a", "b"), summary = "..", description = "..",
+       operation_id = "..", deprecated, hidden)]
+async fn create_user(Json(input): Json<UserIn>) -> Json<UserOut> { /* .. */ }
+```
+
+The first argument is the path (a string literal). All other arguments are
+optional and may appear in any order; each may appear once (`tag` and `tags`
+are separate keys and are combined).
+
+### Exact expansion
+
+The function is left untouched (it stays callable). Next to it, with the same
+visibility, the macro emits:
+
+```rust
+#[doc(hidden)]
+#[allow(non_snake_case, dead_code)]
+fn __axumapi_route_create_user() -> ::axumapi::Route {
+    ::axumapi::Route::new(
+        "/users",
+        ::axumapi::post(create_user)
+            .operation_id("create_user")
+            .summary("Create a user.")
+            .description("Stores the user and returns it.")
+            .tag("users").tag("a").tag("b")
+            .status(::axumapi::http::StatusCode::from_u16(201)
+                .unwrap_or(::axumapi::http::StatusCode::OK))
+            .response_model::<UserOut>(),
+    )
+}
+```
+
+`deprecated` and `hidden` add `.deprecated()` / `.hidden()`. `#[ws]` uses
+`::axumapi::get`. The `unwrap_or` fallback is unreachable: the status is
+validated at compile time.
+
+### Metadata semantics
+
+* `operation_id` defaults to the function name.
+* `summary` defaults to the first line of the doc comment; `description`
+  defaults to the remaining lines (each trimmed, joined with `\n`, omitted
+  when empty). Explicit arguments replace the doc-derived value.
+* `status` (100..=599) replaces a `200 OK` returned by the handler at runtime
+  and moves the documented success response to that code. Handlers returning
+  another status (e.g. `WithStatus`) are not altered.
+* `response_model = T` documents the success body as `T` (`application/json`)
+  regardless of the return type; it does not convert the response.
+* `hidden` serves the route but omits it from the OpenAPI document.
+
+### Compile-time diagnostics
+
+Reported with spans on the offending token: path not a string literal or not
+starting with `/`, unbalanced braces, invalid or duplicate `{param}` names,
+unknown or duplicate arguments, status outside 100..=599, non-`async` or
+generic handlers, and route attributes on items other than functions.
+
+## `routes![]`
+
+```rust
+App::new().routes(routes![create_user, users::list])
+```
+
+expands to
+
+```rust
+::std::vec![__axumapi_route_create_user(), users::__axumapi_route_list()]
+```
+
+Only the last path segment is rewritten (a leading `::` is kept); generic
+arguments are rejected. `routes![]` is an empty `Vec`; a trailing comma is
+fine. Because the generated function is separate from the handler, refer to
+handlers by a path where they are defined (`users::list`), not through a
+`use users::list;` re-import of the handler alone.
+
+## Handlers, extractors and responses
+
+A handler is an `async fn` with zero or more arguments returning something
+that implements `IntoResponse`. Every argument except the last implements
+`FromRequestParts`; the **last** argument may implement `FromRequest` and thus
+consume the request body (`Json<T>`, `Form<T>`, raw bodies). Built-in
+extractors: `Path<T>`, `Query<T>`, `Json<T>`, `State<T>`, ... All traits are
+axumapi's own; no axum types leak into the public API.
+
+Custom extractors and responses document themselves through the optional
+`describe` hook, which receives the `Operation` being built and the
+`SchemaRegistry`:
+
+```rust
+struct ApiKey;
+
+impl FromRequestParts for ApiKey {
+    async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> { /* .. */ }
+
+    fn describe(op: &mut Operation, r: &mut SchemaRegistry) {
+        op.add_parameter(Parameter::new(
+            "x-api-key", ParameterLocation::Header, true, r.subschema::<String>(),
+        ));
+    }
+}
+```
+
+`IntoResponse::describe` works the same way (e.g. `op.add_response(..)`).
+The default `describe` documents nothing, so an undocumented extractor
+still works.
+
+Types used in bodies, queries and responses derive `Schema` (see below);
+nested types are always obtained through `registry.subschema::<T>()`, so named
+types become `components.schemas` entries referenced by `$ref`.
+
+## Mounting and OpenAPI merge
+
+`App::mount(prefix, app)` (alias `nest`) serves `app` below `prefix`. For
+OpenAPI, the child's operations are added to the parent's document under the
+prefixed path (`/` maps to the prefix itself); component schemas from all
+apps share one registry, so a type used in several places is emitted once.
+Two different Rust types claiming the same schema name, duplicate operation
+ids, and duplicate `(path, method)` pairs are configuration errors reported
+when the app is built (`TestClient::try_new`, `run`) or by `App::openapi()`.
+Startup/shutdown hooks of mounted apps are lifted to the root; title, version
+and docs settings come from the root app only. State registered with
+`with_state` applies to the routes of the app it was called on.
+
+## `#[derive(Schema)]`
+
+Generates `Schema` for structs and enums, honouring the common serde
+attributes (`rename`, `rename_all`, `skip*`, `default`, `deny_unknown_fields`,
+`tag`/`content`/`untagged`) plus `#[field(..)]` constraints (`min_length`,
+`max_length`, `pattern`/`regex`, `gt`, `ge`, `lt`, `le`, `multiple_of`,
+`email`, `url`, `title`, `description`, `examples(..)`, `alias`). Unknown
+`#[field]` keys are ignored so other derives can share the attribute. Doc
+comments become descriptions. Constraints added to a `$ref` property wrap it as
+`{"allOf": [{"$ref": ..}], ...}`.
+
+* Non-generic types are named after the type; generic types are inline unless
+  `#[schema(name = "..")]`; `#[schema(inline)]` always inlines.
+* `flatten`, `transparent`, `from`/`into`/`try_from`, `remote`, `with` and
+  `serialize_with`/`deserialize_with`, split `rename(serialize = ..)` forms,
+  `other`, variant-level `untagged`, and tuple variants of internally tagged
+  enums are rejected with a compile error rather than described wrongly.
+* Internally tagged newtype variants are described as
+  `allOf [tag object, inner]`, which assumes the inner type serializes as an
+  object (as serde requires).
+
+## Differences from FastAPI
+
+* Routes are values; decorators only generate a sibling function, so nothing
+  is registered at import time and handlers stay plain callable functions.
+* Request validation is driven by types (`Json<T>`, `Query<T>`), not by
+  default-argument markers; `#[field(..)]` constraints currently feed the
+  OpenAPI schema, and enforcement arrives with the `Validate` derive.
+* No implicit dependency injection through argument defaults; extractors and
+  `State<T>` play that role.
+* `status` is per operation and replaces only a `200`, so handlers can still
+  return specific statuses themselves.
+* Routers are `App`s (`mount`) rather than a separate `APIRouter` type.

@@ -1,0 +1,5 @@
+error: `#[get]` can only be applied to `async fn` items
+ --> tests/ui/not_a_fn.rs:4:1
+  |
+4 | struct Users;
+  | ^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: route path must start with '/', found `users`
+ --> tests/ui/path_no_slash.rs:3:7
+  |
+3 | #[get("users")]
+  |       ^^^^^^^

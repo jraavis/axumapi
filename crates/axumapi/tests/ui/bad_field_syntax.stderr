@@ -1,0 +1,5 @@
+error: expected integer literal
+ --> tests/ui/bad_field_syntax.rs:5:26
+  |
+5 |     #[field(min_length = "three", ge = abc)]
+  |                          ^^^^^^^
