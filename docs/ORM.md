@@ -26,6 +26,9 @@ let adults = User::objects(&db)
     .limit(20)
     .all()
     .await?;
+
+let user = User::objects(&db).get(User::id.eq(1)).await?;
+let team = user.fetch_team(&db).await?; // Option<Arc<Team>>
 ```
 
 ## Decisions
@@ -46,7 +49,7 @@ let adults = User::objects(&db)
 * `axumapi_orm::Model`: `type Pk`, `META`, `pk`, `set_pk`, `is_unsaved`, `to_values`, `from_row(row, prefix)`, and a provided `objects(&Db)`.
 * `ModelMeta`, `FieldMeta`, `RelationMeta`, `ManyToManyMeta`, `IndexMeta`, `ConstraintMeta`, `OnDelete`, `DbDefault`.
 * `DbType`: maps a Rust type to its `SqlType`, nullability and `Value`. It is implemented for the integer and float families, `bool`, `String`, `Vec<u8>`, `Decimal`, `Uuid`, `NaiveDate`, `NaiveTime`, `DateTime<Utc>`, `TimeDelta`, `IpAddr`, JSON and `Option<T>`. Each type has a canonical text fallback, listed in `types.rs`.
-* `ForeignKey<T>` and `OneToOne<T>`: store the primary key, optionally cache the loaded object, and serialize as the key.
+* `ForeignKey<T>` and `OneToOne<T>`: store the primary key, optionally cache the loaded object, and serialize as the key. Validation and JSON Schema follow `T::Pk`.
 * `WritePlan`: `Insert`, `Update` or `Delete`, with optional `RETURNING`. Checked against backend capabilities.
 * `Executor`, `Backend` and `Transaction`: adapter traits. `Db` handles `transaction`, `transaction_with(isolation)`, savepoints, `on_commit`, `raw_sql` and `raw_execute`. `Databases` maps aliases to handles.
 * `crates/axumapi-backends/tests/reference_model.rs` contains hand-written `Author`/`Book` implementations. This is exactly the shape the derive must generate.
@@ -108,4 +111,4 @@ db.transaction(|tx| async move {
 * `related_name` on a foreign key adds `author.books(&db)`, returning a `QuerySet<Book>`. For a `OneToOne`, it adds an async `profile(&db)` returning `Option<Profile>`. The target model must be in the same crate, because the accessor is an inherent impl.
 * Each many-to-many adds `book.tags(&db)`, a `ManyToManyManager`. With `related_name`, it also adds a reverse `tag.tagged_books(&db)` queryset (a correlated `EXISTS` over the join table).
 * Generic structs are not supported.
-* `ForeignKey<T>` does not implement `Validate` or `Schema`, and the orphan rule prevents the facade from adding them. A struct that derives those together with `Model` therefore cannot contain relation fields yet.
+* `ForeignKey<T>` implements `Validate`, `Schema` and `Dump` by delegating to `T::Pk`, so a model with relation fields can derive those together with `Model`. OpenAPI shows the key type (an integer for `ForeignKey<User>` whose primary key is `i64`).

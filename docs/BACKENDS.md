@@ -5,7 +5,7 @@
 | Backend | SQL compile | Execution | Notes |
 |---|---|---|---|
 | SQLite | yes | yes (`SqliteBackend`, SQLx) | Row locking, regex, `DISTINCT ON`, arrays and `STDDEV` / `VARIANCE` are rejected with a capability error |
-| PostgreSQL | yes | yes (`PgBackend`, SQLx, feature `postgres`), **not yet run against a server** | The executor compiles and the dialect is covered by compiled-SQL assertions. `tests/postgres.rs` runs only when `DATABASE_URL` starts with `postgres` and is skipped otherwise, so it has not been executed in CI-less development. Run it once with `docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16` and `DATABASE_URL=postgres://postgres:postgres@localhost/postgres cargo test -p axumapi-backends --all-features --test postgres` |
+| PostgreSQL | yes | yes (`PgBackend`, SQLx, feature `postgres`), executed against Postgres 16 | `tests/postgres.rs` runs when `DATABASE_URL` starts with `postgres` and is skipped otherwise. Example: `docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16` then `DATABASE_URL=postgres://postgres:postgres@localhost/postgres cargo test -p axumapi-backends --all-features --test postgres` |
 | MySQL | Phase 5 | Phase 5 | |
 | MongoDB | Phase 5 | Phase 5 | Compiles only the supported subset to filters and pipelines |
 | Redis | not applicable | Phase 5 | A specialised key/hash/set API; **not** a QuerySet backend |

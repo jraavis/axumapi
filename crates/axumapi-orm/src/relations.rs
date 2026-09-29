@@ -13,13 +13,16 @@ use crate::error::OrmError;
 use crate::model::{ManyToManyMeta, Model};
 use crate::types::{DbType, SqlType};
 use crate::value::Value;
+use axumapi_validation::{Dump, Schema, SchemaObject, SchemaRegistry, Validate, ValidationContext};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
 /// A many-to-one reference to `T` stored as `T`'s primary key.
 ///
 /// Serializes as the bare key (`"author": 7`), like Django REST framework's
-/// default. The cached object is never serialized.
+/// default. The cached object is never serialized. [`Validate`], [`Schema`]
+/// and [`Dump`] follow `T::Pk`.
 pub struct ForeignKey<T: Model> {
     id: T::Pk,
     cached: Option<Arc<T>>,
@@ -133,6 +136,30 @@ where
         T::Pk::deserialize(deserializer).map(Self::new)
     }
 }
+
+impl<T: Model> Validate for ForeignKey<T>
+where
+    T::Pk: Validate,
+{
+    fn prepare(input: &mut JsonValue, ctx: &mut ValidationContext) {
+        T::Pk::prepare(input, ctx);
+    }
+
+    fn validate(&self, ctx: &mut ValidationContext) {
+        self.id.validate(ctx);
+    }
+}
+
+impl<T: Model + 'static> Schema for ForeignKey<T>
+where
+    T::Pk: Schema + 'static,
+{
+    fn schema(registry: &mut SchemaRegistry) -> SchemaObject {
+        registry.subschema::<T::Pk>()
+    }
+}
+
+impl<T: Model> Dump for ForeignKey<T> where T::Pk: Serialize {}
 
 /// Accessor for one many-to-many relation of one source object
 /// (`post.tags(&db)`). Generated accessors construct it; its query and

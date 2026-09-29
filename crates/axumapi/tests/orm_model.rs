@@ -10,7 +10,7 @@ use axumapi::orm::{
     WritePlan,
 };
 use axumapi::prelude::*;
-use axumapi::validation::{ValidationContext, parse_value};
+use axumapi::validation::{ValidationContext, parse_value, schema_for};
 use axumapi_backends::sqlite::SqliteBackend;
 use serde_json::json;
 use std::net::IpAddr;
@@ -19,7 +19,7 @@ use std::net::IpAddr;
 // Models
 // ---------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Model)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, Schema, Model)]
 #[model(table = "authors", ordering = ["name"])]
 struct Author {
     #[field(primary_key, auto)]
@@ -28,7 +28,7 @@ struct Author {
     name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Model)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, Schema, Model)]
 #[model(
     table = "books",
     ordering = ["-pages", "title"],
@@ -603,5 +603,30 @@ fn model_composes_with_validate_schema_and_serde() {
     assert_eq!(
         schema.get("properties").unwrap()["username"]["maxLength"],
         json!(20)
+    );
+}
+
+#[test]
+fn relation_fields_validate_and_describe_as_the_primary_key() {
+    let (fk_schema, _) = schema_for::<ForeignKey<Author>>();
+    assert_eq!(fk_schema.get("type"), Some(&json!("integer")));
+    assert_eq!(fk_schema.get("format"), Some(&json!("int64")));
+
+    let book: Book = parse_value(
+        json!({"id": 1, "title": "Rust", "author": 7, "pages": 300, "reviewer": null}),
+        ValidationContext::new(),
+    )
+    .unwrap();
+    assert_eq!(book.author.id(), &7);
+    assert!(book.reviewer.is_none());
+
+    let schema = <Book as Schema>::schema(&mut SchemaRegistry::new());
+    assert_eq!(
+        schema.get("properties").unwrap()["author"]["type"],
+        json!("integer")
+    );
+    assert_eq!(
+        schema.get("properties").unwrap()["reviewer"]["anyOf"][0]["type"],
+        json!("integer")
     );
 }

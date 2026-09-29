@@ -2,7 +2,7 @@
 
 use crate::response::{IntoResponse, Response, with_content_type};
 use axumapi_openapi::{Operation, Schema, SchemaObject, SchemaRegistry};
-use axumapi_orm::{OrmError, QueryError};
+use axumapi_orm::{BackendError, OrmError, QueryError};
 use http::StatusCode;
 use serde::Serialize;
 use serde_json::Value;
@@ -168,6 +168,14 @@ impl From<OrmError> for ApiError {
                     "The requested operation is not supported by the configured database backend.",
                 )
             }
+            OrmError::Backend(BackendError::Constraint(detail)) => {
+                // The driver message may name tables/columns: log it, don't return it.
+                tracing::info!(%detail, "database constraint violation");
+                Self::new(
+                    StatusCode::CONFLICT,
+                    "The request conflicts with existing data (a uniqueness, reference or check constraint failed).",
+                )
+            }
             other => Self::internal(other),
         }
     }
@@ -201,3 +209,20 @@ pub enum ServerError {
 #[derive(Debug, Clone, Error)]
 #[error("failed to read body: {0}")]
 pub struct BodyError(pub(crate) String);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orm_errors_map_to_http_statuses() {
+        let conflict = ApiError::from(OrmError::Backend(BackendError::Constraint(
+            "UNIQUE constraint failed: users.email".into(),
+        )));
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let missing = ApiError::from(OrmError::Query(QueryError::DoesNotExist));
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let broken = ApiError::from(OrmError::Backend(BackendError::Database("x".into())));
+        assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}

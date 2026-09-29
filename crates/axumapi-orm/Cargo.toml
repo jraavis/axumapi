@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+axumapi-validation.workspace = true
 chrono.workspace = true
 rust_decimal.workspace = true
 uuid.workspace = true

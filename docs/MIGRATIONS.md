@@ -24,7 +24,7 @@ axumapi_migrations::cli::run(
 | `showmigrations` | `[X]` applied / `[ ]` pending, in graph order. |
 | `squashmigrations FROM TO [--name SLUG]` | Collapse a contiguous range into one migration with `replaces`. |
 
-The `axumapi` CLI binary runs `migrate`, `rollback`, `showmigrations` and `squashmigrations` from JSON files plus `--database-url` / `DATABASE_URL` (SQLite). For `makemigrations` it prints the snippet above: the binary cannot see your models.
+The `axumapi` CLI binary runs `migrate`, `rollback`, `showmigrations` and `squashmigrations` from JSON files plus `--database-url` / `DATABASE_URL`. SQLite is always available; PostgreSQL URLs need `axumapi-cli` built with `--features postgres`. For `makemigrations` it prints the snippet above: the binary cannot see your models.
 
 `--dry-run` prints SQL (or operations) and executes nothing.
 
@@ -127,7 +127,6 @@ CREATE TABLE IF NOT EXISTS "axumapi_migrations" (
 
 ## Deferred
 
-* PostgreSQL *execution* (the dialect is implemented; `axumapi-backends` has no `PostgresBackend` yet). The CLI refuses `postgres://` URLs with an explicit error.
 * MySQL / MongoDB / Redis migrations.
 * Automatic rename detection (hints only).
 * Data migrations beyond `RunSQL` / `RunRust`.

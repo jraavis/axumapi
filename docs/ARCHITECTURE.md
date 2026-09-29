@@ -2,7 +2,7 @@
 
 `axumapi` is an async-first Rust web framework. It takes its API ergonomics from FastAPI, its validation model from Pydantic v2 and its ORM ergonomics from the Django ORM. It favours **compilable, idiomatic Rust** over Python look-alike syntax: where a Python feature has no natural Rust mapping, we design a Rust equivalent and document how it differs.
 
-> Status: **Phase 3 (validation and serialization) complete**. The table in [Crate map](#crate-map) says what is real and what is scaffolding.
+> Status: **Phase 4 (ORM, QuerySet, relations, transactions, migrations) complete**. The table in [Crate map](#crate-map) says what is real and what is deferred.
 
 ## Crate map
 
@@ -16,7 +16,7 @@ flowchart TD
     core --> orm[axumapi-orm<br/>QueryPlan IR, Expr, capabilities, Backend trait]
     core -. internal .-> axum[(axum / hyper / tower)]
     openapi --> validation
-    backends[axumapi-backends<br/>SQL compiler, SQLite adapter] --> orm
+    backends[axumapi-backends<br/>SQL compiler, SQLite and PostgreSQL adapters] --> orm
     backends -. internal .-> sqlx[(SQLx)]
     migrations[axumapi-migrations] --> orm
     macros[axumapi-macros<br/>proc-macros] -. generates code for .-> core
@@ -25,17 +25,17 @@ flowchart TD
     testkit[axumapi-testkit] --> core
 ```
 
-| Crate | Owns | Phase 1 status |
+| Crate | Owns | Status |
 |---|---|---|
 | `axumapi` | Public facade, `prelude` | Implemented |
 | `axumapi-core` | `App`, own `Handler`/extractor/response traits, DI, middleware, lifespan, WebSockets, forms, headers/cookies, background tasks, static files, RFC 7807 errors | Implemented |
 | `axumapi-validation` | `Validate`, structured `ValidationError`, rules, constrained newtypes, `Schema` + `SchemaRegistry` | Implemented: pipeline, hooks, dump options, constrained types |
-| `axumapi-orm` | `QueryPlan` IR, `Expr` AST, typed `Field<M, T>`, `BackendCapabilities`, `Backend` trait, ORM errors | Implemented |
-| `axumapi-backends` | Dialect-aware SQL compiler (PostgreSQL, SQLite), SQLite executor | Implemented; PostgreSQL *execution* deferred |
-| `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Schema)]`; later `Validate`/`Model` | Route, `Schema`, `Validate`, `#[model_hooks]` implemented; `Model` derive: Phase 4 |
+| `axumapi-orm` | `Model`, `QuerySet`, relations, transactions, `QueryPlan` IR, `Expr`, capabilities | Implemented |
+| `axumapi-backends` | Dialect-aware SQL compiler (PostgreSQL, SQLite), SQLite and PostgreSQL executors | Implemented |
+| `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Model, Validate, Schema)]`, `#[model_hooks]` | Implemented |
 | `axumapi-openapi` | Typed OpenAPI 3.1 model, document builder, Swagger UI / ReDoc | Implemented |
-| `axumapi-migrations` | Migration graph, operations, schema diff | Scaffolding (Phase 4) |
-| `axumapi-cli` | `axumapi` binary | Scaffolding (Phase 6) |
+| `axumapi-migrations` | Migration graph, operations, autodetector, schema editor, executor | Implemented |
+| `axumapi-cli` | `axumapi` binary (`migrate`, `rollback`, `showmigrations`, `squashmigrations`) | Implemented; `makemigrations` runs from the app binary |
 | `axumapi-testkit` | `TestClient` (in-process), lifespan-aware `start`/`shutdown` | Implemented |
 
 ### Dependency rules
@@ -56,13 +56,13 @@ User::objects(&db)
     .order_by(User::name.asc())
 ```
 
-`#[derive(Model)]` (Phase 4) generates one associated constant per field:
+`#[derive(Model)]` generates one associated constant per field:
 `pub const name: Field<User, String>`. The type parameters encode two things:
 
 * The **model**, so a `Field<Post, _>` cannot be used by mistake in a `User` query.
 * The **Rust type**. Lookups are inherent methods that exist only where they make sense. `icontains` exists only on `Field<M, String>`, and comparison operands must implement `Operand<M, T>`. That means `User::age.eq("x")` fails to **compile**.
 
-We rejected a `filter!(User, name__icontains = "john")` macro. The typed-constant API gives IDE completion, rustdoc, and ordinary compiler errors. A macro would still have to generate these same constants in order to validate field names. Django `__` traversal becomes chained relation accessors, for example `Post::author().team().name`, generated in Phase 4.
+We rejected a `filter!(User, name__icontains = "john")` macro. The typed-constant API gives IDE completion, rustdoc, and ordinary compiler errors. A macro would still have to generate these same constants in order to validate field names. Django `__` traversal is `Post::author.join(Author::name)` (and further hops on the joined handle).
 
 Implemented now: `axumapi_orm::expr::{Expr, Field, Operand, Lookup}`.
 
@@ -73,7 +73,7 @@ Implemented now: `axumapi_orm::expr::{Expr, Field, Operand, Lookup}`.
 * **Typed field markers**: the `Field<M, T>` constants from decision A.
 * **Static metadata**: `const META: ModelMeta` with the table name, fields (column, SQL type family, nullability, constraints), indexes, unique/check constraints and ordering. It is a `&'static` data structure with no runtime registration.
 * **Relation metadata**: FK target, `on_delete` policy, related name. The target is referenced by type, so a typo in a model name is a compile error.
-* **Schema metadata**: a `Schema` implementation reused by OpenAPI.
+* **Schema metadata**: models can also `#[derive(Schema)]`; `ForeignKey<T>` describes itself as `T`'s primary key.
 * **Migration metadata**: the migration autodetector diffs `ModelMeta` snapshots, so migrations and the ORM share one source of truth.
 
 ### C. Backend capability detection
@@ -98,7 +98,7 @@ Nothing is silently ignored. Capabilities are richer than booleans where needed:
 ### E. Query result decoding
 
 * Every backend returns `QueryResult { rows: Vec<Row> }`. A `Row` holds ordered `(column, Value)` pairs, where `Value` is a closed, backend-neutral enum.
-* Typed model decoding (Phase 4) is a `FromRow` trait generated by `#[derive(Model)]`. It reads by column name and returns `QueryError::Decode` instead of panicking.
+* Typed model decoding is `Model::from_row`, generated by `#[derive(Model)]`. It reads by column name and returns `QueryError::Decode` instead of panicking.
 * Dynamic projections (`values()`, annotations, aggregates) stay as `Row`. `values_list::<(A, B)>()` decodes into tuples through the same trait.
 * Bind parameters are always `Value`s. They are never interpolated into SQL and never logged by default.
 
@@ -107,7 +107,7 @@ Nothing is silently ignored. Capabilities are richer than booleans where needed:
 ```mermaid
 sequenceDiagram
     participant H as Handler
-    participant QS as QuerySet (Phase 4)
+    participant QS as QuerySet
     participant P as QueryPlan
     participant B as Backend
     H->>QS: .filter(..).order_by(..).limit(..)
@@ -129,7 +129,8 @@ See [QUERY_PLAN.md](QUERY_PLAN.md) and [BACKENDS.md](BACKENDS.md).
 | `QueryError::DoesNotExist` | orm | 404 |
 | `QueryError::MultipleObjectsReturned` | orm | 500 |
 | `BackendCapabilityError` | orm | 501 |
-| `BackendError` | orm | 500 (the detail is logged, not returned to the client) |
+| `BackendError::Constraint` | orm | 409 (the detail is logged, not returned) |
+| other `BackendError` | orm | 500 (the detail is logged, not returned to the client) |
 | `ApiError` | core | Rendered as RFC 7807 `application/problem+json` |
 
 Library code has no `unwrap`/`expect`: clippy `unwrap_used` and `expect_used` are denied workspace-wide. Every crate declares `#![forbid(unsafe_code)]`.
