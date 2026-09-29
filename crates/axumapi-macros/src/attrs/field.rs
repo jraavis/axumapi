@@ -1,9 +1,11 @@
-//! The `#[field(...)]` attribute, shared by `derive(Schema)` and
-//! `derive(Validate)`.
+//! The `#[field(...)]` attribute, shared by `derive(Schema)`,
+//! `derive(Validate)` and `derive(Model)`.
 //!
-//! One parser accepts the union of both derives' keys, so a key is never
-//! silently ignored by one derive and understood by the other.
+//! One parser accepts the union of all derives' keys, so a key is never
+//! silently ignored by one derive and understood by the other (the ORM keys
+//! live in [`OrmFieldOptions`]).
 
+use super::orm::OrmFieldOptions;
 use super::serde::path_key;
 use crate::diag::Errors;
 use crate::meta::{flag, for_each_meta, lit_str};
@@ -18,7 +20,9 @@ use syn::{Attribute, Expr, ExprLit, ExprUnary, Lit, LitInt, LitStr, Path, Token,
 /// Every key accepted by `#[field(...)]`.
 pub const FIELD_KEYS: &str = "min_length, max_length, pattern (or regex), email, url, gt, ge, lt, \
      le, multiple_of, default, default_factory, alias, validation_alias, serialization_alias, \
-     title, description, examples, exclude, strict, max_digits, decimal_places, validator";
+     title, description, examples, exclude, strict, max_digits, decimal_places, validator, \
+     primary_key, auto, unique, index, column, db_default, auto_now_add, auto_now, on_delete, \
+     related_name, skip";
 
 /// A schema keyword and the tokens of its JSON value (an argument to `json!`).
 pub type Keyword = (&'static str, TokenStream);
@@ -149,6 +153,8 @@ pub struct FieldOptions {
     pub decimal_places: Option<u64>,
     /// Reusable after-validators (`validator = path`), in source order.
     pub validators: Vec<Path>,
+    /// Keys read by `derive(Model)` only.
+    pub orm: OrmFieldOptions,
 }
 
 impl FieldOptions {
@@ -262,6 +268,7 @@ impl FieldOptions {
                     }
                 }
             }
+            other if self.orm.parse_key(other, meta)? => {}
             other => {
                 return Err(meta.error(format!(
                     "unknown `field` key `{other}`; valid keys: {FIELD_KEYS}"

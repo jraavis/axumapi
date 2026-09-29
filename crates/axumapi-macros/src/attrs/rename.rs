@@ -86,7 +86,7 @@ fn lower_first(s: &str) -> String {
     }
 }
 
-fn snake_from_pascal(variant: &str) -> String {
+pub(crate) fn snake_from_pascal(variant: &str) -> String {
     let mut out = String::with_capacity(variant.len() + 4);
     for (i, c) in variant.char_indices() {
         if c.is_ascii_uppercase() && i > 0 {

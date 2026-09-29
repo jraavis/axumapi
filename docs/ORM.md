@@ -68,3 +68,44 @@ db.transaction(|tx| async move {
 * Calling `transaction` on a transaction handle creates a savepoint. `on_commit` hooks registered inside a savepoint that rolls back are discarded.
 * `transaction_with(IsolationLevel::..)` accepts only the levels the backend lists. SQLite lists only `Serializable`. Any other level is a capability error raised before any I/O.
 * Inside the closure, use `tx` and not the outer `db`. On a one-connection pool such as `sqlite::memory:`, the outer handle would wait forever for a second connection.
+
+## Model attributes
+
+`#[derive(Model)]` reads `#[model(...)]` on the struct and the ORM keys of `#[field(...)]`. One struct can derive `Model, Validate, Schema, Serialize, Deserialize`: `Validate` and `Schema` ignore the ORM keys, and `Model` ignores the validation keys except `max_length`, `max_digits` and `decimal_places`, which become column metadata. Unknown keys are compile errors.
+
+### `#[model(...)]`
+
+| Key | Meaning |
+|---|---|
+| `table = "users"` | Table name. Default: `snake_case(TypeName)` (`BlogPost` becomes `blog_post`). There is no app prefix and no pluralisation. |
+| `ordering = ["name", "-created_at"]` | Default ordering. `-` means descending. Entries are field names, and an unknown name is a compile error. Stored as columns. |
+| `indexes(idx(columns = ["a", "b"], unique))` | Named multi-column indexes. Columns are field names, so `author` becomes `author_id`. |
+| `unique_together(["a", "b"], ..)` | Unique constraints, named `{table}_{columns}_uniq`. |
+| `checks(age_positive = "age >= 0")` | Named `CHECK` constraints. The SQL is written by the author. |
+| `managed = false` | Migrations skip the table. |
+| `many_to_many(tags(Tag, through_table = "..", source_column = "..", target_column = "..", related_name = ".."))` | Many-to-many relations. Defaults: `through_table = {table}_{name}`, `source_column = {snake(Model)}_id`, `target_column = {snake(Target)}_id`. Set both columns explicitly for a self-referential relation. `through = ThroughModel` uses an explicit through model whose table is the join table, and `through_table` must then be omitted. |
+
+### `#[field(...)]` ORM keys
+
+| Key | Meaning |
+|---|---|
+| `primary_key` | Exactly one field. |
+| `auto` | Database-generated integer primary key (`i16`, `i32`, `i64`). A model is unsaved while the key equals its default. A primary key without `auto` is never unsaved. |
+| `unique`, `index` | Constraint and single-column index. |
+| `column = "name"` | Column name. Default: the field name, or `{field}_id` for relations. |
+| `db_default = 7 \| true \| "text"` | Server-side default. |
+| `auto_now_add`, `auto_now` | `DbDefault::Now` at insert, and refresh on every save. The queryset layer fills the value. |
+| `on_delete = "cascade" \| "protect" \| "set_null" \| "set_default" \| "do_nothing"` | Relations only. Default: `cascade`. `set_null` requires `Option<ForeignKey<..>>`. |
+| `related_name = ".."` | Relations only: name of the reverse accessor on the target. |
+| `skip` | Not a column. The field is `Default::default()` when loaded. |
+| `max_length`, `max_digits`, `decimal_places` | Column metadata. |
+
+### Generated API
+
+* `Model::name` is a typed `Field<Model, T>` constant per column (`Book::author` is a `Field<Book, ForeignKey<Author>>` over `author_id`).
+* Foreign keys get `book.fetch_author(&db)` returning `Arc<Author>`, or `Option<Arc<Author>>` for a nullable key. It is not named `author` because an associated constant and a method cannot share a name.
+* Foreign keys are indexed unless they are unique, and a `OneToOne` is unique.
+* `related_name` on a foreign key adds `author.books(&db)`, returning a `QuerySet<Book>`. For a `OneToOne`, it adds an async `profile(&db)` returning `Option<Profile>`. The target model must be in the same crate, because the accessor is an inherent impl.
+* Each many-to-many adds `book.tags(&db)`, a `ManyToManyManager`. With `related_name`, it also adds a reverse `tag.tagged_books(&db)` queryset (a correlated `EXISTS` over the join table).
+* Generic structs are not supported.
+* `ForeignKey<T>` does not implement `Validate` or `Schema`, and the orphan rule prevents the facade from adding them. A struct that derives those together with `Model` therefore cannot contain relation fields yet.

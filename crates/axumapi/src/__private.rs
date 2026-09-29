@@ -1,4 +1,4 @@
-//! Runtime helpers used by `#[derive(Schema)]` expansions.
+//! Runtime helpers used by the derive expansions.
 //!
 //! Semver-exempt: only the macros in this workspace may rely on it.
 
@@ -8,6 +8,7 @@ pub use serde;
 pub use serde_json;
 pub use serde_json::json;
 
+use axumapi_orm::{Column, Db, Expr, ManyToManyMeta, Model, QueryPlan, QuerySet};
 use axumapi_validation::SchemaObject;
 use serde_json::{Map, Number, Value};
 
@@ -137,4 +138,28 @@ pub fn internally_tagged_newtype(tag: &str, name: &str, inner: SchemaObject) -> 
 /// compile time, so the fallback is never used.
 pub fn number_f64(value: f64) -> Number {
     Number::from_f64(value).unwrap_or_else(|| Number::from(0_i64))
+}
+
+/// Reverse side of a many-to-many relation: the `S` rows joined to the
+/// target row `target_pk` through `relation`'s join table.
+///
+/// Built as a correlated `EXISTS` over the join table (the query AST has no
+/// `IN (subquery)`): `EXISTS (SELECT 1 FROM through WHERE through.target =
+/// ? AND through.source = S.pk)`.
+pub fn reverse_many_to_many<S: Model>(
+    db: &Db,
+    relation: &'static ManyToManyMeta,
+    source_pk_column: &'static str,
+    target_pk: axumapi_orm::Value,
+) -> QuerySet<S> {
+    let through = relation.through_table;
+    let joined = QueryPlan::from_table(through)
+        .select(Expr::val(1_i64), None)
+        .filter(Expr::Column(Column::qualified(through, relation.target_column)).eq(target_pk))
+        .filter(
+            Expr::Column(Column::qualified(through, relation.source_column)).eq(Expr::Column(
+                Column::qualified(S::META.table, source_pk_column),
+            )),
+        );
+    S::objects(db).filter(Expr::Exists(Box::new(joined)))
 }

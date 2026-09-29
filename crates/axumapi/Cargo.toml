@@ -19,8 +19,12 @@ serde.workspace = true
 axumapi-macros.workspace = true
 serde_json.workspace = true
 regex.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+rust_decimal.workspace = true
 
 [dev-dependencies]
+axumapi-backends.workspace = true
 axumapi-testkit.workspace = true
 jsonschema.workspace = true
 serde.workspace = true

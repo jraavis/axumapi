@@ -1,0 +1,5 @@
+error: `auto` requires an integer primary key (`i16`, `i32` or `i64`)
+ --> tests/ui/model_auto_non_integer.rs:6:9
+  |
+6 |     id: String,
+  |         ^^^^^^

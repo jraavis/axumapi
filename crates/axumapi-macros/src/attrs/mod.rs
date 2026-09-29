@@ -6,10 +6,12 @@
 //! * `serde`: `#[serde(...)]` (container, field, variant),
 //! * `model`: `#[model_config(...)]` and `#[schema(...)]`,
 //! * `field`: `#[field(...)]`,
+//! * `orm`: the ORM keys of `#[field(...)]`,
 //! * `plan`: field resolution (wire key, required-ness, aliases).
 
 pub mod field;
 pub mod model;
+pub mod orm;
 pub mod plan;
 pub mod rename;
 pub mod serde;
