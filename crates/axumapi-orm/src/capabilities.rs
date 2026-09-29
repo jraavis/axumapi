@@ -85,6 +85,12 @@ pub enum Feature {
     Savepoints,
     /// A specific transaction isolation level.
     Isolation(IsolationLevel),
+    /// Subqueries: `EXISTS (..)`, scalar subqueries and `IN (subquery)`.
+    Subqueries,
+    /// Set operations (`UNION`, `INTERSECT`, `EXCEPT`).
+    SetOperations,
+    /// Raw SQL text (`fetch_raw`, `execute_raw`, `execute_script`).
+    RawSql,
 }
 
 /// Declared capabilities of a backend.
@@ -166,6 +172,31 @@ impl BackendCapabilities {
         }
     }
 
+    /// Capabilities of MongoDB (5.0+; transactions need a replica set).
+    ///
+    /// The plan is compiled to filters and aggregation pipelines: no joins,
+    /// row locking, window functions, arrays, `DISTINCT ON`, subqueries, set
+    /// operations or raw SQL. `RETURNING` is emulated by the adapter.
+    /// Transactions are flat (no savepoints) and no isolation level can be
+    /// requested. `max_params` bounds the rows per `insert_many` batch.
+    pub const fn mongodb() -> Self {
+        Self {
+            kind: BackendKind::MongoDb,
+            transactions: TransactionSupport::Flat,
+            row_locking: RowLocking::None,
+            joins: false,
+            returning: true,
+            window_functions: false,
+            regex: true,
+            arrays: false,
+            distinct_on: false,
+            ilike: false,
+            statistical_aggregates: true,
+            max_params: 50_000,
+            isolation_levels: &[],
+        }
+    }
+
     /// Whether `feature` is supported.
     pub fn supports(&self, feature: Feature) -> bool {
         match feature {
@@ -182,6 +213,10 @@ impl BackendCapabilities {
             Feature::CaseInsensitiveLike => true,
             Feature::Savepoints => self.transactions >= TransactionSupport::Savepoints,
             Feature::Isolation(level) => self.isolation_levels.contains(&level),
+            // Query languages other than SQL cannot express these.
+            Feature::Subqueries | Feature::SetOperations | Feature::RawSql => {
+                !matches!(self.kind, BackendKind::MongoDb | BackendKind::Redis)
+            }
         }
     }
 
@@ -221,5 +256,34 @@ mod tests {
         ] {
             assert!(caps.supports(f), "{f:?}");
         }
+    }
+
+    #[test]
+    fn mongodb_declares_its_subset() {
+        let caps = BackendCapabilities::mongodb();
+        for f in [
+            Feature::Joins,
+            Feature::RowLocking,
+            Feature::WindowFunctions,
+            Feature::Arrays,
+            Feature::DistinctOn,
+            Feature::Savepoints,
+            Feature::Subqueries,
+            Feature::SetOperations,
+            Feature::RawSql,
+            Feature::Isolation(IsolationLevel::Serializable),
+        ] {
+            assert!(!caps.supports(f), "{f:?}");
+        }
+        for f in [
+            Feature::Returning,
+            Feature::Regex,
+            Feature::StatisticalAggregates,
+            Feature::CaseInsensitiveLike,
+        ] {
+            assert!(caps.supports(f), "{f:?}");
+        }
+        assert!(BackendCapabilities::sqlite().supports(Feature::Subqueries));
+        assert!(BackendCapabilities::postgres().supports(Feature::RawSql));
     }
 }
