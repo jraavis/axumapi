@@ -21,11 +21,17 @@
 //! | `TimeDelta` | `Int` (microseconds) | — |
 //! | `IpAddr` | `Text` | — |
 //! | `serde_json::Value` | `Json` | `Text` holding JSON |
+//!
+//! Integer and float types also accept `Decimal` (integral, respectively any
+//! value), because PostgreSQL returns `numeric` for `SUM` and `AVG`. On
+//! SQLite, declare `Decimal` columns `NUMERIC`: the canonical text form would
+//! otherwise sort and aggregate as text.
 
 use crate::error::QueryError;
 use crate::value::Value;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc};
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use std::net::IpAddr;
 use uuid::Uuid;
 
@@ -115,10 +121,15 @@ macro_rules! int_type {
                 Value::Int(i64::from(*self))
             }
             fn from_value(value: Value) -> Result<Self, String> {
-                match value {
-                    Value::Int(i) => <$t>::try_from(i).map_err(|_| format!("{i} is out of range")),
-                    other => Err(mismatch("integer", &other)),
-                }
+                let int = match value {
+                    Value::Int(i) => i,
+                    // PostgreSQL returns `numeric` for `SUM` / `AVG` of integers.
+                    Value::Decimal(d) if d.is_integer() => {
+                        i64::try_from(d).map_err(|_| format!("{d} is out of range"))?
+                    }
+                    other => return Err(mismatch("integer", &other)),
+                };
+                <$t>::try_from(int).map_err(|_| format!("{int} is out of range"))
             }
         }
     )*};
@@ -135,6 +146,9 @@ impl DbType for f64 {
         match value {
             Value::Float(f) => Ok(f),
             Value::Int(i) => Ok(i as f64),
+            Value::Decimal(d) => d
+                .to_f64()
+                .ok_or_else(|| format!("{d} is not a valid float")),
             other => Err(mismatch("float", &other)),
         }
     }

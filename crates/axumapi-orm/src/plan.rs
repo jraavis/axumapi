@@ -351,14 +351,12 @@ impl QueryPlan {
     pub fn resolve_relations(mut self) -> Self {
         let root = self.source.reference().clone();
         let mut joins = std::mem::take(&mut self.joins);
-        // Later joins may reference earlier ones, so resolve their `ON` last.
-        let mut on_clauses = std::mem::take(&mut joins)
-            .into_iter()
-            .map(|mut j| {
-                resolve_expr(&mut j.on, &root, &mut joins);
-                j
-            })
-            .collect::<Vec<_>>();
+        // Resolving a join's `ON` may append joins; index so the list can grow.
+        for i in 0..joins.len() {
+            let mut on = std::mem::replace(&mut joins[i].on, Expr::Or(Vec::new()));
+            resolve_expr(&mut on, &root, &mut joins);
+            joins[i].on = on;
+        }
         let mut exprs: Vec<&mut Expr> = Vec::new();
         exprs.extend(self.projection.iter_mut().map(|s| &mut s.expr));
         exprs.extend(self.filter.iter_mut());
@@ -371,8 +369,7 @@ impl QueryPlan {
         for e in exprs {
             resolve_expr(e, &root, &mut joins);
         }
-        on_clauses.extend(joins);
-        self.joins = on_clauses;
+        self.joins = joins;
         self.compound = std::mem::take(&mut self.compound)
             .into_iter()
             .map(|c| Compound {

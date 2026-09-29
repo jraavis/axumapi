@@ -522,7 +522,7 @@ const SCHEMA: &str = "
     CREATE TABLE books (
         id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
         author_id INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
-        pages INTEGER, price TEXT NOT NULL, likes INTEGER NOT NULL, dislikes INTEGER NOT NULL,
+        pages INTEGER, price NUMERIC NOT NULL, likes INTEGER NOT NULL, dislikes INTEGER NOT NULL,
         published TEXT NOT NULL);
     CREATE TABLE book_tags (
         book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
