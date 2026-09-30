@@ -1190,6 +1190,22 @@ fn deny_unknown_fields_means_extra_forbid() {
     assert_eq!(schema["properties"]["mail"]["format"], "email");
 }
 
+#[test]
+fn two_names_for_one_field_are_a_duplicate() {
+    // `populate_by_name`: the key, the validation alias and the Rust name all
+    // reach `user_name`; the first one present wins, the rest are rejected.
+    let mut input = valid_signup();
+    input["login"] = json!("eve");
+    input["user_name"] = json!("amy");
+    assert_eq!(
+        codes_of::<Signup>(input),
+        vec![
+            pair("login", "duplicate_field"),
+            pair("user_name", "duplicate_field"),
+        ]
+    );
+}
+
 #[derive(Debug, Deserialize, Validate, Schema)]
 #[model_config(extra = "allow")]
 struct Permissive {

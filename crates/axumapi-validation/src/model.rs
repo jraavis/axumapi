@@ -17,7 +17,8 @@ pub struct FieldSpec {
     /// Key Serde deserializes the field from (after `rename`/`rename_all`).
     pub key: &'static str,
     /// Other accepted input keys (validation aliases; the Rust field name
-    /// when `populate_by_name`). The first alias present wins over none.
+    /// when `populate_by_name`). Sending more than one of the key and its
+    /// aliases is a `duplicate_field` error.
     pub aliases: &'static [&'static str],
     /// Whether a missing key is an error (no `Option`, no default).
     pub required: bool,
@@ -48,13 +49,26 @@ pub fn prepare_object(
             return;
         };
         for (index, spec) in specs.iter().enumerate() {
-            let mut sent_as = spec.key;
-            if !map.contains_key(spec.key)
-                && let Some(alias) = spec.aliases.iter().find(|a| map.contains_key(**a))
-                && let Some(value) = map.remove(*alias)
+            // The key wins over aliases, and earlier aliases over later ones;
+            // any other name for the field sent alongside is a duplicate
+            // (Serde would reject it too).
+            let mut names = std::iter::once(spec.key)
+                .chain(spec.aliases.iter().copied())
+                .filter(|name| map.contains_key(*name));
+            let sent_as = names.next().unwrap_or(spec.key);
+            for duplicate in names.collect::<Vec<_>>() {
+                map.remove(duplicate);
+                ctx.at(duplicate, |ctx| {
+                    ctx.error(
+                        "duplicate_field",
+                        format!("`{sent_as}` and `{duplicate}` both set this field"),
+                    );
+                });
+            }
+            if sent_as != spec.key
+                && let Some(value) = map.remove(sent_as)
             {
                 map.insert(spec.key.to_owned(), value);
-                sent_as = alias;
             }
             match map.get_mut(spec.key) {
                 Some(slot) => ctx.at(sent_as, |ctx| field(index, slot, ctx)),
@@ -363,6 +377,14 @@ mod tests {
                 ("body.tags".into(), "missing".into()),
                 ("body.extra".into(), "extra_forbidden".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn key_and_alias_together_are_a_duplicate() {
+        assert_eq!(
+            codes(json!({"userName": "ab", "login": "cd", "tags": []})),
+            vec![("body.login".into(), "duplicate_field".into())]
         );
     }
 
