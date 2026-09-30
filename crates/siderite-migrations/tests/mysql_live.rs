@@ -7,9 +7,11 @@ mod common;
 
 use common::{author_meta, book_meta, temp_dir};
 use siderite_backends::mysql::MySqlBackend;
+use siderite_migrations::MigrationError;
 use siderite_migrations::executor::Migrator;
 use siderite_migrations::loader::{self, MigrationGraph};
 use siderite_migrations::make_migrations;
+use siderite_migrations::migration::Migration;
 use siderite_migrations::operation::Operation;
 use siderite_migrations::schema_editor;
 use siderite_migrations::state::{
@@ -107,6 +109,89 @@ async fn second_migrate_after_first_succeeds() {
     assert!(second.applied.is_empty());
     assert_eq!(second.planned, second.applied);
     reset(&db).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A failed MySQL migration resumes after hand-repair instead of replaying
+/// committed statements: the third statement fails, the repair drops its
+/// half-applied table, and the re-run skips the first two operations.
+#[tokio::test]
+#[ignore = "needs a MySQL server: set MYSQL_URL"]
+async fn mysql_failed_migration_resumes_after_repair() {
+    let Some(url) = mysql_url() else {
+        eprintln!("MYSQL_URL not set; skipping");
+        return;
+    };
+    let db = Db::new(MySqlBackend::connect(&url).await.unwrap());
+    let dir = temp_dir();
+    // Idempotent setup: a previous run may have left tables or rows behind.
+    for table in ["rs_t", "rs_u"] {
+        db.execute_script(&format!("DROP TABLE IF EXISTS `{table}`"))
+            .await
+            .unwrap();
+    }
+    db.raw_execute(
+        "DELETE FROM `siderite_migrations` WHERE `id` = ?",
+        vec![Value::Text("0001_rs_resume".into())],
+    )
+    .await
+    .unwrap_or(0);
+    db.execute_script("DROP TABLE IF EXISTS `siderite_migration_progress`")
+        .await
+        .unwrap();
+
+    let migration = Migration::new(
+        "0001_rs_resume",
+        Vec::new(),
+        vec![
+            Operation::RunSQL {
+                sql: "CREATE TABLE `rs_t` (`n` INTEGER)".into(),
+                reverse_sql: Some("DROP TABLE `rs_t`".into()),
+            },
+            Operation::RunSQL {
+                sql: "CREATE TABLE `rs_u` (`n` INTEGER)".into(),
+                reverse_sql: Some("DROP TABLE `rs_u`".into()),
+            },
+            Operation::RunSQL {
+                sql: "CREATE TABLE `rs_u` (`n` INTEGER)".into(),
+                reverse_sql: Some("DROP TABLE `rs_u`".into()),
+            },
+        ],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &migration).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let migrator = Migrator::new(&db, &graph);
+
+    let err = migrator.migrate(None, false).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            MigrationError::MysqlPartial {
+                index: 3,
+                total: 3,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    db.execute_script("DROP TABLE `rs_u`").await.unwrap();
+    let report = migrator.migrate(None, false).await.unwrap();
+    assert_eq!(report.applied, vec![migration.id.clone()]);
+    db.raw_sql("SELECT `n` FROM `rs_t`", Vec::new())
+        .await
+        .unwrap();
+    db.raw_sql("SELECT `n` FROM `rs_u`", Vec::new())
+        .await
+        .unwrap();
+
+    for table in ["rs_t", "rs_u"] {
+        db.execute_script(&format!("DROP TABLE IF EXISTS `{table}`"))
+            .await
+            .unwrap();
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
