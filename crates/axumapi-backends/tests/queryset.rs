@@ -345,6 +345,39 @@ async fn update_or_create_updates_or_inserts() {
 }
 
 #[tokio::test]
+async fn update_or_create_reports_a_conflict_its_retry_cannot_resolve() {
+    let db = db().await;
+    Tag::objects(&db)
+        .create(Tag::new("t", "first"))
+        .await
+        .unwrap();
+    // The insert hits the existing key; the retry's lookup still misses, so
+    // the constraint error surfaces with the lookup's error attached.
+    let outcome = Tag::objects(&db)
+        .update_or_create(
+            Tag::label.eq("other"),
+            || Tag::new("t", "other"),
+            |t| t.label = "changed".into(),
+        )
+        .await;
+    let Err(OrmError::Backend(axumapi_orm::BackendError::Constraint(message))) = outcome else {
+        panic!("expected a constraint error, got {outcome:?}");
+    };
+    assert!(
+        message.contains("re-fetch after the conflict failed"),
+        "{message}"
+    );
+    assert_eq!(
+        Tag::objects(&db)
+            .get(Tag::slug.eq("t"))
+            .await
+            .unwrap()
+            .label,
+        "first"
+    );
+}
+
+#[tokio::test]
 async fn using_switches_to_a_transaction_handle() {
     let db = db().await;
     seed(&db).await;

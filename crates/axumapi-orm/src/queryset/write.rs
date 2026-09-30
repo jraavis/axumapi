@@ -146,8 +146,19 @@ impl<M: Model> QuerySet<M> {
     ///
     /// On backends with row locking the lookup is `SELECT ... FOR UPDATE`, so
     /// concurrent updates of an existing row serialize instead of losing
-    /// writes. Two callers can still both miss and insert; guard against that
-    /// with a unique constraint.
+    /// writes. When the row is missing, two callers can both try to insert;
+    /// with a unique constraint covering `predicate` the loser's insert fails
+    /// with [`BackendError::Constraint`], and it retries once as lookup and
+    /// update in a new transaction. If that lookup misses too, the constraint
+    /// error is returned with the lookup's error appended.
+    ///
+    /// Backends without row locking (MongoDB) cannot lock the lookup, so two
+    /// concurrent updates of the same existing row can each read the old
+    /// values and the last `save` wins, losing the other's changes. The ORM
+    /// has no conditional (versioned) save; where that matters, express the
+    /// change as an atomic [`update`](Self::update) (e.g.
+    /// `Post::likes.set_expr(Post::likes + 1)`) instead. SQLite serializes
+    /// writers, so it is not affected.
     ///
     /// # Errors
     /// [`QueryError::MultipleObjectsReturned`], or capability / backend errors.
@@ -163,23 +174,52 @@ impl<M: Model> QuerySet<M> {
         if lock {
             lookup = lookup.select_for_update();
         }
+        // Taken only when the row is found, so after a lost insert race it is
+        // still here for the retry.
+        let mut update = Some(update);
+        let slot = &mut update;
+        let first = lookup
+            .db
+            .clone()
+            .transaction(|tx| {
+                let lookup = lookup.clone();
+                async move {
+                    match lookup.using(&tx).one().await {
+                        Ok(mut found) => {
+                            if let Some(update) = slot.take() {
+                                update(&mut found);
+                            }
+                            found.save(&tx).await?;
+                            Ok((found, false))
+                        }
+                        Err(OrmError::Query(QueryError::DoesNotExist)) => {
+                            let mut object = create();
+                            insert_one(&tx, &mut object).await?;
+                            Ok((object, true))
+                        }
+                        Err(other) => Err(other),
+                    }
+                }
+            })
+            .await;
+        let (Err(OrmError::Backend(BackendError::Constraint(message))), Some(update)) =
+            (&first, update)
+        else {
+            return first;
+        };
+        // The insert lost to a concurrent one: update the row it created.
+        let message = message.clone();
         lookup
             .db
             .clone()
             .transaction(|tx| async move {
-                match lookup.using(&tx).one().await {
-                    Ok(mut found) => {
-                        update(&mut found);
-                        found.save(&tx).await?;
-                        Ok((found, false))
-                    }
-                    Err(OrmError::Query(QueryError::DoesNotExist)) => {
-                        let mut object = create();
-                        insert_one(&tx, &mut object).await?;
-                        Ok((object, true))
-                    }
-                    Err(other) => Err(other),
-                }
+                let mut found = match lookup.using(&tx).one().await {
+                    Ok(found) => found,
+                    Err(refetch) => return Err(conflict_with_context(message, &refetch)),
+                };
+                update(&mut found);
+                found.save(&tx).await?;
+                Ok((found, false))
             })
             .await
     }
