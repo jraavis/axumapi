@@ -1,7 +1,7 @@
 //! Top-level `siderite` binary: `new`, cargo wrap, or standalone migrations.
 
 use crate::error::CliError;
-use crate::project::{self, find_app_dir, is_app_command};
+use crate::project::{self, CARGO_COMMANDS, find_app_dir, is_app_command};
 use crate::scaffold;
 use crate::standalone;
 use std::env;
@@ -31,13 +31,13 @@ async fn dispatch(raw: &[String], cwd: &std::path::Path) -> Result<u8, CliError>
     if command == "new" {
         return scaffold::run(raw);
     }
-    if command == "test" {
+    if CARGO_COMMANDS.contains(&command) {
         let dir = find_app_dir(cwd).ok_or_else(|| {
-            CliError::usage(
-                "test needs a Cargo package (cd into a siderite app, or run siderite new)",
-            )
+            CliError::usage(format!(
+                "{command} needs a Cargo package (cd into a siderite app, or run siderite new)"
+            ))
         })?;
-        return project::cargo_test(&dir, raw);
+        return project::cargo_passthrough(&dir, command, raw);
     }
     if is_app_command(command) {
         if let Some(dir) = find_app_dir(cwd) {
@@ -107,6 +107,7 @@ Create and run an app:
   routes                        List METHOD PATH operation_id
   check                         Validate config, models, migrations and routes
   dbshell                       Open the database's native client
+  build [--release ...]         cargo build in the app package
   test                          cargo test in the app package
 
 Migrations:
@@ -166,5 +167,16 @@ mod tests {
         let err = dispatch(&args(&["run"]), &dir).await.unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert!(err.to_string().contains("siderite new"));
+    }
+
+    #[tokio::test]
+    async fn build_without_a_package_is_usage() {
+        let dir = std::env::temp_dir().join(format!("siderite-build-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = dispatch(&args(&["build", "--release"]), &dir)
+            .await
+            .unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains("build needs a Cargo package"));
     }
 }

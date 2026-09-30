@@ -42,16 +42,25 @@ pub fn cargo_run(package_dir: &Path, args: &[String]) -> Result<u8, CliError> {
     cargo(package_dir, "run", args)
 }
 
-/// `cargo test` in `package_dir` with remaining args (no extra `--` unless
-/// the user passed some).
-pub fn cargo_test(package_dir: &Path, args: &[String]) -> Result<u8, CliError> {
-    let rest: Vec<String> = args
-        .iter()
-        .skip_while(|a| a.as_str() != "test")
+/// Cargo subcommands `siderite` forwards verbatim in the app package.
+pub const CARGO_COMMANDS: &[&str] = &["build", "test"];
+
+/// `cargo <cargo_cmd>` in `package_dir` with the args after `cargo_cmd`
+/// (no extra `--` unless the user passed some).
+pub fn cargo_passthrough(
+    package_dir: &Path,
+    cargo_cmd: &str,
+    args: &[String],
+) -> Result<u8, CliError> {
+    cargo(package_dir, cargo_cmd, &args_after(cargo_cmd, args))
+}
+
+fn args_after(cargo_cmd: &str, args: &[String]) -> Vec<String> {
+    args.iter()
+        .skip_while(|a| a.as_str() != cargo_cmd)
         .skip(1)
         .cloned()
-        .collect();
-    cargo(package_dir, "test", &rest)
+        .collect()
 }
 
 fn cargo(package_dir: &Path, cargo_cmd: &str, args: &[String]) -> Result<u8, CliError> {
@@ -84,5 +93,15 @@ mod tests {
             found.as_deref() != Some(workspace),
             "workspace root has no [package]: {found:?}"
         );
+    }
+
+    #[test]
+    fn passthrough_forwards_args_after_the_command() {
+        let args: Vec<String> = ["build", "--release", "--features", "x"]
+            .iter()
+            .map(|a| (*a).to_owned())
+            .collect();
+        assert_eq!(args_after("build", &args), args[1..].to_vec());
+        assert!(args_after("test", &args[..1]).is_empty());
     }
 }
