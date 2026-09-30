@@ -126,7 +126,8 @@ turns it off on the dedicated connection *before* `BEGIN`, runs
 `PRAGMA foreign_key_check` before commit, and restores the previous value
 afterwards. Child rows with `ON DELETE CASCADE` survive a rebuild of the
 parent table. The check fails only on violations the migration introduced
-(counted against a baseline taken at open), so pre-existing violations in
+(diffed row by row against a baseline taken at open, so repairing one
+violation while adding another still fails), so pre-existing violations in
 unrelated tables do not block it; when foreign keys were already off the
 check is skipped.
 

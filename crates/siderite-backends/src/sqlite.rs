@@ -17,6 +17,7 @@ use sqlx::sqlite::{
     SqliteArguments, SqlitePool, SqlitePoolOptions, SqliteRow, SqliteTransactionManager,
 };
 use sqlx::{Column as _, Row as _, TransactionManager, TypeInfo as _, ValueRef as _};
+use std::collections::HashSet;
 
 /// SQLite adapter executing compiled plans on a connection pool.
 #[derive(Debug, Clone)]
@@ -155,15 +156,59 @@ macro_rules! with_schema_conn {
 /// is applied *before* `BEGIN` and restored after commit or rollback.
 ///
 /// The pre-commit `foreign_key_check` is scoped to violations this schema
-/// change introduced: the count at open is the baseline, and commit fails
-/// only when it grows. Pre-existing violations in unrelated tables must not
-/// block every future migration. When foreign keys were already off
-/// (`restore_fk == 0`) the check is skipped entirely.
+/// change introduced: the rows at open are the baseline, and commit fails
+/// only on rows that are not in it. Pre-existing violations in unrelated
+/// tables must not block every future migration, and comparing rows (not
+/// counts) means a change that fixes one violation while adding another
+/// still fails. When foreign keys were already off (`restore_fk == 0`) the
+/// check is skipped entirely.
 struct SqliteSchemaTransaction {
     conn: tokio::sync::Mutex<Option<PoolConnection<sqlx::Sqlite>>>,
     restore_fk: i64,
     in_txn: bool,
-    fk_baseline: Option<i64>,
+    fk_baseline: Option<HashSet<FkViolation>>,
+}
+
+/// One `PRAGMA foreign_key_check` row: the offending child row and the parent
+/// it points at. Identifies a violation independently of when it appeared.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FkViolation {
+    table: String,
+    rowid: i64,
+    parent: String,
+}
+
+impl FkViolation {
+    /// `None` when a column is missing or the wrong type, so an unreadable
+    /// row still counts as a violation instead of being silently dropped.
+    fn from_row(row: &SqliteRow) -> Self {
+        let text = |key: &str| {
+            row.try_get::<String, _>(key)
+                .unwrap_or_else(|_| format!("<unreadable {key}>"))
+        };
+        let rowid = row.try_get("rowid").unwrap_or(-1);
+        Self {
+            table: text("table"),
+            rowid,
+            parent: text("parent"),
+        }
+    }
+
+    fn location(&self) -> String {
+        format!(
+            "{} row {} (missing parent {})",
+            self.table, self.rowid, self.parent
+        )
+    }
+}
+
+async fn fk_violations(
+    conn: &mut PoolConnection<sqlx::Sqlite>,
+) -> Result<Vec<SqliteRow>, OrmError> {
+    Ok(sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&mut **conn)
+        .await
+        .map_err(map_error)?)
 }
 
 impl SqliteSchemaTransaction {
@@ -175,14 +220,15 @@ impl SqliteSchemaTransaction {
             .map_err(map_error)?;
         // Baseline for the pre-commit check: only *new* violations fail the
         // migration. Skipped when FKs were already off (nothing to enforce).
-        let fk_baseline: Option<i64> = if restore_fk == 0 {
+        let fk_baseline: Option<HashSet<FkViolation>> = if restore_fk == 0 {
             None
         } else {
             Some(
-                sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
-                    .fetch_one(&mut *conn)
-                    .await
-                    .map_err(map_error)?,
+                fk_violations(&mut conn)
+                    .await?
+                    .iter()
+                    .map(FkViolation::from_row)
+                    .collect(),
             )
         };
         set_foreign_keys(&mut conn, 0).await?;
@@ -256,21 +302,27 @@ impl Executor for SqliteSchemaTransaction {
 impl Transaction for SqliteSchemaTransaction {
     async fn commit(&self) -> Result<(), OrmError> {
         let mut conn = self.take().await?;
-        if let Some(baseline) = self.fk_baseline {
-            let violations = sqlx::query("PRAGMA foreign_key_check")
-                .fetch_all(&mut *conn)
-                .await
-                .map_err(map_error)?;
-            if violations.len() as i64 > baseline {
+        if let Some(baseline) = &self.fk_baseline {
+            // Row-level diff, not a count: a change that repairs one old
+            // violation while adding another keeps the count equal, and would
+            // wrongly pass.
+            let mut seen = HashSet::new();
+            let mut fresh = Vec::new();
+            for row in fk_violations(&mut conn).await? {
+                let violation = FkViolation::from_row(&row);
+                if !baseline.contains(&violation) && seen.insert(violation.clone()) {
+                    fresh.push(violation);
+                }
+            }
+            if !fresh.is_empty() {
                 if self.in_txn {
                     drop(SqliteTransactionManager::rollback(&mut *conn).await);
                 }
                 drop(set_foreign_keys(&mut conn, self.restore_fk).await);
                 return Err(BackendError::Constraint(format!(
-                    "SQLite foreign_key_check found {} new violation(s) after schema change ({} total): {}",
-                    violations.len() as i64 - baseline,
-                    violations.len(),
-                    violation_summary(&violations),
+                    "SQLite foreign_key_check found {} new violation(s) after schema change: {}",
+                    fresh.len(),
+                    violation_summary(&fresh),
                 ))
                 .into());
             }
@@ -300,18 +352,10 @@ impl Transaction for SqliteSchemaTransaction {
     }
 }
 
-/// One-line summary of `PRAGMA foreign_key_check` rows for error messages.
-fn violation_summary(violations: &[SqliteRow]) -> String {
-    let mut locations: Vec<String> = violations
-        .iter()
-        .filter_map(|row| {
-            let table: String = row.try_get("table").ok()?;
-            let rowid: i64 = row.try_get("rowid").ok()?;
-            Some(format!("{table} row {rowid}"))
-        })
-        .collect();
+/// One-line summary of new `PRAGMA foreign_key_check` violations.
+fn violation_summary(violations: &[FkViolation]) -> String {
+    let mut locations: Vec<String> = violations.iter().map(FkViolation::location).collect();
     locations.sort();
-    locations.dedup();
     locations.truncate(5);
     if locations.is_empty() {
         "see PRAGMA foreign_key_check".to_owned()

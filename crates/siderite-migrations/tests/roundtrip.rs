@@ -529,6 +529,100 @@ async fn run_rust_sees_no_fk_enforcement_on_sqlite() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The pre-commit check compares violating *rows*, not counts.
+///
+/// A migration that repairs one pre-existing orphan while adding another
+/// keeps the violation count equal, so a count comparison would pass it. The
+/// new orphan must still fail the commit.
+#[tokio::test]
+async fn sqlite_check_detects_a_new_violation_behind_a_fixed_one() {
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let create = Migration::new(
+        "0001_t",
+        Vec::new(),
+        vec![
+            Operation::RunSQL {
+                sql: "CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+                    .into(),
+                reverse_sql: Some("DROP TABLE authors".into()),
+            },
+            Operation::RunSQL {
+                sql: "CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT NOT NULL, author_id BIGINT NOT NULL REFERENCES authors (id) ON DELETE CASCADE)"
+                    .into(),
+                reverse_sql: Some("DROP TABLE books".into()),
+            },
+        ],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &create).unwrap();
+    Migrator::new(
+        &db,
+        &MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap(),
+    )
+    .migrate(None, false)
+    .await
+    .unwrap();
+    // Baseline orphan, created with enforcement off on the single `:memory:`
+    // connection and enforcement back on so the migration takes the check.
+    // The row id is fixed: the replacement must differ from it, or it is the
+    // same violation and correctly passes.
+    db.execute_script(
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO books (id, title, author_id) VALUES (1, 'Ghost', 999);
+         PRAGMA foreign_keys = ON;",
+    )
+    .await
+    .unwrap();
+
+    let swap = Migration::new(
+        "0002_swap_orphans",
+        vec![create.id.clone()],
+        vec![Operation::RunRust {
+            name: "swap".into(),
+            backwards: None,
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &swap).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let mut registry = MigrationRegistry::new();
+    registry.register("swap", |db| {
+        Box::pin(async move {
+            db.raw_execute("DELETE FROM books WHERE id = 1", Vec::new())
+                .await?;
+            db.raw_execute(
+                "INSERT INTO books (id, title, author_id) VALUES (2, 'Ghost', 999)",
+                Vec::new(),
+            )
+            .await?;
+            Ok(())
+        })
+    });
+    let err = Migrator::new(&db, &graph)
+        .with_registry(registry)
+        .migrate(None, false)
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("books") && msg.contains("new violation"),
+        "an equal violation count must not pass: {err:?}"
+    );
+    // The rollback restores the baseline orphan (id 1), not the swap's (id 2).
+    let orphans = db
+        .raw_sql("SELECT id FROM books", Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(orphans.rows.len(), 1, "{orphans:?}");
+    assert_eq!(orphans.rows[0].get("id"), Some(&Value::Int(1)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A failing migration rolls the whole SQLite run back.
 ///
 /// `with_lock` holds a single `BEGIN IMMEDIATE` transaction for the entire

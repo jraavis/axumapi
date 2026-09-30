@@ -60,6 +60,8 @@ implementing.
 - [x] M16 `executor.rs` MysqlPartial without DDL — fix(migrations): raise only after committed DDL
 - [x] M18 `operation.rs:~162` `RenameModel` skips the renamed model, so self-referencing FKs keep the old table — fix(migrations): retarget self-referencing FKs on model rename
 - [x] M19 `executor.rs` MySQL resume was per-operation, so a multi-statement operation replayed committed statements; `MysqlOpPartial` missed RunRust-only partials — fix(migrations): resume MySQL migrations per statement
+- [x] M20 `sqlite.rs` pre-commit FK check compared counts, so fix-one-add-one passed — fix(backends): diff SQLite foreign_key_check rows against the baseline
+- [x] M21 `executor.rs:105` comment refers to deleted pre-lock preview — fix(migrations): drop stale pre-lock preview comment
 
 ### P1 — migrations (data loss)
 - [x] M1 `crates/siderite-migrations/src/schema_editor.rs:~506` `sqlite_rebuild` emits `PRAGMA foreign_keys = OFF` inside the migration transaction (SQLite ignores it there; `runs_in_transaction` is true for SQLite, `executor.rs:481`). `DROP TABLE` then cascades/deletes child rows. Also forces FKs ON afterward regardless of prior state. Fix: `PRAGMA defer_foreign_keys = ON` + `PRAGMA foreign_key_check` after rebuild, or run the PRAGMA outside the txn; restore prior value. Test: parent+child with `ON DELETE CASCADE`, AlterField on parent, assert child rows survive. — fix(migrations): preserve child rows across SQLite table rebuilds
