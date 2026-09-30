@@ -77,7 +77,15 @@ fn check_relations(
 /// Render the initial schema for the backend; whatever it cannot express
 /// surfaces as an error before a migration is ever written.
 fn check_schema(models: &[&'static ModelMeta], kind: BackendKind) -> Vec<CheckIssue> {
-    let operations = diff(&ProjectState::new(), &ProjectState::from_metas(models));
+    let operations = match diff(&ProjectState::new(), &ProjectState::from_metas(models)) {
+        Ok(ops) => ops,
+        Err(err) => {
+            return vec![CheckIssue::error(
+                "backend.E002",
+                format!("initial schema diff failed: {err}"),
+            )];
+        }
+    };
     match schema_editor::statements(kind, &ProjectState::new(), &operations) {
         Ok(_) => Vec::new(),
         Err(MigrationError::UnsupportedBackend(_)) => vec![CheckIssue::warning(

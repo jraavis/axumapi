@@ -11,7 +11,7 @@ use siderite_orm::BackendKind;
 
 fn render_initial(kind: BackendKind) -> Vec<String> {
     let to = ProjectState::from_metas(&[author_meta(), book_meta()]);
-    let ops = siderite_migrations::diff(&ProjectState::new(), &to);
+    let ops = siderite_migrations::diff(&ProjectState::new(), &to).unwrap();
     schema_editor::statements(kind, &ProjectState::new(), &ops).unwrap()
 }
 
@@ -43,7 +43,7 @@ fn postgres_author_book_snapshot() {
 #[test]
 fn postgres_types_and_now_default() {
     let to = ProjectState::from_metas(&[post_meta(), tag_meta()]);
-    let ops = siderite_migrations::diff(&ProjectState::new(), &to);
+    let ops = siderite_migrations::diff(&ProjectState::new(), &to).unwrap();
     let sql = schema_editor::statements(BackendKind::Postgres, &ProjectState::new(), &ops)
         .unwrap()
         .join(";\n");
@@ -57,7 +57,7 @@ fn postgres_types_and_now_default() {
 #[test]
 fn sqlite_now_default_is_strftime() {
     let to = ProjectState::from_metas(&[post_meta(), tag_meta()]);
-    let ops = siderite_migrations::diff(&ProjectState::new(), &to);
+    let ops = siderite_migrations::diff(&ProjectState::new(), &to).unwrap();
     let sql = schema_editor::statements(BackendKind::Sqlite, &ProjectState::new(), &ops)
         .unwrap()
         .join(";\n");

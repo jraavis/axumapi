@@ -168,6 +168,7 @@ pub fn slug_from_operations(operations: &[Operation], is_first: bool) -> String 
     match &operations[0] {
         Operation::CreateModel { model } => format!("create_{}", snake(&model.name)),
         Operation::DeleteModel { name } => format!("delete_{}", snake(name)),
+        Operation::RenameModel { new_name, .. } => format!("rename_{}", snake(new_name)),
         Operation::AddField { model, field } => {
             format!("add_{}_{}", snake(model), snake(&field.name))
         }

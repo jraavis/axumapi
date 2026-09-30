@@ -74,7 +74,8 @@ implementations at runtime with `MigrationRegistry` before
 | `AddField` | `RemoveField` | |
 | `RemoveField` | `AddField` from the before-state | |
 | `AlterField` | `AlterField` with the old snapshot | |
-| `RenameField` | swapped names | **Only when hinted** (`RenameHints`). Otherwise the autodetector emits remove+add and data is not preserved |
+| `RenameField` | swapped names | **Only when hinted** (`RenameHints::rename_field`). An unhinted same-shape remove+add is refused |
+| `RenameModel` | swapped names | **Only when hinted** (`RenameHints::rename_model`). An unhinted same-shape delete+create is refused |
 | `CreateIndex` / `DeleteIndex` | each other | |
 | `AddConstraint` / `DeleteConstraint` | each other | |
 | `RunSQL` | `RunSQL` of `reverse_sql` | **Irreversible** if `reverse_sql` is omitted |

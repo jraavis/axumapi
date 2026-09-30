@@ -95,6 +95,20 @@ pub fn render(
             let model = state.require(name)?;
             Ok(vec![format!("DROP TABLE {}", quote_ident(&model.table))])
         }
+        Operation::RenameModel {
+            old_name, table, ..
+        } => {
+            let model = state.require(old_name)?;
+            if model.table == *table {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![format!(
+                    "ALTER TABLE {} RENAME TO {}",
+                    quote_ident(&model.table),
+                    quote_ident(table)
+                )])
+            }
+        }
         Operation::AddField { model, field } => add_field_sql(kind, state.require(model)?, field),
         Operation::RemoveField { model, name } => {
             remove_field_sql(kind, state.require(model)?, name)

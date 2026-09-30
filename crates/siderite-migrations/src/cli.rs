@@ -193,7 +193,7 @@ fn cmd_makemigrations(
         Vec::new()
     } else {
         let to = ProjectState::from_metas(models);
-        autodetector::diff(&from, &to)
+        autodetector::diff(&from, &to)?
     };
     if operations.is_empty() && !parsed.empty {
         println!("No changes detected.");
@@ -335,7 +335,7 @@ pub fn make_migrations(
     let operations = if empty {
         Vec::new()
     } else {
-        autodetector::diff(&from, &ProjectState::from_metas(models))
+        autodetector::diff(&from, &ProjectState::from_metas(models))?
     };
     if operations.is_empty() && !empty {
         return Ok(None);

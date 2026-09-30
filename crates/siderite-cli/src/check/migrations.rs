@@ -37,7 +37,15 @@ pub(super) fn check(models: &[&'static ModelMeta], dir: &Path) -> Vec<CheckIssue
             }
         }
     };
-    let pending = diff(&recorded, &ProjectState::from_metas(models));
+    let pending = match diff(&recorded, &ProjectState::from_metas(models)) {
+        Ok(ops) => ops,
+        Err(err) => {
+            return vec![CheckIssue::error(
+                "migrations.E004",
+                format!("makemigrations would refuse this diff: {err}"),
+            )];
+        }
+    };
     if pending.is_empty() {
         return Vec::new();
     }

@@ -23,6 +23,16 @@ pub enum Operation {
         /// Model name.
         name: String,
     },
+    /// Rename a model (and its table when `table` differs from the current
+    /// table). Detected only when listed in [`crate::autodetector::RenameHints`].
+    RenameModel {
+        /// Current model name.
+        old_name: String,
+        /// New model name.
+        new_name: String,
+        /// Table name after the rename.
+        table: String,
+    },
     /// Add a column.
     AddField {
         /// Model name.
@@ -47,8 +57,8 @@ pub enum Operation {
         field: FieldState,
     },
     /// Rename a field. Detected only when listed in
-    /// [`crate::autodetector::RenameHints`]; otherwise the autodetector emits
-    /// remove+add.
+    /// [`crate::autodetector::RenameHints`]; otherwise a same-shape
+    /// remove+add is refused.
     RenameField {
         /// Model name.
         model: String,
@@ -127,6 +137,23 @@ impl Operation {
                 state.models.remove(name).ok_or_else(|| {
                     MigrationError::state(format!("model `{name}` is not in the project state"))
                 })?;
+            }
+            Self::RenameModel {
+                old_name,
+                new_name,
+                table,
+            } => {
+                let mut model = state.models.remove(old_name).ok_or_else(|| {
+                    MigrationError::state(format!("model `{old_name}` is not in the project state"))
+                })?;
+                if old_name != new_name && state.models.contains_key(new_name) {
+                    return Err(MigrationError::state(format!(
+                        "model `{new_name}` already exists"
+                    )));
+                }
+                model.name = new_name.clone();
+                model.table = table.clone();
+                state.models.insert(new_name.clone(), model);
             }
             Self::AddField { model, field } => {
                 let m = state.require_mut(model)?;
@@ -219,6 +246,16 @@ impl Operation {
                 let model = state_before.model(name)?.clone();
                 Some(Self::CreateModel { model })
             }
+            Self::RenameModel {
+                old_name, new_name, ..
+            } => {
+                let table = state_before.model(old_name)?.table.clone();
+                Some(Self::RenameModel {
+                    old_name: new_name.clone(),
+                    new_name: old_name.clone(),
+                    table,
+                })
+            }
             Self::AddField { model, field } => Some(Self::RemoveField {
                 model: model.clone(),
                 name: field.name.clone(),
@@ -295,6 +332,9 @@ impl Operation {
         match self {
             Self::CreateModel { model } => format!("CreateModel {}", model.name),
             Self::DeleteModel { name } => format!("DeleteModel {name}"),
+            Self::RenameModel {
+                old_name, new_name, ..
+            } => format!("RenameModel {old_name} -> {new_name}"),
             Self::AddField { model, field } => format!("AddField {model}.{}", field.name),
             Self::RemoveField { model, name } => format!("RemoveField {model}.{name}"),
             Self::AlterField { model, name, .. } => format!("AlterField {model}.{name}"),

@@ -19,7 +19,7 @@ fn render(state: &ProjectState, op: &Operation) -> Result<Vec<String>, Migration
 
 fn initial(metas: &[&'static siderite_orm::ModelMeta]) -> Vec<String> {
     let to = ProjectState::from_metas(metas);
-    let ops = siderite_migrations::diff(&ProjectState::new(), &to);
+    let ops = siderite_migrations::diff(&ProjectState::new(), &to).unwrap();
     schema_editor::statements(BackendKind::MySql, &ProjectState::new(), &ops).unwrap()
 }
 
@@ -98,7 +98,7 @@ fn now_default_and_unique_varchar() {
 fn indexed_text_without_length_in_a_model_is_rejected() {
     // The reference `Post` indexes `title`, a TEXT column without `max_length`.
     let to = ProjectState::from_metas(&[post_meta(), tag_meta()]);
-    let ops = siderite_migrations::diff(&ProjectState::new(), &to);
+    let ops = siderite_migrations::diff(&ProjectState::new(), &to).unwrap();
     let err =
         schema_editor::statements(BackendKind::MySql, &ProjectState::new(), &ops).unwrap_err();
     assert!(err.to_string().contains("max_length"), "{err}");
