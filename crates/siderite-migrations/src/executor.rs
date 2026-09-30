@@ -453,9 +453,7 @@ impl<'a> Migrator<'a> {
             let rust_ops = rust_ops.iter().map(|op| (*op).clone()).collect::<Vec<_>>();
             let registry = self.registry.clone();
             async move {
-                for sql in &sqls {
-                    db.execute_script(sql).await?;
-                }
+                execute_sqls(&db, kind, &migration.id, &sqls).await?;
                 for op in &rust_ops {
                     if let Operation::RunRust { name, .. } = op {
                         registry.run(name, &db).await?;
@@ -496,9 +494,7 @@ impl<'a> Migrator<'a> {
             let registry = self.registry.clone();
             let id = migration.id.clone();
             async move {
-                for sql in &sqls {
-                    db.execute_script(sql).await?;
-                }
+                execute_sqls(&db, kind, &id, &sqls).await?;
                 for name in &rust_ops {
                     registry.run(name, &db).await?;
                 }
@@ -617,6 +613,28 @@ fn create_history_sql(kind: BackendKind) -> String {
         quote_star(kind, "checksum"),
         quote_star(kind, "applied_at"),
     )
+}
+
+async fn execute_sqls(
+    db: &Db,
+    kind: BackendKind,
+    migration_id: &str,
+    sqls: &[String],
+) -> Result<(), MigrationError> {
+    for (i, sql) in sqls.iter().enumerate() {
+        if let Err(err) = db.execute_script(sql).await {
+            if kind == BackendKind::MySql && i > 0 {
+                return Err(MigrationError::MysqlPartial {
+                    id: migration_id.to_owned(),
+                    index: i + 1,
+                    total: sqls.len(),
+                    source: err,
+                });
+            }
+            return Err(err.into());
+        }
+    }
+    Ok(())
 }
 
 fn placeholder(kind: BackendKind, index: usize) -> String {

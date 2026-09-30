@@ -138,7 +138,8 @@ Every DDL statement in MySQL commits implicitly, so the executor does
 
 - A migration that fails half way leaves its earlier statements applied,
   and no row is written to the history table. Running `migrate` again then
-  fails on the statements that already ran.
+  fails on the statements that already ran. The error names the statement
+  that failed (`2 of 3`, …).
 - Repair by hand, then re-run. Keep MySQL migrations small — ideally one
   schema change each. `--dry-run` shows the SQL first.
 - `RunSQL` statements are not rolled back either.

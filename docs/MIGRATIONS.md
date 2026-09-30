@@ -121,8 +121,8 @@ The MySQL schema editor (`crates/siderite-migrations/src/schema_editor/mysql.rs`
 
 Every DDL statement in MySQL commits implicitly, so the executor does **not** wrap MySQL migrations in a transaction, whatever the migration's `atomic` flag says. Consequences:
 
-* A migration that fails half way leaves its earlier statements applied, and no row is written to the history table. Running `migrate` again then fails on the statements that already ran (for example a table that exists).
-* Repair by hand (or by rolling the applied part back with SQL), then re-run.
+* A migration that fails half way leaves its earlier statements applied, and no row is written to the history table. Running `migrate` again then fails on the statements that already ran (for example a table that exists). The error is [`MigrationError::MysqlPartial`](../crates/siderite-migrations/src/error.rs) and names the statement that failed (`2 of 3`, …).
+* Repair by hand (or by rolling the applied part back with SQL), then re-run. Keep MySQL migrations to one schema change each so a failure is one statement.
 * Keep MySQL migrations small, ideally one schema change each, so a failure is easy to repair. Prefer several small migrations to one large one; `--dry-run` shows the SQL first.
 * `RunSQL` statements are not rolled back either.
 

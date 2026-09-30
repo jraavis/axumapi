@@ -73,6 +73,21 @@ pub enum MigrationError {
     /// Command-line usage error.
     #[error("{0}")]
     Usage(String),
+    /// MySQL DDL committed earlier statements, then a later one failed.
+    #[error(
+        "MySQL migration `{id}` failed on statement {index} of {total} after earlier DDL committed (repair the schema by hand, then re-run): {source}"
+    )]
+    MysqlPartial {
+        /// Migration id.
+        id: String,
+        /// 1-based statement that failed.
+        index: usize,
+        /// Number of SQL statements in the migration.
+        total: usize,
+        /// Driver error from the failing statement.
+        #[source]
+        source: OrmError,
+    },
 }
 
 impl MigrationError {
@@ -84,5 +99,25 @@ impl MigrationError {
     /// [`Usage`](Self::Usage) helper.
     pub fn usage(msg: impl Into<String>) -> Self {
         Self::Usage(msg.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use siderite_orm::BackendError;
+
+    #[test]
+    fn mysql_partial_names_the_failed_statement() {
+        let err = MigrationError::MysqlPartial {
+            id: "0002_add".into(),
+            index: 2,
+            total: 3,
+            source: BackendError::Database("table exists".into()).into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("statement 2 of 3"), "{msg}");
+        assert!(msg.contains("0002_add"), "{msg}");
+        assert!(msg.contains("repair the schema by hand"), "{msg}");
     }
 }
