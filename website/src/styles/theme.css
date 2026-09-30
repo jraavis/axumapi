@@ -54,6 +54,13 @@
 	font-family: var(--sl-font-mono);
 	font-weight: 500;
 	letter-spacing: -0.02em;
+	gap: 0.55rem;
+}
+
+.site-title img {
+	width: 1.7rem;
+	height: 1.7rem;
+	border-radius: 0.35rem;
 }
 
 .hero {

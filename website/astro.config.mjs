@@ -13,6 +13,10 @@ export default defineConfig({
 			description:
 				'A FastAPI-style Rust web framework with Pydantic-style validation and a Django-style ORM.',
 			favicon: '/favicon.svg',
+			logo: {
+				src: './src/assets/logo.svg',
+				alt: 'axumapi',
+			},
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/jraavis/axumapi' },
 			],
