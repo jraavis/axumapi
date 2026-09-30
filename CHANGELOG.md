@@ -24,6 +24,7 @@
 - **Migrations:** documented that a SQLite `migrate`/`rollback` run is a single all-or-nothing transaction and removed the now-dead per-migration SQLite branches in the executor.
 - **Migrations:** MySQL `GET_LOCK` now waits indefinitely for the migration lock, matching PostgreSQL `pg_advisory_lock`, so a slow migration no longer makes other replicas time out and crash-loop.
 - **Migrations:** MySQL records per-operation progress (`siderite_migration_progress`) and resumes a failed migration after the last completed operation on re-run instead of replaying committed statements; a `RunRust` failure after committed statements reports `MigrationError::MysqlOpPartial` naming the operation.
+- **Migrations:** `MysqlPartial` is raised only when earlier DDL actually committed (first-keyword check), so a failure after non-DDL statements reports the plain error instead of a misleading partial.
 - **Migrations:** `RenameHints::allow_drop_model` / `allow_drop_field` approve an intentional drop that collides with a same-shaped create, so the refusal no longer forces a two-migration split. The shape predicate stays conservative on purpose: weakening it would silently drop data on genuine renames.
 - **Migrations:** `RenameModel` retargets other models' foreign keys that pointed at the old table, so hand-written renames leave project state consistent.
 - **Migrations:** `Report.sql` is rendered under the migration lock from the re-read plan, so a concurrent replica applying migrations in between no longer desyncs it from `Report.planned`.

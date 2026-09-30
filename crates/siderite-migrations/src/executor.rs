@@ -844,11 +844,14 @@ async fn apply_ops_in_order(
     }
     let mut current = state.clone();
     let mut sql_index = 0usize;
+    let mut prior_ddl = false;
     for (op_no, op) in migration.operations.iter().enumerate() {
         if op_no < start_op {
             // Applied by an earlier attempt: advance state without executing.
             if !matches!(op, Operation::RunRust { .. }) {
-                sql_index += schema_editor::render(kind, op, &current)?.len();
+                let stmts = schema_editor::render(kind, op, &current)?;
+                prior_ddl |= stmts.iter().any(|sql| is_implicit_commit(sql));
+                sql_index += stmts.len();
             }
             op.apply_to_state(&mut current)?;
             continue;
@@ -870,7 +873,17 @@ async fn apply_ops_in_order(
             let stmts = schema_editor::render(kind, op, &current)?;
             for sql in stmts {
                 sql_index += 1;
-                execute_one_sql(db, kind, &migration.id, sql_index, total_sql, &sql).await?;
+                execute_one_sql(
+                    db,
+                    kind,
+                    &migration.id,
+                    sql_index,
+                    total_sql,
+                    prior_ddl,
+                    &sql,
+                )
+                .await?;
+                prior_ddl |= is_implicit_commit(&sql);
             }
             op.apply_to_state(&mut current)?;
         }
@@ -931,10 +944,13 @@ async fn unapply_ops_in_order(
             .await?
             .min(rev_ops.len());
     }
+    let mut prior_ddl = false;
     for (op_no, rev) in rev_ops.into_iter().enumerate() {
         if op_no < start_op {
             if !matches!(rev, Operation::RunRust { .. }) {
-                sql_index += schema_editor::render(kind, &rev, &current)?.len();
+                let stmts = schema_editor::render(kind, &rev, &current)?;
+                prior_ddl |= stmts.iter().any(|sql| is_implicit_commit(sql));
+                sql_index += stmts.len();
             }
             rev.apply_to_state(&mut current)?;
             continue;
@@ -956,7 +972,8 @@ async fn unapply_ops_in_order(
             let stmts = schema_editor::render(kind, &rev, &current)?;
             for sql in stmts {
                 sql_index += 1;
-                execute_one_sql(db, kind, id, sql_index, total_sql, &sql).await?;
+                execute_one_sql(db, kind, id, sql_index, total_sql, prior_ddl, &sql).await?;
+                prior_ddl |= is_implicit_commit(&sql);
             }
         }
         rev.apply_to_state(&mut current)?;
@@ -977,10 +994,15 @@ async fn execute_one_sql(
     migration_id: &str,
     index: usize,
     total: usize,
+    prior_ddl: bool,
     sql: &str,
 ) -> Result<(), MigrationError> {
     if let Err(err) = db.execute_script(sql).await {
-        if kind == BackendKind::MySql && index > 1 {
+        // MySQL commits DDL implicitly: with earlier DDL committed, a
+        // re-run replays it and gets stuck, so name the failed statement.
+        // Without prior DDL (a first-statement failure, or only DML before
+        // it) the plain error is accurate.
+        if kind == BackendKind::MySql && prior_ddl {
             return Err(MigrationError::MysqlPartial {
                 id: migration_id.to_owned(),
                 index,
@@ -991,6 +1013,41 @@ async fn execute_one_sql(
         return Err(err.into());
     }
     Ok(())
+}
+
+/// Whether `sql` is (probably) DDL that MySQL commits implicitly, so a
+/// later failure leaves it applied. Matches the statement's first keyword,
+/// skipping whitespace and `--` / `/* */` comments.
+fn is_implicit_commit(sql: &str) -> bool {
+    matches!(
+        first_keyword(sql).as_str(),
+        "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "RENAME"
+    )
+}
+
+fn first_keyword(sql: &str) -> String {
+    let mut rest = sql.trim_start();
+    loop {
+        if let Some(body) = rest.strip_prefix("--") {
+            rest = body
+                .split_once('\n')
+                .map(|(_, tail)| tail)
+                .unwrap_or("")
+                .trim_start();
+        } else if let Some(body) = rest.strip_prefix("/*") {
+            rest = body
+                .split_once("*/")
+                .map(|(_, tail)| tail)
+                .unwrap_or("")
+                .trim_start();
+        } else {
+            break;
+        }
+    }
+    rest.split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase()
 }
 
 fn placeholder(kind: BackendKind, index: usize) -> String {
@@ -1286,5 +1343,57 @@ mod tests {
             "`siderite_migrations`"
         );
         assert_eq!(quote_star(BackendKind::Sqlite, "id"), "\"id\"");
+    }
+
+    #[test]
+    fn implicit_commit_matches_ddl_first_keyword() {
+        for sql in [
+            "CREATE TABLE t (n INTEGER)",
+            "  alter table t add column m integer",
+            "-- a comment\nDROP INDEX i",
+            "/* wrapped */ TRUNCATE t",
+            "rename table a to b",
+        ] {
+            assert!(is_implicit_commit(sql), "{sql}");
+        }
+        for sql in [
+            "SELECT 1",
+            "INSERT INTO t VALUES (1)",
+            "UPDATE t SET n = 2",
+            "DELETE FROM t",
+            "-- only a comment",
+            "",
+        ] {
+            assert!(!is_implicit_commit(sql), "{sql}");
+        }
+    }
+
+    /// Without earlier DDL the failure is plain, even past statement 1: the
+    /// "earlier DDL committed" claim would be wrong.
+    #[tokio::test]
+    async fn mysql_plain_error_without_prior_ddl() {
+        let db = memory_db().await;
+        db.execute_script(&create_history_sql(BackendKind::MySql))
+            .await
+            .unwrap();
+        let migration = run_sql_migration(
+            "0004_noddl",
+            &[
+                ("SELECT 1", "SELECT 1"),
+                (
+                    "CREATE TABLE q_that_fails (n INTEGER PRIMARY KEY, n INTEGER)",
+                    "SELECT 1",
+                ),
+            ],
+        );
+        let state = ProjectState::new();
+        let registry = crate::registry::MigrationRegistry::new();
+        let err = apply_ops_in_order(&db, BackendKind::MySql, &migration, &state, &registry)
+            .await
+            .unwrap_err();
+        assert!(
+            !matches!(err, MigrationError::MysqlPartial { .. }),
+            "no DDL committed, so no partial: {err:?}"
+        );
     }
 }
