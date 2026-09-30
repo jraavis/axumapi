@@ -109,7 +109,7 @@ Unsupported features fail with a `BackendCapabilityError` before any I/O; see th
 
 - Request bodies read with `Body::into_bytes` are capped at 2 MiB (`413` above it), like the `Json` and `Form` extractors. Use `into_bytes_limited` for another cap.
 - Configuration errors redact values of secret-looking keys (`*_url`, `*token*`, `*secret*`, `*passw*`, `*_key`, ...).
-- `RouteCache` keys on scheme, host, path, query, `Accept` and `Accept-Encoding`, and skips requests with credential-like headers (`Authorization`, `Cookie`, `X-API-Key`, names containing `auth`, `token`, `session`, `jwt`, `secret`, `api-key` or `access-key`). **Register any other header that decides who sees a response** (for example `X-Tenant` or `X-Signature`) with `RouteCache::bypass_header`, or private responses can be served from the cache to anyone. See the [cache guide](https://jraavis.github.io/siderite/guides/production/cache/).
+- `RouteCache` is opt-in: it stores only responses marked `Cache-Control: public` (see `Cached::public`), or every response of a single route whose layer sets `default_ttl`. It keys on scheme, host, path, query, `Accept` and `Accept-Encoding`, and skips requests with credential-like headers (`Authorization`, `Cookie`, `X-API-Key`, names containing `auth`, `token`, `session`, `jwt`, `secret`, `api-key` or `access-key`). See the [cache guide](https://jraavis.github.io/siderite/guides/production/cache/).
 
 ## Roadmap
 

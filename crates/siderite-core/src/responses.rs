@@ -5,7 +5,7 @@ use crate::error::ApiError;
 use crate::response::{IntoResponse, Response, SUCCESS, status_only};
 use bytes::Bytes;
 use futures_util::Stream;
-use http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, LOCATION};
+use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, LOCATION};
 use http::{HeaderName, HeaderValue, StatusCode};
 use siderite_openapi::{Operation, SchemaObject, SchemaRegistry};
 use std::error::Error as StdError;
@@ -13,6 +13,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io::{AsyncRead, ReadBuf};
 
 /// HTTP redirect (`Location` header).
@@ -251,6 +252,39 @@ impl<R: IntoResponse> IntoResponse for WithHeaders<R> {
         let mut response = self.inner.into_response();
         for (name, value) in self.headers {
             response.headers_mut().append(name, value);
+        }
+        response
+    }
+
+    fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {
+        R::describe(op, registry);
+    }
+}
+
+/// Marks a response as shareable by caches: sets
+/// `Cache-Control: public, max-age=<seconds>`, replacing any earlier value.
+///
+/// This is how a handler opts in to `siderite_cache::RouteCache`, which by
+/// default stores only `public` responses.
+pub struct Cached<R> {
+    inner: R,
+    max_age: Duration,
+}
+
+impl<R> Cached<R> {
+    /// Cache `inner` publicly for `max_age` (whole seconds, rounded down).
+    #[must_use]
+    pub fn public(max_age: Duration, inner: R) -> Self {
+        Self { inner, max_age }
+    }
+}
+
+impl<R: IntoResponse> IntoResponse for Cached<R> {
+    fn into_response(self) -> Response {
+        let mut response = self.inner.into_response();
+        let value = format!("public, max-age={}", self.max_age.as_secs());
+        if let Ok(value) = HeaderValue::try_from(value) {
+            response.headers_mut().insert(CACHE_CONTROL, value);
         }
         response
     }

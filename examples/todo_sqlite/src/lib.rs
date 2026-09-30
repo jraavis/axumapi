@@ -1,7 +1,9 @@
 //! SQLite-backed todo API: models, routes and an [`App`] factory.
 
+use siderite::cache::{MemoryCache, RouteCache};
 use siderite::prelude::*;
 use siderite_backends::sqlite::SqliteBackend;
+use std::time::Duration;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS users (
@@ -104,6 +106,8 @@ pub fn app(db: Db) -> App {
             patch_todo,
             delete_todo
         ])
+        // Stores only responses that opt in with `Cache-Control: public`.
+        .layer(RouteCache::new(MemoryCache::new(256)))
 }
 
 /// Create a user.
@@ -119,9 +123,13 @@ async fn create_user(db: Provided<Db>, Json(body): Json<NewUser>) -> Result<Json
 }
 
 /// List every todo, oldest first.
+///
+/// Cached for a few seconds to show `RouteCache`: the list may lag behind
+/// writes by up to that long, since nothing invalidates it.
 #[get("/todos")]
-async fn list_todos(db: Provided<Db>) -> Result<Json<Vec<Todo>>, ApiError> {
-    Ok(Json(Todo::objects(&db).all().await?))
+async fn list_todos(db: Provided<Db>) -> Result<Cached<Json<Vec<Todo>>>, ApiError> {
+    let todos = Todo::objects(&db).all().await?;
+    Ok(Cached::public(Duration::from_secs(5), Json(todos)))
 }
 
 /// Create a todo.
@@ -258,6 +266,21 @@ mod tests {
 
         let missing = client.get(&format!("/todos/{id}")).await.unwrap();
         assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn todo_list_is_cached_and_other_routes_are_not() {
+        let client = client().await;
+        let first = client.get("/todos").await.unwrap();
+        assert_eq!(first.headers["x-cache"], "miss");
+        assert_eq!(first.headers["cache-control"], "public, max-age=5");
+        let second = client.get("/todos").await.unwrap();
+        assert_eq!(second.headers["x-cache"], "hit");
+
+        let missing = client.get("/todos/999").await.unwrap();
+        assert_eq!(missing.status, StatusCode::NOT_FOUND);
+        let again = client.get("/todos/999").await.unwrap();
+        assert_eq!(again.headers["x-cache"], "miss");
     }
 
     #[tokio::test]

@@ -36,6 +36,10 @@ spans are documented in [Observability](/siderite/guides/production/observabilit
 HTTP GET/HEAD response caching is `RouteCache`; see
 [Cache](/siderite/guides/production/cache/).
 
+`App::layer` wraps the whole app. To wrap a single route, call `.layer(..)`
+on its `MethodRouter` instead (`get(h).layer(l)`); the layer then runs after
+routing and only for that path.
+
 `RateLimit` is **process-local**: with N replicas the effective limit is N
 times higher, and a restart resets it. The client key is the socket peer
 (available under `App::run`). Enable `trust_forwarded_for` only behind a

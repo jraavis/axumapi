@@ -28,6 +28,9 @@ let app = App::new()
   `.operation_id()`, `.deprecated()`, `.hidden()`, `.status(StatusCode)`,
   `.response_model::<T>()` apply to the **most recently added** method, so
   order matters.
+- `.layer(layer)` wraps every method added so far on that path in a
+  middleware layer (for example `RouteCache`). It runs after routing and
+  only for that path; methods chained after it are not wrapped.
 - `App::routes(iter)` accepts `Route` values (`Route::new(path, router)`),
   which is what the macros below produce.
 - Path templates use `{name}` parameters (`{*rest}` for a catch-all).

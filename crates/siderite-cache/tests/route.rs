@@ -6,7 +6,7 @@ use siderite_cache::{MemoryCache, RouteCache};
 use siderite_core::header::{SetCookie, WithCookies};
 use siderite_core::http::StatusCode;
 use siderite_core::responses::WithHeaders;
-use siderite_core::{App, Body, get, post};
+use siderite_core::{App, Body, Cached, get, post};
 use siderite_testkit::{TestClient, TestResponse};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,7 +50,7 @@ fn counted_app(hits: Arc<AtomicUsize>, ttl: Duration) -> (TestClient, Arc<Atomic
                 }
             }),
         )
-        .layer(RouteCache::new(MemoryCache::new(32), ttl));
+        .layer(RouteCache::new(MemoryCache::new(32)).default_ttl(ttl));
     (TestClient::new(app), hits)
 }
 
@@ -92,10 +92,7 @@ async fn post_is_not_cached() {
                 }
             }),
         )
-        .layer(RouteCache::new(
-            MemoryCache::new(8),
-            Duration::from_secs(60),
-        ));
+        .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(60)));
     let client = TestClient::new(app);
     let first = client
         .post_raw("/item", "text/plain", Vec::new())
@@ -127,10 +124,7 @@ async fn non_200_is_not_cached() {
                 }
             }),
         )
-        .layer(RouteCache::new(
-            MemoryCache::new(8),
-            Duration::from_secs(60),
-        ));
+        .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(60)));
     let client = TestClient::new(app);
     let first = client.get("/missing").await.unwrap();
     let second = client.get("/missing").await.unwrap();
@@ -181,10 +175,7 @@ async fn set_cookie_response_is_not_stored() {
                 }
             }),
         )
-        .layer(RouteCache::new(
-            MemoryCache::new(8),
-            Duration::from_secs(60),
-        ));
+        .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(60)));
     let client = TestClient::new(app);
     let first = client.get("/login").await.unwrap();
     let second = client.get("/login").await.unwrap();
@@ -210,10 +201,7 @@ async fn cache_control_no_store_and_private_are_not_stored() {
                     }
                 }),
             )
-            .layer(RouteCache::new(
-                MemoryCache::new(8),
-                Duration::from_secs(60),
-            ));
+            .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(60)));
         let client = TestClient::new(app);
         let _ = client.get("/x").await.unwrap();
         let second = client.get("/x").await.unwrap();
@@ -239,10 +227,7 @@ async fn public_cache_control_is_stored() {
                 }
             }),
         )
-        .layer(RouteCache::new(
-            MemoryCache::new(8),
-            Duration::from_secs(60),
-        ));
+        .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(60)));
     let client = TestClient::new(app);
     let _ = client.get("/x").await.unwrap();
     let second = client.get("/x").await.unwrap();
@@ -288,10 +273,7 @@ async fn created_status_is_not_cached() {
                 }
             }),
         )
-        .layer(RouteCache::new(
-            MemoryCache::new(8),
-            Duration::from_secs(60),
-        ));
+        .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(60)));
     let client = TestClient::new(app);
     let _ = client.get("/new").await.unwrap();
     let second = client.get("/new").await.unwrap();
@@ -327,7 +309,7 @@ async fn zero_ttl_never_stores() {
 async fn layer_is_usable_on_app() {
     let app = App::new()
         .route("/ok", get(|| async { "ok" }))
-        .layer(RouteCache::new(MemoryCache::new(1), Duration::from_secs(1)));
+        .layer(RouteCache::new(MemoryCache::new(1)).default_ttl(Duration::from_secs(1)));
     let res = TestClient::new(app).get("/ok").await.unwrap();
     assert_eq!(res.text(), "ok");
 }
@@ -348,7 +330,8 @@ async fn api_key_and_custom_credential_headers_bypass_the_cache() {
             }),
         )
         .layer(
-            RouteCache::new(MemoryCache::new(8), Duration::from_secs(60))
+            RouteCache::new(MemoryCache::new(8))
+                .default_ttl(Duration::from_secs(60))
                 .bypass_header(http::HeaderName::from_static("x-tenant-token")),
         );
     let client = TestClient::new(app);
@@ -381,10 +364,7 @@ async fn vary_outside_the_key_is_not_stored() {
                 "/v",
                 get(move || async move { WithHeaders::new("ok").header("vary", vary) }),
             )
-            .layer(RouteCache::new(
-                MemoryCache::new(8),
-                Duration::from_secs(60),
-            ));
+            .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(60)));
         let client = TestClient::new(app);
         let _ = client.get("/v").await.unwrap();
         let second = client.get("/v").await.unwrap();
@@ -408,7 +388,11 @@ async fn streaming_and_oversized_bodies_pass_through() {
             }),
         )
         .route("/big", get(|| async { "0123456789" }))
-        .layer(RouteCache::new(MemoryCache::new(8), Duration::from_secs(60)).max_body_bytes(4));
+        .layer(
+            RouteCache::new(MemoryCache::new(8))
+                .default_ttl(Duration::from_secs(60))
+                .max_body_bytes(4),
+        );
     let client = TestClient::new(app);
     for path in ["/stream", "/big"] {
         let first = client.get(path).await.unwrap();
@@ -427,10 +411,7 @@ async fn cached_head_keeps_the_representation_length() {
             get(|| async { "payload" })
                 .head(|| async { WithHeaders::new("").header("content-length", "7") }),
         )
-        .layer(RouteCache::new(
-            MemoryCache::new(8),
-            Duration::from_secs(60),
-        ));
+        .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(60)));
     let client = TestClient::new(app);
     let _ = call(&client, Method::HEAD, "/doc", &[]).await;
     let hit = call(&client, Method::HEAD, "/doc", &[]).await;
@@ -485,4 +466,156 @@ async fn split_header_values_do_not_collide() {
     .await;
     assert_eq!(header(&other, "x-cache"), Some("miss"));
     assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+fn counting(hits: &Arc<AtomicUsize>) -> impl Fn() + Clone + Send + Sync + use<> {
+    let hits = Arc::clone(hits);
+    move || {
+        hits.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn app_layer_skips_responses_without_public() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let bump = counting(&hits);
+    let app = App::new()
+        .route(
+            "/me",
+            get(move || {
+                bump();
+                async { "private by default" }
+            }),
+        )
+        .layer(RouteCache::new(MemoryCache::new(8)));
+    let client = TestClient::new(app);
+    let _ = client.get("/me").await.unwrap();
+    let second = client.get("/me").await.unwrap();
+    assert_eq!(header(&second, "x-cache"), Some("miss"));
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn app_layer_stores_cached_public_responses() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let bump = counting(&hits);
+    let app = App::new()
+        .route(
+            "/news",
+            get(move || {
+                bump();
+                async { Cached::public(Duration::from_secs(60), "news") }
+            }),
+        )
+        .layer(RouteCache::new(MemoryCache::new(8)));
+    let client = TestClient::new(app);
+    let first = client.get("/news").await.unwrap();
+    assert_eq!(header(&first, "cache-control"), Some("public, max-age=60"));
+    let second = client.get("/news").await.unwrap();
+    assert_eq!(header(&second, "x-cache"), Some("hit"));
+    assert_eq!(second.text(), "news");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn max_age_sets_the_entry_lifetime() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let bump = counting(&hits);
+    let app = App::new()
+        .route(
+            "/short",
+            get(move || {
+                bump();
+                async { WithHeaders::new("x").header("cache-control", "public, max-age=1") }
+            }),
+        )
+        // The default TTL is longer; max-age must win.
+        .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(600)));
+    let client = TestClient::new(app);
+    let _ = client.get("/short").await.unwrap();
+    assert_eq!(
+        header(&client.get("/short").await.unwrap(), "x-cache"),
+        Some("hit")
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert_eq!(
+        header(&client.get("/short").await.unwrap(), "x-cache"),
+        Some("miss")
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn public_without_lifetime_or_with_no_cache_is_not_stored() {
+    let app = App::new()
+        .route(
+            "/bare",
+            get(|| async { WithHeaders::new("x").header("cache-control", "public") }),
+        )
+        .route(
+            "/no-cache",
+            get(|| async {
+                WithHeaders::new("x").header("cache-control", "public, max-age=60, no-cache")
+            }),
+        )
+        .layer(RouteCache::new(MemoryCache::new(8)));
+    let client = TestClient::new(app);
+    for path in ["/bare", "/no-cache"] {
+        let _ = client.get(path).await.unwrap();
+        let again = client.get(path).await.unwrap();
+        assert_eq!(header(&again, "x-cache"), Some("miss"), "{path}");
+    }
+}
+
+#[tokio::test]
+async fn route_layer_with_default_ttl_caches_only_that_route() {
+    let cached_hits = Arc::new(AtomicUsize::new(0));
+    let other_hits = Arc::new(AtomicUsize::new(0));
+    let (bump_cached, bump_other) = (counting(&cached_hits), counting(&other_hits));
+    let app = App::new()
+        .route(
+            "/stats",
+            get(move || {
+                bump_cached();
+                async { "stats" }
+            })
+            .layer(RouteCache::new(MemoryCache::new(8)).default_ttl(Duration::from_secs(60))),
+        )
+        .route(
+            "/me",
+            get(move || {
+                bump_other();
+                async { "me" }
+            }),
+        );
+    let client = TestClient::new(app);
+    for _ in 0..2 {
+        let _ = client.get("/stats").await.unwrap();
+        let me = client.get("/me").await.unwrap();
+        assert_eq!(header(&me, "x-cache"), None);
+    }
+    assert_eq!(cached_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(other_hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn credentials_bypass_even_public_responses() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let bump = counting(&hits);
+    let app = App::new()
+        .route(
+            "/news",
+            get(move || {
+                bump();
+                async { Cached::public(Duration::from_secs(60), "news") }
+            }),
+        )
+        .layer(RouteCache::new(MemoryCache::new(8)));
+    let client = TestClient::new(app);
+    for auth in [("authorization", "Bearer a"), ("cookie", "sid=1")] {
+        let _ = call(&client, Method::GET, "/news", &[auth]).await;
+    }
+    let anon = client.get("/news").await.unwrap();
+    assert_eq!(header(&anon, "x-cache"), Some("miss"));
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
 }

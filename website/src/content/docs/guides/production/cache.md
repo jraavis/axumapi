@@ -46,43 +46,64 @@ closure; there is no stampede lock.
 
 ## Route caching
 
-`RouteCache` caches whole `GET` and `HEAD` responses:
+`RouteCache` caches whole `GET` and `HEAD` responses. Caching is
+**opt-in**: a route is cached only when its response or its placement says
+so.
+
+**Per response.** Put the layer on the app. It stores only responses marked
+`Cache-Control: public`; `Cached::public(ttl, response)` sets
+`public, max-age=<ttl>`:
 
 ```rust
 use siderite::cache::{MemoryCache, RouteCache};
+use siderite::Cached;
 use std::time::Duration;
 
+#[get("/items")]
+async fn list_items() -> Cached<Json<Vec<Item>>> {
+    Cached::public(Duration::from_secs(60), Json(load_items().await))
+}
+
 let app = App::new()
-    .routes(routes![list_items])
-    .layer(
-        RouteCache::new(MemoryCache::new(1024), Duration::from_secs(30))
-            .bypass_header(http::HeaderName::from_static("x-tenant"))
-            .max_body_bytes(256 * 1024),
-    );
+    .routes(routes![list_items, me])   // `me` is never stored
+    .layer(RouteCache::new(MemoryCache::new(1024)).max_body_bytes(256 * 1024));
 ```
+
+**Per route.** Put the layer on one route with `MethodRouter::layer` and set
+`default_ttl`; that route is cached without a `public` marker:
+
+```rust
+let app = App::new().route(
+    "/stats",
+    get(stats).layer(RouteCache::new(cache.clone()).default_ttl(Duration::from_secs(30))),
+);
+```
+
+Do not set `default_ttl` on an app-wide layer unless every `GET` route in
+the app is safe to share between users.
 
 - **Key:** method, scheme, `Host`, path and query, and the request’s `Accept`
   and `Accept-Encoding` values. Each part is length-prefixed, so virtual
   hosts sharing one cache never see each other's responses and different
   header values cannot collide.
-- **Bypass:** requests carrying credentials skip the cache:
-  `Authorization`, `Proxy-Authorization`, `Cookie`, `X-API-Key`, any header
-  whose name contains `auth`, `token`, `session`, `jwt`, `secret`,
-  `api-key`, `apikey` or `access-key` (so `X-Auth-Token`, `X-Session-Id`
-  and `X-Jwt` are covered), and any header added with `bypass_header`.
-- **Register every other credential header** with `bypass_header`. Names
-  outside the list above, such as `X-Tenant`, `X-Signature` or
-  `X-Client-Id`, are not detected. If one of them decides who may see a
-  response, an authenticated response would be stored and served to
-  anonymous callers.
 - **Stored only when** the status is `200`, there is no `Set-Cookie`, and
-  `Cache-Control` has neither `no-store` nor `private`. `Vary` may name
-  only `Accept` or `Accept-Encoding`. The body length must be known and at
-  most `max_body_bytes` (1 MiB by default).
+  `Cache-Control` has none of `no-store`, `no-cache` or `private`. `Vary`
+  may name only `Accept` or `Accept-Encoding`. The body length must be known
+  and at most `max_body_bytes` (1 MiB by default). The response must also be
+  `public`, unless `default_ttl` is set.
+- **Lifetime:** `s-maxage`, else `max-age`, else `default_ttl`. A `public`
+  response with none of these, or a lifetime of zero, is not stored.
+- **Bypass:** requests carrying credentials are neither answered from nor
+  stored in the cache: `Authorization`, `Proxy-Authorization`, `Cookie`,
+  `X-API-Key`, any header whose name contains `auth`, `token`, `session`,
+  `jwt`, `secret`, `api-key`, `apikey` or `access-key`, and any header added
+  with `bypass_header`. This is a backstop; the opt-in above is what keeps
+  private responses out of the cache.
 - **Streaming bodies** (server-sent events, `StreamingResponse`, file
   streams) are never buffered; they pass through untouched.
-- **Marking:** every `GET`/`HEAD` response gets `x-cache: hit` or `miss`.
-  A cached `HEAD` keeps the `Content-Length` of the original response.
+- **Marking:** every `GET`/`HEAD` response through the layer gets
+  `x-cache: hit` or `miss`. A cached `HEAD` keeps the `Content-Length` of the
+  original response.
 - **Backend errors fail open:** the request is served as a miss.
 
 ## See also

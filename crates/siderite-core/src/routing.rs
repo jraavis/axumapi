@@ -15,12 +15,15 @@
 use crate::body::Body;
 use crate::extract::Request;
 use crate::handler::Handler;
+use crate::middleware::BoxService;
 use crate::response::{Response, SUCCESS};
 use http::{Method, StatusCode};
 use siderite_openapi::{HttpMethod, Operation, Schema, SchemaRegistry};
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tower::{Layer, Service, ServiceExt};
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
@@ -204,6 +207,42 @@ impl MethodRouter {
     fn last(mut self, f: impl FnOnce(&mut OperationMeta)) -> Self {
         if let Some(e) = self.endpoints.last_mut() {
             f(&mut e.meta);
+        }
+        self
+    }
+
+    /// Wrap every handler added so far in `layer`.
+    ///
+    /// The layer runs after routing and only for this path, so it can be
+    /// used for per-route middleware such as `siderite_cache::RouteCache`.
+    /// Handlers added after this call are not wrapped.
+    #[must_use]
+    pub fn layer<L>(mut self, layer: L) -> Self
+    where
+        L: Layer<BoxService>,
+        L::Service: Service<Request, Response = Response, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        <L::Service as Service<Request>>::Future: Send + 'static,
+    {
+        for endpoint in &mut self.endpoints {
+            let handler = Arc::clone(&endpoint.handler);
+            let inner = BoxService::new(tower::service_fn(move |req: Request| {
+                let fut = handler(req);
+                async move { Ok::<_, Infallible>(fut.await) }
+            }));
+            let service = layer.layer(inner);
+            endpoint.handler = Arc::new(move |req| {
+                let service = service.clone();
+                Box::pin(async move {
+                    match service.oneshot(req).await {
+                        Ok(response) => response,
+                        Err(never) => match never {},
+                    }
+                })
+            });
         }
         self
     }

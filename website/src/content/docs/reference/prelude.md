@@ -9,7 +9,7 @@ description: What use siderite::prelude::* brings into scope.
 
 From `siderite-core`:
 
-`ApiError`, `ApiResult`, `App`, `BackgroundTasks`, `Cookies`, `Dependency`,
+`ApiError`, `ApiResult`, `App`, `BackgroundTasks`, `Cached`, `Cookies`, `Dependency`,
 `Depends`, `Form`, `FromRequest`, `FromRequestParts`, `Header`, `Html`,
 `IntoResponse`, `Json`, `Message`, `MethodRouter`, `NoContent`, `Path`,
 `PlainText`, `Provided`, `Query`, `Redirect`, `ResolveContext`, `Resource`,

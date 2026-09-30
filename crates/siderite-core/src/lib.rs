@@ -46,7 +46,7 @@ pub use middleware::{
 pub use response::{
     Html, IntoResponse, Json, JsonDump, NoContent, PlainText, Response, WithStatus,
 };
-pub use responses::{FileResponse, Redirect, StreamingResponse, WithHeaders};
+pub use responses::{Cached, FileResponse, Redirect, StreamingResponse, WithHeaders};
 pub use routing::{
     MethodRouter, OperationMeta, Route, delete, get, head, options, patch, post, put,
 };

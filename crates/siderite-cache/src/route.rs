@@ -49,20 +49,38 @@ struct CachedResponse {
 
 /// Middleware that caches successful GET and HEAD responses.
 ///
-/// Plug it in with `App::layer`:
+/// Caching is **opt-in**. There are two ways to opt a route in:
+///
+/// * **Per response.** Put the layer on the whole app; it stores only
+///   responses marked `Cache-Control: public` (for example with
+///   [`Cached::public`](siderite_core::Cached)). Everything else passes
+///   through.
+/// * **Per route.** Put the layer on one route with `MethodRouter::layer` and
+///   set [`default_ttl`](RouteCache::default_ttl); that route's responses are
+///   stored without a `public` marker.
 ///
 /// ```
 /// use siderite_cache::{MemoryCache, RouteCache};
-/// use siderite_core::{App, get};
+/// use siderite_core::{App, Cached, get};
 /// use std::time::Duration;
 ///
+/// let cache = MemoryCache::new(1024);
 /// let _app = App::new()
-///     .route("/ok", get(|| async { "ok" }))
-///     .layer(RouteCache::new(
-///         MemoryCache::new(1024),
-///         Duration::from_secs(30),
-///     ));
+///     // Opted in by its response.
+///     .route("/news", get(|| async {
+///         Cached::public(Duration::from_secs(60), "news")
+///     }))
+///     // Opted in by placement.
+///     .route("/stats", get(|| async { "stats" }).layer(
+///         RouteCache::new(cache.clone()).default_ttl(Duration::from_secs(30)),
+///     ))
+///     // Never stored: no `public` marker.
+///     .route("/me", get(|| async { "private" }))
+///     .layer(RouteCache::new(cache));
 /// ```
+///
+/// Do not set `default_ttl` on an app-wide layer unless every GET route in
+/// the app is safe to share between users.
 ///
 /// # Behaviour
 /// * Only [`GET`](Method::GET) and [`HEAD`](Method::HEAD) are considered.
@@ -73,14 +91,18 @@ struct CachedResponse {
 ///   `Proxy-Authorization`, `Cookie`, `X-API-Key`, any header whose name
 ///   contains `auth`, `token`, `session`, `jwt`, `secret`, `api-key`,
 ///   `apikey` or `access-key`, and any header added with
-///   [`RouteCache::bypass_header`]. **Register every other authentication
-///   header** your app uses, or authenticated responses would be served to
-///   anyone.
+///   [`RouteCache::bypass_header`]. Such requests are neither
+///   answered from nor stored in the cache.
 /// * Responses are stored only when the status is 200, there is no
-///   `Set-Cookie`, `Cache-Control` does not contain `no-store` or `private`,
-///   `Vary` names no header outside the key, and the body length is known
-///   and at most [`RouteCache::max_body_bytes`]. Streaming bodies (server-sent
-///   events, file streams) pass through untouched.
+///   `Set-Cookie`, `Cache-Control` does not contain `no-store`, `no-cache` or
+///   `private`, `Vary` names no header outside the key, and the body length
+///   is known and at most [`RouteCache::max_body_bytes`]. Streaming bodies
+///   (server-sent events, file streams) pass through untouched.
+/// * On top of that, a response needs `Cache-Control: public` unless
+///   [`default_ttl`](RouteCache::default_ttl) is set.
+/// * The entry lives for `s-maxage`, else `max-age`, else `default_ttl`. A
+///   `public` response without any of these, or with a lifetime of zero, is
+///   not stored.
 /// * Every GET/HEAD response is tagged with `x-cache: hit` or `x-cache: miss`.
 ///
 /// Cache backend failures fail open: the request is served and treated as a
@@ -88,20 +110,19 @@ struct CachedResponse {
 #[derive(Clone, Debug)]
 pub struct RouteCache<C> {
     cache: Arc<C>,
-    ttl: Duration,
+    default_ttl: Option<Duration>,
     max_body: u64,
     bypass: Arc<Vec<HeaderName>>,
 }
 
 impl<C: Cache> RouteCache<C> {
-    /// Cache GET/HEAD 200 responses in `cache` for `ttl`.
-    ///
-    /// A `ttl` of zero stores nothing; GET/HEAD still receive `x-cache: miss`.
+    /// Cache GET/HEAD 200 responses marked `Cache-Control: public` in
+    /// `cache`.
     #[must_use]
-    pub fn new(cache: C, ttl: Duration) -> Self {
+    pub fn new(cache: C) -> Self {
         Self {
             cache: Arc::new(cache),
-            ttl,
+            default_ttl: None,
             max_body: DEFAULT_MAX_BODY_BYTES,
             bypass: Arc::new(vec![
                 AUTHORIZATION,
@@ -110,6 +131,15 @@ impl<C: Cache> RouteCache<C> {
                 HeaderName::from_static("x-api-key"),
             ]),
         }
+    }
+
+    /// Also store responses without `Cache-Control: public`, for `ttl` when
+    /// they carry no `max-age`. Meant for a layer on a single route (see the
+    /// [type docs](RouteCache)). A `ttl` of zero stores nothing.
+    #[must_use]
+    pub fn default_ttl(mut self, ttl: Duration) -> Self {
+        self.default_ttl = Some(ttl);
+        self
     }
 
     /// Bypass the cache for requests carrying `name` (a credential header).
@@ -130,7 +160,7 @@ impl<C: Cache> RouteCache<C> {
 
 /// Per-request view of the layer configuration.
 struct Policy {
-    ttl: Duration,
+    default_ttl: Option<Duration>,
     max_body: u64,
     bypass: Arc<Vec<HeaderName>>,
 }
@@ -140,11 +170,12 @@ impl<C: Cache> Layer<BoxService> for RouteCache<C> {
 
     fn layer(&self, inner: BoxService) -> Self::Service {
         let cache = Arc::clone(&self.cache);
-        let (ttl, max_body, bypass) = (self.ttl, self.max_body, Arc::clone(&self.bypass));
+        let (default_ttl, max_body, bypass) =
+            (self.default_ttl, self.max_body, Arc::clone(&self.bypass));
         from_fn(move |req: Request, next: Next| {
             let cache = Arc::clone(&cache);
             let policy = Policy {
-                ttl,
+                default_ttl,
                 max_body,
                 bypass: Arc::clone(&bypass),
             };
@@ -197,33 +228,63 @@ fn varies_outside_key(headers: &HeaderMap) -> bool {
         })
 }
 
-/// True when any `Cache-Control` directive is `no-store` or `private`.
-pub(crate) fn cache_control_forbids_store(headers: &HeaderMap) -> bool {
-    headers.get_all(CACHE_CONTROL).iter().any(|value| {
-        let Ok(text) = value.to_str() else {
-            return false;
-        };
-        text.split(',').any(|directive| {
-            let name = directive
-                .split('=')
-                .next()
-                .unwrap_or(directive)
-                .trim()
-                .trim_matches('"');
-            name.eq_ignore_ascii_case("no-store") || name.eq_ignore_ascii_case("private")
+/// `Cache-Control` directives as lowercase `(name, value)` pairs.
+fn cache_control(headers: &HeaderMap) -> Vec<(String, Option<String>)> {
+    headers
+        .get_all(CACHE_CONTROL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|text| text.split(','))
+        .filter_map(|directive| {
+            let (name, value) = match directive.split_once('=') {
+                Some((name, value)) => (name, Some(value.trim().trim_matches('"').to_owned())),
+                None => (directive, None),
+            };
+            let name = name.trim().trim_matches('"').to_ascii_lowercase();
+            (!name.is_empty()).then_some((name, value))
         })
-    })
+        .collect()
 }
 
-fn is_cacheable_response(response: &Response, max_body: u64) -> bool {
-    response.status() == StatusCode::OK
-        && !response.headers().contains_key(SET_COOKIE)
-        && !cache_control_forbids_store(response.headers())
-        && !varies_outside_key(response.headers())
+/// True when any `Cache-Control` directive is `no-store`, `no-cache` or
+/// `private`. This layer never revalidates, so `no-cache` means "do not
+/// store" here.
+pub(crate) fn cache_control_forbids_store(headers: &HeaderMap) -> bool {
+    cache_control(headers)
+        .iter()
+        .any(|(name, _)| matches!(name.as_str(), "no-store" | "no-cache" | "private"))
+}
+
+/// How long to store `response`, or `None` when it must not be stored.
+fn storable_ttl(response: &Response, policy: &Policy) -> Option<Duration> {
+    let headers = response.headers();
+    let eligible = response.status() == StatusCode::OK
+        && !headers.contains_key(SET_COOKIE)
+        && !cache_control_forbids_store(headers)
+        && !varies_outside_key(headers)
         && response
             .body()
             .exact_len()
-            .is_some_and(|len| len <= max_body)
+            .is_some_and(|len| len <= policy.max_body);
+    if !eligible {
+        return None;
+    }
+    let directives = cache_control(headers);
+    let public = directives.iter().any(|(name, _)| name == "public");
+    if !public && policy.default_ttl.is_none() {
+        return None;
+    }
+    let seconds = |wanted: &str| {
+        directives
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .and_then(|(_, value)| value.as_deref()?.parse::<u64>().ok())
+    };
+    let ttl = seconds("s-maxage")
+        .or_else(|| seconds("max-age"))
+        .map(Duration::from_secs)
+        .or(policy.default_ttl)?;
+    (ttl > Duration::ZERO).then_some(ttl)
 }
 
 /// Build the cache key from method, scheme, host, path and query, and the
@@ -329,9 +390,9 @@ async fn dispatch<C: Cache>(cache: Arc<C>, policy: Policy, req: Request, next: N
     }
 
     let response = next.run(req).await;
-    if !is_cacheable_response(&response, policy.max_body) {
+    let Some(ttl) = storable_ttl(&response, &policy) else {
         return with_x_cache(response, MISS);
-    }
+    };
 
     let (mut parts, body) = response.into_parts();
     let limit = usize::try_from(policy.max_body).unwrap_or(usize::MAX);
@@ -343,10 +404,8 @@ async fn dispatch<C: Cache>(cache: Arc<C>, policy: Policy, req: Request, next: N
         }
     };
 
-    if policy.ttl > Duration::ZERO
-        && let Ok(payload) = encode(&parts.headers, bytes.clone())
-    {
-        let _ = cache.set(&key, payload, Some(policy.ttl)).await;
+    if let Ok(payload) = encode(&parts.headers, bytes.clone()) {
+        let _ = cache.set(&key, payload, Some(ttl)).await;
     }
 
     parts.headers.insert(X_CACHE, MISS);
@@ -370,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_control_detects_no_store_and_private() {
+    fn cache_control_detects_no_store_no_cache_and_private() {
         assert!(cache_control_forbids_store(&headers(&[(
             "cache-control",
             "no-store"
@@ -391,9 +450,9 @@ mod tests {
             "cache-control",
             "public, max-age=60"
         )])));
-        assert!(!cache_control_forbids_store(&headers(&[(
+        assert!(cache_control_forbids_store(&headers(&[(
             "cache-control",
-            "no-cache"
+            "No-Cache"
         )])));
         assert!(!cache_control_forbids_store(&HeaderMap::new()));
     }
