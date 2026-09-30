@@ -14,14 +14,16 @@ siderite run
 
 `new` writes an API crate. In a Cargo package, `run`, `routes`, `check`,
 `dbshell`, `makemigrations` and the other migration commands invoke
-`cargo run -- <command>` so `AppCli` in your binary sees the app. `test`
-is `cargo test`. Without a package, `migrate` / `rollback` /
+`cargo run -- <command>` so `AppCli` in your binary sees the app. `build`
+and `test` are `cargo build` / `cargo test` in the package, with every
+argument after the command passed through (`siderite build --release`
+replaces `cargo build --release -p myapp`). Without a package, `migrate` / `rollback` /
 `showmigrations` / `squashmigrations` run against JSON files.
 
 | | `siderite` in a package | Standalone (no package) | `AppCli` in your binary |
 |---|---|---|---|
 | Needs your `App` and models | compiles them via cargo | no | yes |
-| Commands | `new`, `run`, `routes`, `check`, `dbshell`, migrations, `test` | `migrate`, `rollback`, `showmigrations`, `squashmigrations` | `run`, `routes`, `check`, `dbshell`, migrations |
+| Commands | `new`, `run`, `routes`, `check`, `dbshell`, migrations, `build`, `test` | `migrate`, `rollback`, `showmigrations`, `squashmigrations` | `run`, `routes`, `check`, `dbshell`, migrations |
 
 Exit codes: `0` success, `1` failure (or `check` found an error), `2` usage
 error.

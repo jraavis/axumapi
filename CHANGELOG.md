@@ -9,6 +9,7 @@
 - CLI serve command is `run` (was `runserver`). The `siderite` binary wraps `cargo run` in an application package and adds `siderite new`.
 
 ### Added
+- `siderite build` runs `cargo build` in the app package and forwards its arguments, e.g. `siderite build --release`.
 - GitHub Pages documentation site (`website/`, Astro Starlight) covering getting started, tutorials, HTTP/data/production guides, reference, internals, and contributing. Deployed from `.github/workflows/pages.yml` with rustdoc at `/api/`.
 
 ### Fixed

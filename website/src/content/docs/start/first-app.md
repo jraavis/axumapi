@@ -67,6 +67,9 @@ siderite run
 
 Or `cargo run -p hello_world -- run`.
 
+Build an optimized binary with `siderite build --release` (the same as
+`cargo build --release -p hello_world`); it lands in `target/release/`.
+
 ## What each piece does
 
 **Route macros** (`#[get]`, `#[post]`, …) leave the function callable and emit
