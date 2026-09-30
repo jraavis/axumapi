@@ -7,7 +7,7 @@
 //! ```
 
 use axumapi_cli::{AppCli, CliSettings};
-use blog_postgres::{DATABASE_URL_ENV, MIGRATIONS_DIR, app, models};
+use blog_postgres::{DATABASE_URL_ENV, MIGRATIONS_DIR, app, models, receivers};
 use std::process::ExitCode;
 
 #[tokio::main]
@@ -20,6 +20,7 @@ async fn main() -> ExitCode {
         .models(&models::all_models())
         .settings(settings)
         .migrations_dir(MIGRATIONS_DIR)
+        .configure_db(|_, db| db.with_signals(receivers::signals()))
         .run()
         .await
 }

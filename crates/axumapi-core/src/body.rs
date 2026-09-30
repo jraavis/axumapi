@@ -23,6 +23,14 @@ impl Body {
             .map_err(|err| BodyError(err.to_string()))
     }
 
+    /// The body length when it is known up front (fully buffered bodies).
+    ///
+    /// `None` for streaming bodies (server-sent events, file streams, ...),
+    /// whose length is only known once they end.
+    pub fn exact_len(&self) -> Option<u64> {
+        axum::body::HttpBody::size_hint(&self.0).exact()
+    }
+
     pub(crate) fn from_inner(inner: axum::body::Body) -> Self {
         Self(inner)
     }

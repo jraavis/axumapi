@@ -331,3 +331,109 @@ async fn layer_is_usable_on_app() {
     let res = TestClient::new(app).get("/ok").await.unwrap();
     assert_eq!(res.text(), "ok");
 }
+
+#[tokio::test]
+async fn api_key_and_custom_credential_headers_bypass_the_cache() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_h = Arc::clone(&hits);
+    let app = App::new()
+        .route(
+            "/me",
+            get(move || {
+                let hits = Arc::clone(&hits_h);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    "private"
+                }
+            }),
+        )
+        .layer(
+            RouteCache::new(MemoryCache::new(8), Duration::from_secs(60))
+                .bypass_header(http::HeaderName::from_static("x-tenant-token")),
+        );
+    let client = TestClient::new(app);
+    for credential in [("x-api-key", "alice"), ("x-tenant-token", "t1")] {
+        let authed = call(&client, Method::GET, "/me", &[credential]).await;
+        assert_eq!(header(&authed, "x-cache"), Some("miss"));
+    }
+    // Nothing was stored, so an anonymous request reaches the handler.
+    let anonymous = client.get("/me").await.unwrap();
+    assert_eq!(header(&anonymous, "x-cache"), Some("miss"));
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn accept_encoding_is_part_of_the_key() {
+    let (client, hits) = counted_app(Arc::default(), Duration::from_secs(60));
+    let _ = call(&client, Method::GET, "/item", &[("accept-encoding", "br")]).await;
+    let plain = client.get("/item").await.unwrap();
+    assert_eq!(header(&plain, "x-cache"), Some("miss"));
+    let br = call(&client, Method::GET, "/item", &[("accept-encoding", "br")]).await;
+    assert_eq!(header(&br, "x-cache"), Some("hit"));
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn vary_outside_the_key_is_not_stored() {
+    async fn stored(vary: &'static str) -> bool {
+        let app = App::new()
+            .route(
+                "/v",
+                get(move || async move { WithHeaders::new("ok").header("vary", vary) }),
+            )
+            .layer(RouteCache::new(
+                MemoryCache::new(8),
+                Duration::from_secs(60),
+            ));
+        let client = TestClient::new(app);
+        let _ = client.get("/v").await.unwrap();
+        let second = client.get("/v").await.unwrap();
+        header(&second, "x-cache") == Some("hit")
+    }
+    assert!(stored("Accept-Encoding").await);
+    assert!(!stored("User-Agent").await);
+    assert!(!stored("*").await);
+}
+
+#[tokio::test]
+async fn streaming_and_oversized_bodies_pass_through() {
+    use axumapi_core::responses::StreamingResponse;
+    let app = App::new()
+        .route(
+            "/stream",
+            get(|| async {
+                StreamingResponse::new(futures_util::stream::iter([Ok::<_, std::io::Error>(
+                    bytes::Bytes::from_static(b"chunk"),
+                )]))
+            }),
+        )
+        .route("/big", get(|| async { "0123456789" }))
+        .layer(RouteCache::new(MemoryCache::new(8), Duration::from_secs(60)).max_body_bytes(4));
+    let client = TestClient::new(app);
+    for path in ["/stream", "/big"] {
+        let first = client.get(path).await.unwrap();
+        assert_eq!(first.status, StatusCode::OK);
+        let second = client.get(path).await.unwrap();
+        assert_eq!(header(&second, "x-cache"), Some("miss"), "{path}");
+    }
+    assert_eq!(client.get("/stream").await.unwrap().text(), "chunk");
+}
+
+#[tokio::test]
+async fn cached_head_keeps_the_representation_length() {
+    let app = App::new()
+        .route(
+            "/doc",
+            get(|| async { "payload" })
+                .head(|| async { WithHeaders::new("").header("content-length", "7") }),
+        )
+        .layer(RouteCache::new(
+            MemoryCache::new(8),
+            Duration::from_secs(60),
+        ));
+    let client = TestClient::new(app);
+    let _ = call(&client, Method::HEAD, "/doc", &[]).await;
+    let hit = call(&client, Method::HEAD, "/doc", &[]).await;
+    assert_eq!(header(&hit, "x-cache"), Some("hit"));
+    assert_eq!(header(&hit, "content-length"), Some("7"));
+}

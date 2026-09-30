@@ -5,7 +5,8 @@
 //! never printed: `psql` gets `PGPASSWORD` and `mysql` gets `MYSQL_PWD` in its
 //! environment. Only the connection parts of the URL are passed on; other
 //! query parameters are ignored, except that a PostgreSQL URL is handed to
-//! `psql` whole (minus its password) so options such as `sslmode` apply.
+//! `psql` whole (minus its password, including a `?password=` parameter) so
+//! options such as `sslmode` apply.
 
 use crate::connect::backend_kind;
 use crate::error::CliError;
@@ -115,6 +116,24 @@ fn postgres(url: &str) -> Result<ShellCommand, CliError> {
     }
     // A malformed URL cannot carry a password, so this cannot fail on one.
     let _ = parsed.set_password(None);
+    // libpq also accepts `?password=`; move it to the environment too.
+    let mut query = Vec::new();
+    for (name, value) in parsed.query_pairs() {
+        match name.as_ref() {
+            "password" => envs.push(("PGPASSWORD", value.into_owned())),
+            "sslpassword" => {
+                return Err(CliError::usage(
+                    "dbshell cannot pass `sslpassword` safely; remove it from the URL",
+                ));
+            }
+            _ => query.push((name.into_owned(), value.into_owned())),
+        }
+    }
+    if query.is_empty() {
+        parsed.set_query(None);
+    } else {
+        parsed.query_pairs_mut().clear().extend_pairs(&query);
+    }
     Ok(ShellCommand {
         program: "psql",
         args: vec![parsed.to_string()],
@@ -225,6 +244,17 @@ mod tests {
                 .iter()
                 .all(|a| !a.contains("p%40ss") && !a.contains("p@ss"))
         );
+    }
+
+    #[test]
+    fn postgres_query_password_moves_to_the_environment() {
+        let cmd = ShellCommand::from_url("postgres://ann@db/app?password=s3cret&sslmode=require")
+            .unwrap();
+        assert_eq!(cmd.args, ["postgres://ann@db/app?sslmode=require"]);
+        assert_eq!(env_value(&cmd, "PGPASSWORD"), Some("s3cret"));
+        let only = ShellCommand::from_url("postgres://ann@db/app?password=s3cret").unwrap();
+        assert_eq!(only.args, ["postgres://ann@db/app"]);
+        assert!(ShellCommand::from_url("postgres://ann@db/app?sslpassword=x").is_err());
     }
 
     #[test]

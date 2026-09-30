@@ -21,7 +21,8 @@ async fn fixture() -> Fixture {
         .unwrap()
         .with_migrations(MIGRATIONS_DIR)
         .await
-        .unwrap();
+        .unwrap()
+        .with_signals(blog_postgres::receivers::signals());
     let db = test.into_db();
     let client = TestClient::builder(app())
         .with_database("default", db.clone())

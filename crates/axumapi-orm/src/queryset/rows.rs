@@ -123,7 +123,9 @@ impl<M: Model> QuerySet<M> {
     #[must_use]
     pub fn subquery(self, field: impl Into<SelectExpr>) -> QueryPlan {
         let qs = self.project([field]);
-        unordered(&qs.plan)
+        let mut plan = unordered(&qs.plan);
+        plan.origin = Some(qs.db.origin());
+        plan
     }
 
     /// `EXISTS (this queryset)`, for correlated filters:
@@ -132,6 +134,7 @@ impl<M: Model> QuerySet<M> {
     pub fn exists_expr(self) -> Expr {
         let mut plan = unordered(&self.plan);
         plan.projection = vec![SelectExpr::new(Expr::val(1), None)];
+        plan.origin = Some(self.db.origin());
         Expr::exists(plan)
     }
 }

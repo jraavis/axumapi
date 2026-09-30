@@ -280,6 +280,40 @@ async fn querysets_bound_to_different_databases_cannot_be_combined() {
 }
 
 #[tokio::test]
+async fn subqueries_from_another_database_are_rejected() {
+    let f = fixture(AppRouter).await;
+    add_book(&f.default, "d").await;
+    add_book(&f.replica, "r").await;
+    let replica_ids = Book::objects(&f.replica).subquery("id");
+    let foreign = Book::objects(&f.default).filter(Book::id.in_subquery(replica_ids));
+    assert!(matches!(
+        foreign.all().await,
+        Err(OrmError::Query(QueryError::InvalidPlan(ref m))) if m.contains("another database")
+    ));
+    let foreign_exists = Book::objects(&f.default).filter(Book::objects(&f.replica).exists_expr());
+    assert!(foreign_exists.count().await.is_err());
+    let foreign_delete = Book::objects(&f.default).filter(Book::objects(&f.replica).exists_expr());
+    assert!(foreign_delete.delete().await.is_err());
+
+    // Same database, including through a transaction handle: fine.
+    let local = Book::objects(&f.default)
+        .filter(Book::id.in_subquery(Book::objects(&f.default).subquery("id")));
+    assert_eq!(titles(local).await, ["d"]);
+    f.default
+        .transaction(|tx| {
+            let outer = f.default.clone();
+            async move {
+                let ids = Book::objects(&outer).subquery("id");
+                let inside = Book::objects(&tx).filter(Book::id.in_subquery(ids));
+                assert_eq!(inside.count().await?, 1);
+                Ok::<_, OrmError>(())
+            }
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn a_transaction_handle_still_counts_as_its_database() {
     let f = fixture(AppRouter).await;
     let on_default = f.databases.using::<Book>("default").unwrap();

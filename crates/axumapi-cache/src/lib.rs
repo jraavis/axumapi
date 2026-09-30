@@ -37,7 +37,7 @@ mod redis;
 pub use cache::{Cache, CacheExt};
 pub use error::CacheError;
 pub use memory::MemoryCache;
-pub use route::RouteCache;
+pub use route::{DEFAULT_MAX_BODY_BYTES, RouteCache};
 
 #[cfg(feature = "redis")]
 pub use redis::RedisCache;

@@ -114,14 +114,19 @@ pub(crate) fn document_scheme(
     push_requirement(op, name, scopes);
 }
 
-/// Append `{name: scopes}` to `op.security` unless already present.
-fn push_requirement(op: &mut Operation, name: &str, scopes: &[&str]) {
-    let requirement = BTreeMap::from([(
-        name.to_owned(),
-        scopes.iter().map(|s| (*s).to_owned()).collect(),
-    )]);
-    if !op.security.contains(&requirement) {
-        op.security.push(requirement);
+/// Require `{name: scopes}` on `op`.
+///
+/// OpenAPI lists security requirement objects as *alternatives* and the
+/// schemes inside one object as *all required*. Extractors in one handler
+/// are all required, so the scheme is added to every existing alternative
+/// (or becomes the first one).
+pub(crate) fn push_requirement(op: &mut Operation, name: &str, scopes: &[&str]) {
+    let scopes: Vec<String> = scopes.iter().map(|s| (*s).to_owned()).collect();
+    if op.security.is_empty() {
+        op.security.push(BTreeMap::new());
+    }
+    for alternative in &mut op.security {
+        alternative.insert(name.to_owned(), scopes.clone());
     }
 }
 
@@ -242,10 +247,10 @@ impl<T: Authenticate, S: Scopes> FromRequestParts for Security<T, S> {
         let existing = std::mem::take(&mut op.security);
         <T::Credentials as FromRequestParts>::describe(op, registry);
         let added = std::mem::replace(&mut op.security, existing);
-        for requirement in added {
-            for name in requirement.keys() {
-                push_requirement(op, name, S::SCOPES);
-            }
+        let names: std::collections::BTreeSet<String> =
+            added.into_iter().flat_map(BTreeMap::into_keys).collect();
+        for name in names {
+            push_requirement(op, &name, S::SCOPES);
         }
     }
 }

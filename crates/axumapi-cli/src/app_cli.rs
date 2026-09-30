@@ -8,9 +8,11 @@ use crate::error::CliError;
 use crate::routes::{render_routes, route_table};
 use crate::settings::{CliSettings, DEFAULT_DATABASE};
 use axumapi_core::App;
-use axumapi_orm::{BackendKind, ModelMeta};
+use axumapi_orm::router::DatabaseRouter;
+use axumapi_orm::{BackendKind, Databases, Db, ModelMeta};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 /// The commands that need the application's own [`App`] and models, so they
 /// run from the application binary rather than the standalone `axumapi` tool.
@@ -48,7 +50,15 @@ pub struct AppCli {
     models: Vec<&'static ModelMeta>,
     settings: CliSettings,
     migrations_dir: PathBuf,
+    configure_db: Box<ConfigureDb>,
+    router: Option<Arc<ApplyRouter>>,
 }
+
+/// Hook applied to each connected database handle.
+type ConfigureDb = dyn Fn(&str, Db) -> Db + Send + Sync;
+
+/// Installs the database router on the registry.
+type ApplyRouter = dyn Fn(Databases) -> Databases + Send + Sync;
 
 /// Process environment read once per run, so tests can pass their own.
 #[derive(Debug, Clone, Default)]
@@ -77,7 +87,28 @@ impl AppCli {
             models: Vec::new(),
             settings: CliSettings::new(),
             migrations_dir: PathBuf::from("migrations"),
+            configure_db: Box::new(|_, db| db),
+            router: None,
         }
+    }
+
+    /// Adjust every database handle `runserver` connects, before it is
+    /// registered with the app: attach [`Signals`](axumapi_orm::signals::Signals)
+    /// with `db.with_signals(..)`, for example. Receives the alias.
+    #[must_use]
+    pub fn configure_db(mut self, f: impl Fn(&str, Db) -> Db + Send + Sync + 'static) -> Self {
+        self.configure_db = Box::new(f);
+        self
+    }
+
+    /// Route models to databases with `router` when `runserver` builds the
+    /// app's [`Databases`] registry.
+    #[must_use]
+    pub fn database_router<R: DatabaseRouter + Clone>(mut self, router: R) -> Self {
+        self.router = Some(Arc::new(move |dbs: Databases| {
+            dbs.with_router(router.clone())
+        }));
+        self
     }
 
     /// Register the compiled model metadata (`User::META`, ...).
@@ -206,7 +237,11 @@ impl AppCli {
     /// alias. Aliases for other kinds of store (Redis, MongoDB) are left to the
     /// application.
     pub(crate) async fn build_app(&self) -> Result<App, CliError> {
-        let mut app = (self.factory)();
+        let app = (self.factory)();
+        if self.settings.database_urls().is_empty() && self.router.is_none() {
+            return Ok(app);
+        }
+        let mut databases = app.database_registry().cloned().unwrap_or_default();
         for (alias, url) in self.settings.database_urls() {
             if matches!(
                 backend_kind(url),
@@ -218,9 +253,12 @@ impl AppCli {
                 alias: alias.clone(),
                 source,
             })?;
-            app = app.database(alias.clone(), db);
+            databases = databases.with(alias.clone(), (self.configure_db)(alias, db));
         }
-        Ok(app)
+        if let Some(router) = &self.router {
+            databases = router(databases);
+        }
+        Ok(app.databases(databases))
     }
 
     async fn runserver(&self, global: &GlobalArgs, env: &Env) -> Result<u8, CliError> {
@@ -503,6 +541,39 @@ mod tests {
         assert!(registry.get("default").is_some());
         assert!(registry.get("replica").is_some());
         assert!(registry.get("cache").is_none());
+    }
+
+    #[tokio::test]
+    async fn build_app_applies_db_configuration_and_router() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone)]
+        struct DefaultOnly;
+        impl DatabaseRouter for DefaultOnly {
+            fn allow_migrate(&self, alias: &str, _: &ModelMeta) -> bool {
+                alias == "default"
+            }
+        }
+
+        let configured = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&configured);
+        let cli = cli()
+            .settings(
+                CliSettings::new()
+                    .database("default", "sqlite::memory:")
+                    .database("replica", "sqlite::memory:"),
+            )
+            .configure_db(move |_, db| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                db
+            })
+            .database_router(DefaultOnly);
+        let app = cli.build_app().await.unwrap();
+        let registry = app.database_registry().unwrap();
+        assert_eq!(configured.load(Ordering::SeqCst), 2);
+        let author = crate::fixtures::author();
+        assert!(registry.allow_migrate("default", author));
+        assert!(!registry.allow_migrate("replica", author));
     }
 
     #[tokio::test]

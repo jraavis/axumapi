@@ -116,6 +116,22 @@ fn set_overrides_env() {
 }
 
 #[test]
+fn set_wins_even_when_called_before_other_sources() {
+    jail(|jail| {
+        jail.create_file("app.toml", "[server]\naddr = \"10.0.0.1:1\"\n")
+            .unwrap();
+        jail.set_env("ADDR", "127.0.0.1:1");
+        let settings = ConfigBuilder::new()
+            .set("server.addr", "0.0.0.0:9000")
+            .file("app.toml")
+            .env_prefix("AXUMAPI_")
+            .build()
+            .unwrap();
+        assert_eq!(settings.server.addr, "0.0.0.0:9000");
+    });
+}
+
+#[test]
 fn precedence_defaults_file_env_set() {
     jail(|jail| {
         jail.create_file(

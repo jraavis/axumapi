@@ -1,6 +1,5 @@
 //! Access to the application database from handlers and authentication.
 
-use crate::receivers;
 use axumapi::orm::Databases;
 use axumapi::prelude::*;
 use http::request::Parts;
@@ -8,10 +7,8 @@ use std::sync::Arc;
 
 /// Handler argument holding the `"default"` database.
 ///
-/// The command line registers the databases (`App::database`), so the model
-/// signal receivers cannot be attached when the app is built. `Conn` attaches
-/// them the first time a request reaches the database
-/// ([`receivers::install`], idempotent).
+/// The model signal receivers are attached where the database is created:
+/// `AppCli::configure_db` in the binary, `TestDatabase::with_signals` in tests.
 #[derive(Debug, Clone)]
 pub struct Conn(pub Db);
 
@@ -27,7 +24,6 @@ impl Conn {
             .and_then(|databases| databases.default_db())
             .ok_or_else(|| ApiError::internal("no `default` database registered"))?
             .clone();
-        receivers::install(&db);
         Ok(Self(db))
     }
 }

@@ -192,6 +192,20 @@ pub struct QueryPlan {
     /// `offset` of this plan then apply to the combined result, and every
     /// member must project the same number of columns.
     pub compound: Vec<Compound>,
+    /// Database the plan was built against, recorded when a `QuerySet`
+    /// becomes a subquery. Never compiled; `Db` uses it to reject a subquery
+    /// that belongs to another database.
+    pub origin: Option<PlanOrigin>,
+}
+
+/// Identity of the database a subquery plan was built against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlanOrigin(usize);
+
+impl PlanOrigin {
+    pub(crate) fn new(id: usize) -> Self {
+        Self(id)
+    }
 }
 
 impl QueryPlan {
@@ -210,6 +224,7 @@ impl QueryPlan {
             distinct: DistinctMode::None,
             lock: None,
             compound: Vec::new(),
+            origin: None,
         }
     }
 
@@ -386,6 +401,38 @@ impl QueryPlan {
         self
     }
 
+    /// Whether this plan, or any plan nested in it, was built against a
+    /// database other than `origin`.
+    pub fn has_foreign_origin(&self, origin: PlanOrigin) -> bool {
+        if self.origin.is_some_and(|o| o != origin) {
+            return true;
+        }
+        let exprs = self
+            .projection
+            .iter()
+            .map(|s| &s.expr)
+            .chain(self.filter.iter())
+            .chain(self.having.iter())
+            .chain(self.grouping.iter())
+            .chain(self.ordering.iter().map(|o| &o.expr))
+            .chain(self.joins.iter().map(|j| &j.on));
+        exprs.into_iter().any(|e| e.has_foreign_origin(origin))
+            || self
+                .compound
+                .iter()
+                .any(|c| c.plan.has_foreign_origin(origin))
+            || self
+                .source
+                .subquery
+                .as_deref()
+                .is_some_and(|p| p.has_foreign_origin(origin))
+            || self
+                .joins
+                .iter()
+                .filter_map(|j| j.source.subquery.as_deref())
+                .any(|p| p.has_foreign_origin(origin))
+    }
+
     /// Check the plan against backend capabilities.
     pub fn check(&self, caps: &BackendCapabilities) -> Result<(), BackendCapabilityError> {
         self.required_features()
@@ -395,6 +442,16 @@ impl QueryPlan {
 }
 
 impl Expr {
+    /// Whether a subquery inside this expression was built against a
+    /// database other than `origin`.
+    pub fn has_foreign_origin(&self, origin: PlanOrigin) -> bool {
+        self.subplan().is_some_and(|p| p.has_foreign_origin(origin))
+            || self
+                .children()
+                .into_iter()
+                .any(|c| c.has_foreign_origin(origin))
+    }
+
     /// Features this expression (including nested subqueries) needs.
     pub fn required_features(&self) -> Vec<Feature> {
         let mut out = Vec::new();

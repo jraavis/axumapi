@@ -20,13 +20,16 @@ pub const DEFAULT_ENV_PREFIX: &str = "AXUMAPI_";
 ///
 /// Precedence, lowest to highest: defaults, TOML file, environment (including
 /// `DATABASE_URL` / `ADDR` aliases when [`Self::env_prefix`] is used),
-/// [`Self::set`].
+/// [`Self::set`]. Overrides win regardless of call order; files and the
+/// environment merge in the order they are added.
 ///
 /// Nested environment keys use `__` as the separator after the prefix is
 /// stripped: `AXUMAPI_DATABASES__DEFAULT__URL` maps to
 /// `databases.default.url`.
 pub struct ConfigBuilder {
     figment: Figment,
+    /// Programmatic overrides, merged last at extraction time.
+    overrides: Figment,
     required_files: Vec<PathBuf>,
 }
 
@@ -43,6 +46,7 @@ impl ConfigBuilder {
     pub fn new() -> Self {
         Self {
             figment: Figment::new().merge(Serialized::defaults(default_values())),
+            overrides: Figment::new(),
             required_files: Vec::new(),
         }
     }
@@ -56,6 +60,7 @@ impl ConfigBuilder {
         Self {
             figment: self.figment.merge(Toml::file(&path)),
             required_files,
+            ..self
         }
     }
 
@@ -64,7 +69,7 @@ impl ConfigBuilder {
     pub fn file_optional(self, path: impl AsRef<Path>) -> Self {
         Self {
             figment: self.figment.merge(Toml::file(path.as_ref())),
-            required_files: self.required_files,
+            ..self
         }
     }
 
@@ -79,17 +84,18 @@ impl ConfigBuilder {
                 .figment
                 .merge(well_known_env())
                 .merge(Env::prefixed(prefix).split("__")),
-            required_files: self.required_files,
+            ..self
         }
     }
 
-    /// Override a dotted key (`"server.addr"`, `"app.debug"`, …). Highest
-    /// precedence among sources added so far; later [`Self::set`] calls win.
+    /// Override a dotted key (`"server.addr"`, `"app.debug"`, …). Overrides
+    /// take precedence over every file and environment source, whenever they
+    /// were added; among overrides, later [`Self::set`] calls win.
     #[must_use]
     pub fn set(self, key: &str, value: impl Serialize) -> Self {
         Self {
-            figment: self.figment.merge(Serialized::default(key, value)),
-            required_files: self.required_files,
+            overrides: self.overrides.merge(Serialized::default(key, value)),
+            ..self
         }
     }
 
@@ -101,7 +107,11 @@ impl ConfigBuilder {
     /// Extract messages never include secret values.
     pub fn extract<T: DeserializeOwned>(&self) -> Result<T, ConfigError> {
         self.ensure_required_files()?;
-        self.figment.extract().map_err(ConfigError::from)
+        self.figment
+            .clone()
+            .merge(self.overrides.clone())
+            .extract()
+            .map_err(ConfigError::from)
     }
 
     /// Deserialize the merged configuration as [`Settings`].

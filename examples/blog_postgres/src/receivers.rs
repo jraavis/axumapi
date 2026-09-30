@@ -1,11 +1,10 @@
 //! Model signal receivers: an audit trail for posts.
 
 use crate::models::{AuditEntry, Post};
+use axumapi::orm::ModelOps;
 use axumapi::orm::signals::{SignalError, SignalEvent, SignalKind, Signals};
-use axumapi::orm::{Db, ModelOps};
 use axumapi::prelude::*;
 use axumapi::receiver;
-use std::sync::{Mutex, PoisonError};
 
 /// Append one [`AuditEntry`] through the handle of the operation, so the
 /// entry commits or rolls back together with the change it describes.
@@ -40,24 +39,7 @@ pub async fn audit_post_deleted(post: &Post, event: &SignalEvent<'_>) -> Result<
 /// The registry with every receiver of the blog connected.
 pub fn signals() -> Signals {
     let signals = Signals::new();
-    connect_all(&signals);
-    signals
-}
-
-fn connect_all(signals: &Signals) {
     signals.connect(audit_post_saved_receiver());
     signals.connect(audit_post_deleted_receiver());
-}
-
-/// Connect the blog's receivers to `db` unless that was already done.
-///
-/// The registry is shared by every clone of the handle, so this is safe to
-/// call on each request; the lock only serializes the first calls.
-pub fn install(db: &Db) {
-    static INSTALL: Mutex<()> = Mutex::new(());
-    let _guard = INSTALL.lock().unwrap_or_else(PoisonError::into_inner);
-    let registry = db.signals();
-    if registry.is_empty() {
-        connect_all(registry);
-    }
+    signals
 }

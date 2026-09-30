@@ -3,7 +3,10 @@
 use crate::Cache;
 use axumapi_core::middleware::{BoxService, Next, from_fn};
 use axumapi_core::{ApiError, Body, IntoResponse, Request, Response};
-use http::header::{AUTHORIZATION, CACHE_CONTROL, COOKIE, SET_COOKIE};
+use http::header::{
+    ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CACHE_CONTROL, COOKIE, PROXY_AUTHORIZATION, SET_COOKIE,
+    VARY,
+};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -13,6 +16,13 @@ use tower::Layer;
 const X_CACHE: HeaderName = HeaderName::from_static("x-cache");
 const HIT: HeaderValue = HeaderValue::from_static("hit");
 const MISS: HeaderValue = HeaderValue::from_static("miss");
+
+/// Largest body stored by default (1 MiB).
+pub const DEFAULT_MAX_BODY_BYTES: u64 = 1024 * 1024;
+
+/// Request headers that are part of the cache key; a response may `Vary` on
+/// these and still be stored.
+const KEYED_HEADERS: [HeaderName; 2] = [ACCEPT, ACCEPT_ENCODING];
 
 /// Hop-by-hop headers (RFC 9110) plus the marker this layer writes.
 fn is_hop_by_hop(name: &HeaderName) -> bool {
@@ -56,11 +66,18 @@ struct CachedResponse {
 ///
 /// # Behaviour
 /// * Only [`GET`](Method::GET) and [`HEAD`](Method::HEAD) are considered.
-/// * The cache key is `{method} {uri}` (path and query, as received).
-/// * Requests with `Authorization` or `Cookie` bypass the cache.
+/// * The cache key is `{method} {uri}` (path and query, as received) plus the
+///   request's `Accept` and `Accept-Encoding` values.
+/// * Requests carrying credentials bypass the cache: `Authorization`,
+///   `Proxy-Authorization`, `Cookie`, `X-API-Key`, and any header added with
+///   [`RouteCache::bypass_header`]. **Register every custom authentication
+///   header** (for example an [`ApiKey`](axumapi_core::security::ApiKey)
+///   header name), or authenticated responses would be served to anyone.
 /// * Responses are stored only when the status is 200, there is no
-///   `Set-Cookie`, and `Cache-Control` does not contain `no-store` or
-///   `private`.
+///   `Set-Cookie`, `Cache-Control` does not contain `no-store` or `private`,
+///   `Vary` names no header outside the key, and the body length is known
+///   and at most [`RouteCache::max_body_bytes`]. Streaming bodies (server-sent
+///   events, file streams) pass through untouched.
 /// * Every GET/HEAD response is tagged with `x-cache: hit` or `x-cache: miss`.
 ///
 /// Cache backend failures fail open: the request is served and treated as a
@@ -69,6 +86,8 @@ struct CachedResponse {
 pub struct RouteCache<C> {
     cache: Arc<C>,
     ttl: Duration,
+    max_body: u64,
+    bypass: Arc<Vec<HeaderName>>,
 }
 
 impl<C: Cache> RouteCache<C> {
@@ -80,8 +99,37 @@ impl<C: Cache> RouteCache<C> {
         Self {
             cache: Arc::new(cache),
             ttl,
+            max_body: DEFAULT_MAX_BODY_BYTES,
+            bypass: Arc::new(vec![
+                AUTHORIZATION,
+                PROXY_AUTHORIZATION,
+                COOKIE,
+                HeaderName::from_static("x-api-key"),
+            ]),
         }
     }
+
+    /// Bypass the cache for requests carrying `name` (a credential header).
+    #[must_use]
+    pub fn bypass_header(mut self, name: HeaderName) -> Self {
+        Arc::make_mut(&mut self.bypass).push(name);
+        self
+    }
+
+    /// Store only bodies of at most `bytes` (default
+    /// [`DEFAULT_MAX_BODY_BYTES`]).
+    #[must_use]
+    pub fn max_body_bytes(mut self, bytes: u64) -> Self {
+        self.max_body = bytes;
+        self
+    }
+}
+
+/// Per-request view of the layer configuration.
+struct Policy {
+    ttl: Duration,
+    max_body: u64,
+    bypass: Arc<Vec<HeaderName>>,
 }
 
 impl<C: Cache> Layer<BoxService> for RouteCache<C> {
@@ -89,10 +137,15 @@ impl<C: Cache> Layer<BoxService> for RouteCache<C> {
 
     fn layer(&self, inner: BoxService) -> Self::Service {
         let cache = Arc::clone(&self.cache);
-        let ttl = self.ttl;
+        let (ttl, max_body, bypass) = (self.ttl, self.max_body, Arc::clone(&self.bypass));
         from_fn(move |req: Request, next: Next| {
             let cache = Arc::clone(&cache);
-            async move { dispatch(cache, ttl, req, next).await }
+            let policy = Policy {
+                ttl,
+                max_body,
+                bypass: Arc::clone(&bypass),
+            };
+            async move { dispatch(cache, policy, req, next).await }
         })
         .layer(inner)
     }
@@ -102,8 +155,23 @@ fn is_cacheable_method(method: &Method) -> bool {
     method == Method::GET || method == Method::HEAD
 }
 
-fn request_bypasses_cache(headers: &HeaderMap) -> bool {
-    headers.contains_key(AUTHORIZATION) || headers.contains_key(COOKIE)
+fn request_bypasses_cache(headers: &HeaderMap, bypass: &[HeaderName]) -> bool {
+    bypass.iter().any(|name| headers.contains_key(name))
+}
+
+/// True when `Vary` names `*` or a header that is not part of the key.
+fn varies_outside_key(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(VARY)
+        .iter()
+        .flat_map(|value| value.to_str().unwrap_or("*").split(','))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .any(|name| {
+            !KEYED_HEADERS
+                .iter()
+                .any(|keyed| keyed.as_str().eq_ignore_ascii_case(name))
+        })
 }
 
 /// True when any `Cache-Control` directive is `no-store` or `private`.
@@ -124,14 +192,26 @@ pub(crate) fn cache_control_forbids_store(headers: &HeaderMap) -> bool {
     })
 }
 
-fn is_cacheable_response(response: &Response) -> bool {
+fn is_cacheable_response(response: &Response, max_body: u64) -> bool {
     response.status() == StatusCode::OK
         && !response.headers().contains_key(SET_COOKIE)
         && !cache_control_forbids_store(response.headers())
+        && !varies_outside_key(response.headers())
+        && response
+            .body()
+            .exact_len()
+            .is_some_and(|len| len <= max_body)
 }
 
 fn cache_key(req: &Request) -> String {
-    format!("{} {}", req.method(), req.uri())
+    let mut key = format!("{} {}", req.method(), req.uri());
+    for name in &KEYED_HEADERS {
+        key.push('\n');
+        for value in req.headers().get_all(name) {
+            key.push_str(&String::from_utf8_lossy(value.as_bytes()));
+        }
+    }
+    key
 }
 
 fn encode(headers: &HeaderMap, body: Vec<u8>) -> Result<Vec<u8>, serde_json::Error> {
@@ -162,33 +242,37 @@ fn with_x_cache(mut response: Response, value: HeaderValue) -> Response {
     response
 }
 
-fn restore(headers: HeaderMap, body: Vec<u8>) -> Response {
-    let mut response = Response::new(Body::from(body.clone()));
+/// Rebuild a cached response. A `HEAD` keeps its stored `Content-Length`
+/// (the size of the `GET` representation); a `GET` gets its body length.
+fn restore(method: &Method, headers: HeaderMap, body: Vec<u8>) -> Response {
+    let len = HeaderValue::from(body.len());
+    let mut response = Response::new(Body::from(body));
     *response.status_mut() = StatusCode::OK;
     *response.headers_mut() = headers;
-    if let Ok(len) = HeaderValue::from_str(&body.len().to_string()) {
+    if method != Method::HEAD {
         response.headers_mut().insert(header::CONTENT_LENGTH, len);
     }
     with_x_cache(response, HIT)
 }
 
-async fn dispatch<C: Cache>(cache: Arc<C>, ttl: Duration, req: Request, next: Next) -> Response {
+async fn dispatch<C: Cache>(cache: Arc<C>, policy: Policy, req: Request, next: Next) -> Response {
     if !is_cacheable_method(req.method()) {
         return next.run(req).await;
     }
-    if request_bypasses_cache(req.headers()) {
+    if request_bypasses_cache(req.headers(), &policy.bypass) {
         return with_x_cache(next.run(req).await, MISS);
     }
 
     let key = cache_key(&req);
+    let method = req.method().clone();
     if let Ok(Some(bytes)) = cache.get(&key).await
         && let Some((headers, body)) = decode(&bytes)
     {
-        return restore(headers, body);
+        return restore(&method, headers, body);
     }
 
     let response = next.run(req).await;
-    if !is_cacheable_response(&response) {
+    if !is_cacheable_response(&response, policy.max_body) {
         return with_x_cache(response, MISS);
     }
 
@@ -201,10 +285,10 @@ async fn dispatch<C: Cache>(cache: Arc<C>, ttl: Duration, req: Request, next: Ne
         }
     };
 
-    if ttl > Duration::ZERO
+    if policy.ttl > Duration::ZERO
         && let Ok(payload) = encode(&parts.headers, bytes.clone())
     {
-        let _ = cache.set(&key, payload, Some(ttl)).await;
+        let _ = cache.set(&key, payload, Some(policy.ttl)).await;
     }
 
     parts.headers.insert(X_CACHE, MISS);

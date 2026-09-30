@@ -278,6 +278,8 @@ dependencies = [
  "axumapi-backends",
  "axumapi-core",
  "axumapi-testkit",
+ "bytes",
+ "futures-util",
  "http",
  "lru",
  "serde",

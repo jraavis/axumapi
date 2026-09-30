@@ -54,8 +54,8 @@ pub use model::{
 };
 pub use ops::ModelOps;
 pub use plan::{
-    Compound, DistinctMode, JoinExpr, JoinKind, LockMode, OrderDirection, OrderExpr, QueryPlan,
-    QuerySource, SelectExpr, SetOp,
+    Compound, DistinctMode, JoinExpr, JoinKind, LockMode, OrderDirection, OrderExpr, PlanOrigin,
+    QueryPlan, QuerySource, SelectExpr, SetOp,
 };
 pub use queryset::{Page, Prefetch, QuerySet, Relation};
 pub use relations::{ForeignKey, ManyToManyManager, OneToOne};

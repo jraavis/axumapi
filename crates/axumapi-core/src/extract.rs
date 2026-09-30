@@ -60,11 +60,33 @@ impl<T: FromRequestParts> FromRequestParts for Option<T> {
         Ok(T::from_request_parts(parts).await.ok())
     }
 
-    /// Documents `T`, with everything it adds marked optional.
+    /// Documents `T`, with everything it adds marked optional. Security
+    /// schemes it requires become an alternative next to the requirements
+    /// that held before.
     fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {
         let before = op.parameters.len();
         let had_body = op.request_body.is_some();
+        let security_before = std::mem::take(&mut op.security);
         <T as FromRequestParts>::describe(op, registry);
+        let added = std::mem::replace(&mut op.security, security_before);
+        if !added.is_empty() {
+            let base = if op.security.is_empty() {
+                vec![std::collections::BTreeMap::new()]
+            } else {
+                op.security.clone()
+            };
+            let mut alternatives = base.clone();
+            for alternative in &base {
+                for requirement in &added {
+                    let mut with = alternative.clone();
+                    with.extend(requirement.clone());
+                    if !alternatives.contains(&with) {
+                        alternatives.push(with);
+                    }
+                }
+            }
+            op.security = alternatives;
+        }
         for p in &mut op.parameters[before..] {
             // OpenAPI requires path parameters to be required.
             if p.location != ParameterLocation::Path {

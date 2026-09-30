@@ -29,4 +29,6 @@ axumapi-backends = { workspace = true, optional = true }
 
 [dev-dependencies]
 axumapi-testkit.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
 tokio.workspace = true

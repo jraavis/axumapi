@@ -108,6 +108,12 @@ async fn read_secured(Security(user, _): Security<CurrentUser, ReadScopes>) -> S
 async fn admin_secured(Security(user, _): Security<CurrentUser, AdminScopes>) -> String {
     user.name
 }
+async fn both(_a: HttpBearer, _b: ApiKey<HeaderKey>) -> &'static str {
+    "both"
+}
+async fn key_and_optional_bearer(_k: ApiKey<HeaderKey>, _b: Option<HttpBearer>) -> &'static str {
+    "ok"
+}
 async fn double(_a: HttpBearer, _b: HttpBearer) -> &'static str {
     "double"
 }
@@ -126,6 +132,8 @@ fn app() -> App {
         .route("/secured/read", get(read_secured))
         .route("/secured/admin", get(admin_secured))
         .route("/double", get(double))
+        .route("/both", get(both))
+        .route("/key-optional-bearer", get(key_and_optional_bearer))
 }
 
 async fn call(client: &TestClient, path: &str, headers: &[(&str, &str)]) -> TestResponse {
@@ -393,6 +401,27 @@ fn duplicate_requirements_are_not_repeated() {
     assert_eq!(
         doc()["paths"]["/double"]["get"]["security"],
         json!([{"HTTPBearer": []}])
+    );
+}
+
+#[test]
+fn schemes_of_one_handler_are_all_required() {
+    assert_eq!(
+        doc()["paths"]["/both"]["get"]["security"],
+        json!([{"HTTPBearer": [], "HeaderKey": []}])
+    );
+}
+
+#[test]
+fn optional_schemes_are_documented_as_alternatives() {
+    let doc = doc();
+    assert_eq!(
+        doc["paths"]["/optional"]["get"]["security"],
+        json!([{}, {"HTTPBearer": []}])
+    );
+    assert_eq!(
+        doc["paths"]["/key-optional-bearer"]["get"]["security"],
+        json!([{"HeaderKey": []}, {"HeaderKey": [], "HTTPBearer": []}])
     );
 }
 

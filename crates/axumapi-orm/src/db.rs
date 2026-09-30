@@ -20,7 +20,7 @@ use crate::backend::{Backend, ExecResult, Executor, QueryResult, Transaction};
 use crate::capabilities::{BackendCapabilities, Feature, IsolationLevel, TransactionSupport};
 use crate::error::{BackendCapabilityError, OrmError, QueryError};
 use crate::model::{Model, ModelMeta};
-use crate::plan::QueryPlan;
+use crate::plan::{PlanOrigin, QueryPlan};
 use crate::queryset::QuerySet;
 use crate::router::DatabaseRouter;
 use crate::signals::Signals;
@@ -121,6 +121,22 @@ impl Db {
         std::ptr::addr_eq(Arc::as_ptr(self.pool()), Arc::as_ptr(other.pool()))
     }
 
+    /// Identity tag for plans built against this database.
+    pub(crate) fn origin(&self) -> PlanOrigin {
+        PlanOrigin::new(Arc::as_ptr(self.pool()).cast::<()>() as usize)
+    }
+
+    /// Reject work carrying a subquery built against another database.
+    fn ensure_local(&self, foreign: bool) -> Result<(), OrmError> {
+        if foreign {
+            return Err(QueryError::InvalidPlan(
+                "a subquery built against another database cannot run here".into(),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     fn pool(&self) -> &Arc<dyn Backend> {
         match &self.target {
             Target::Pool(pool) => pool,
@@ -150,6 +166,7 @@ impl Db {
     /// # Errors
     /// Capability, backend or decode errors.
     pub async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
+        self.ensure_local(plan.has_foreign_origin(self.origin()))?;
         self.traced("select", &plan.source.name, self.executor().fetch(plan))
             .await
     }
@@ -159,6 +176,18 @@ impl Db {
     /// # Errors
     /// Capability or backend errors.
     pub async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
+        let origin = self.origin();
+        let foreign = match plan {
+            WritePlan::Insert(_) => false,
+            WritePlan::Update(p) => p
+                .assignments
+                .iter()
+                .map(|(_, e)| e)
+                .chain(p.filter.iter())
+                .any(|e| e.has_foreign_origin(origin)),
+            WritePlan::Delete(p) => p.filter.iter().any(|e| e.has_foreign_origin(origin)),
+        };
+        self.ensure_local(foreign)?;
         let (operation, table) = match plan {
             WritePlan::Insert(p) => ("insert", &p.table),
             WritePlan::Update(p) => ("update", &p.table),
