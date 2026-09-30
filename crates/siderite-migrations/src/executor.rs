@@ -573,8 +573,10 @@ async fn acquire_migrate_lock(db: &Db) -> Result<(), MigrationError> {
     match db.capabilities().kind {
         BackendKind::Sqlite => Ok(()),
         BackendKind::Postgres => {
+            // `pg_advisory_lock` returns `void`, which sqlx cannot decode:
+            // wrap it in a subquery that yields a decodable value.
             db.raw_sql(
-                "SELECT pg_advisory_lock($1)",
+                "SELECT 1 AS locked FROM (SELECT pg_advisory_lock($1)) AS taken",
                 vec![Value::Int(PG_MIGRATE_LOCK)],
             )
             .await?;
@@ -608,12 +610,21 @@ async fn release_migrate_lock(db: &Db) -> Result<(), MigrationError> {
     match db.capabilities().kind {
         BackendKind::Sqlite => Ok(()),
         BackendKind::Postgres => {
-            db.raw_sql(
-                "SELECT pg_advisory_unlock($1)",
-                vec![Value::Int(PG_MIGRATE_LOCK)],
-            )
-            .await?;
-            Ok(())
+            // `pg_advisory_unlock` returns `bool`, which decodes fine.
+            let result = db
+                .raw_sql(
+                    "SELECT pg_advisory_unlock($1) AS released",
+                    vec![Value::Int(PG_MIGRATE_LOCK)],
+                )
+                .await?;
+            match result.rows.first().and_then(|row| row.get("released")) {
+                Some(Value::Bool(true)) | Some(Value::Int(1)) => Ok(()),
+                // False means the lock was not held by this session, which
+                // only happens if the connection was replaced mid-run.
+                other => Err(MigrationError::state(format!(
+                    "the migration lock was not held on release: {other:?}"
+                ))),
+            }
         }
         BackendKind::MySql => {
             db.raw_sql(
@@ -833,10 +844,23 @@ async fn save_progress(
             ],
         )
         .await?;
+    // MySQL reports *changed* rows, not matched ones, so an UPDATE writing the
+    // values already stored returns 0. Upsert there so that case cannot turn
+    // into a duplicate-key INSERT. Keyed on the connection, not the dialect:
+    // unit tests drive the MySQL path over SQLite.
     if updated == 0 {
+        let upsert = if db.capabilities().kind == BackendKind::MySql {
+            format!(
+                " ON DUPLICATE KEY UPDATE {op} = VALUES({op}), {stmt} = VALUES({stmt})",
+                op = quote_star(kind, "op_index"),
+                stmt = quote_star(kind, "stmt_index"),
+            )
+        } else {
+            String::new()
+        };
         db.raw_execute(
             &format!(
-                "INSERT INTO {} ({}, {}, {}, {}) VALUES ({}, {}, {}, {})",
+                "INSERT INTO {} ({}, {}, {}, {}) VALUES ({}, {}, {}, {}){upsert}",
                 quote_star(kind, PROGRESS_TABLE),
                 quote_star(kind, "migration_id"),
                 quote_star(kind, "op_index"),

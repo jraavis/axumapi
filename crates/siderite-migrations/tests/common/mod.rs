@@ -1,6 +1,8 @@
 //! Hand-written `ModelMeta` copied from `siderite-backends/tests/reference_model.rs`.
 #![allow(dead_code, clippy::unwrap_used)]
 
+pub mod scratch;
+
 use siderite_orm::{
     ConstraintMeta, DbType, FieldMeta, IndexMeta, ManyToManyMeta, ModelMeta, OnDelete,
     OrderDirection, RelationKind, RelationMeta, SqlType,

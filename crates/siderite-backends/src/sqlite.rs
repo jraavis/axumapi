@@ -179,7 +179,7 @@ struct FkViolation {
 }
 
 impl FkViolation {
-    /// `None` when a column is missing or the wrong type, so an unreadable
+    /// A missing or wrong-typed column becomes a placeholder, so an unreadable
     /// row still counts as a violation instead of being silently dropped.
     fn from_row(row: &SqliteRow) -> Self {
         let text = |key: &str| {
