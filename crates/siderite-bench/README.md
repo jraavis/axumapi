@@ -58,3 +58,13 @@ Notes on what is measured:
   not the same amount of work.
 - `orm/sqlite_fetch_100_rows` runs `Widget::objects(&db).all()` against a
   single-connection in-memory SQLite database seeded with 100 rows.
+
+## End-to-end HTTP benchmarks
+
+Throughput against equivalent FastAPI apps, measured with ApacheBench on the
+same machine (median of 3 runs, 0 failures), is documented in
+[`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md) and on the website's
+[benchmarks page](https://jraavis.github.io/siderite/contributing/benchmarks/):
+plain-HTTP routes from `examples/hello_world` plus a minimal Todo API on
+PostgreSQL, MySQL and MongoDB. Those harnesses are ad hoc and do not live in
+this crate.

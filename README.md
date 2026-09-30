@@ -105,6 +105,22 @@ cargo test --workspace --all-features
 
 Unsupported features fail with a `BackendCapabilityError` before any I/O; see the [backend matrix](https://jraavis.github.io/siderite/reference/backend-matrix/). Redis is a key/hash/set client, not a `QuerySet` backend.
 
+## Benchmarks
+
+In-process Criterion benches (`cargo bench -p siderite-bench`) compare routing, extraction and the ORM against raw axum/serde; medians are in [`crates/siderite-bench/README.md`](crates/siderite-bench/README.md).
+
+End-to-end throughput versus FastAPI (ApacheBench, same machine, median of 3 runs, 0 failures; see [benchmarks](https://jraavis.github.io/siderite/contributing/benchmarks/) for methodology):
+
+| Test | Siderite | FastAPI |
+|---|---|---|
+| `GET /` (`hello_world`) | 28,674 req/s | 5,039 req/s |
+| `POST /echo` (JSON) | 29,573 req/s | 3,541 req/s |
+| Todo list 20 (PostgreSQL) | 8,114 req/s | 5,031 req/s |
+| Todo list 20 (MySQL) | 7,103 req/s | 3,565 req/s |
+| Todo list 20 (MongoDB) | 14,280 req/s | 2,952 req/s |
+
+DB writes are DB-bound and land near parity; reads favor siderite. Numbers are machine-specific snapshots, not guarantees.
+
 ## Security defaults
 
 - Request bodies read with `Body::into_bytes` are capped at 2 MiB (`413` above it), like the `Json` and `Form` extractors. Use `into_bytes_limited` for another cap.
