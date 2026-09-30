@@ -151,9 +151,26 @@ impl Operation {
                         "model `{new_name}` already exists"
                     )));
                 }
+                let old_table = model.table.clone();
                 model.name = new_name.clone();
                 model.table = table.clone();
                 state.models.insert(new_name.clone(), model);
+                // Foreign keys point at tables: retarget every other model's
+                // FKs that referenced the old table name.
+                if old_table != *table {
+                    for (name, other) in state.models.iter_mut() {
+                        if name == new_name {
+                            continue;
+                        }
+                        for field in &mut other.fields {
+                            if let Some(fk) = field.fk.as_mut()
+                                && fk.target_table == old_table
+                            {
+                                fk.target_table = table.clone();
+                            }
+                        }
+                    }
+                }
             }
             Self::AddField { model, field } => {
                 let m = state.require_mut(model)?;

@@ -65,3 +65,27 @@ fn serde_round_trip_is_stable() {
     let back: ProjectState = serde_json::from_str(&json).unwrap();
     assert_eq!(state, back);
 }
+
+#[test]
+fn rename_model_updates_referencing_fks() {
+    let mut state = ProjectState::from_metas(&[author_meta(), book_meta()]);
+    siderite_migrations::Operation::RenameModel {
+        old_name: "Author".into(),
+        new_name: "Writer".into(),
+        table: "writers".into(),
+    }
+    .apply_to_state(&mut state)
+    .unwrap();
+    assert!(state.model("Author").is_none());
+    assert_eq!(state.model("Writer").unwrap().table, "writers");
+    let fk = state
+        .model("Book")
+        .unwrap()
+        .field("author")
+        .unwrap()
+        .fk
+        .as_ref()
+        .unwrap();
+    assert_eq!(fk.target_table, "writers");
+    assert_eq!(fk.target_column, "id");
+}
