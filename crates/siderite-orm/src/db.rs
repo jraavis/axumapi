@@ -17,7 +17,9 @@
 //! as `sqlite::memory:`.
 
 use crate::backend::{Backend, ExecResult, Executor, QueryResult, Transaction};
-use crate::capabilities::{BackendCapabilities, Feature, IsolationLevel, TransactionSupport};
+use crate::capabilities::{
+    BackendCapabilities, BackendKind, Feature, IsolationLevel, TransactionSupport,
+};
 use crate::error::{BackendCapabilityError, OrmError, QueryError};
 use crate::model::{Model, ModelMeta};
 use crate::plan::{PlanOrigin, QueryPlan};
@@ -296,6 +298,62 @@ impl Db {
         E: From<OrmError>,
     {
         self.run_transaction(Some(isolation), f).await
+    }
+
+    /// Run `f` on a dedicated connection prepared for schema changes.
+    ///
+    /// SQLite disables foreign-key enforcement on that connection before any
+    /// `BEGIN` (and restores it afterwards) so a table rebuild does not
+    /// CASCADE-delete child rows. `transactional` wraps `f` in `BEGIN` /
+    /// `COMMIT` when the backend supports it.
+    ///
+    /// # Errors
+    /// `f`'s error, or an [`OrmError`] from begin/commit/rollback. SQLite
+    /// rejects this when `self` is already in a transaction, because
+    /// `PRAGMA foreign_keys` cannot be changed until that transaction ends.
+    pub async fn schema_change<F, Fut, T, E>(&self, transactional: bool, f: F) -> Result<T, E>
+    where
+        F: FnOnce(Db) -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+        E: From<OrmError>,
+    {
+        match &self.target {
+            Target::Pool(pool) => {
+                let tx: Arc<dyn Transaction> = Arc::from(pool.begin_schema(transactional).await?);
+                let state = Arc::new(TxState {
+                    tx: Arc::clone(&tx),
+                    pool: Arc::clone(pool),
+                    hooks: Arc::default(),
+                    savepoints: Arc::default(),
+                });
+                let hooks = Arc::clone(&state.hooks);
+                let result = f(Db {
+                    target: Target::Tx(state),
+                    signals: self.signals.clone(),
+                })
+                .await;
+                match result {
+                    Ok(value) => {
+                        tx.commit().await?;
+                        hooks.take().into_iter().for_each(|hook| hook());
+                        Ok(value)
+                    }
+                    Err(err) => {
+                        drop(tx.rollback().await);
+                        Err(err)
+                    }
+                }
+            }
+            Target::Tx(_) if self.capabilities().kind == BackendKind::Sqlite => {
+                Err(OrmError::from(QueryError::InvalidPlan(
+                    "SQLite schema migrations cannot run inside an open transaction \
+                     because PRAGMA foreign_keys cannot be changed until it commits"
+                        .into(),
+                ))
+                .into())
+            }
+            Target::Tx(_) => self.run_transaction(None, f).await,
+        }
     }
 
     async fn run_transaction<F, Fut, T, E>(

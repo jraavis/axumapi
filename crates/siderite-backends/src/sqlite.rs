@@ -12,8 +12,11 @@ use siderite_orm::{
     Backend, BackendCapabilities, BackendError, ExecResult, Executor, IsolationLevel, OrmError,
     QueryError, QueryPlan, QueryResult, Row, Transaction, Value, WritePlan,
 };
-use sqlx::sqlite::{SqliteArguments, SqlitePool, SqlitePoolOptions, SqliteRow};
-use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::pool::PoolConnection;
+use sqlx::sqlite::{
+    SqliteArguments, SqlitePool, SqlitePoolOptions, SqliteRow, SqliteTransactionManager,
+};
+use sqlx::{Column as _, Row as _, TransactionManager, TypeInfo as _, ValueRef as _};
 
 /// SQLite adapter executing compiled plans on a connection pool.
 #[derive(Debug, Clone)]
@@ -83,6 +86,12 @@ impl Backend for SqliteBackend {
         let tx = self.pool.begin().await.map_err(map_error)?;
         Ok(Box::new(SqliteTransaction(TxSlot::new(tx))))
     }
+
+    async fn begin_schema(&self, transactional: bool) -> Result<Box<dyn Transaction>, OrmError> {
+        Ok(Box::new(
+            SqliteSchemaTransaction::open(&self.pool, transactional).await?,
+        ))
+    }
 }
 
 /// An open SQLite transaction. Dropped without commit, it rolls back.
@@ -127,6 +136,157 @@ impl Transaction for SqliteTransaction {
     async fn rollback(&self) -> Result<(), OrmError> {
         self.0.rollback().await
     }
+}
+
+macro_rules! with_schema_conn {
+    ($this:expr, $conn:ident => $body:expr) => {{
+        let mut guard = $this.conn.lock().await;
+        let conn = guard
+            .as_mut()
+            .ok_or(::siderite_orm::QueryError::TransactionClosed)?;
+        let $conn = &mut **conn;
+        $body
+    }};
+}
+
+/// Dedicated connection with `PRAGMA foreign_keys` off around a schema change.
+///
+/// SQLite ignores `PRAGMA foreign_keys` inside a transaction, so the pragma
+/// is applied *before* `BEGIN` and restored after commit or rollback.
+struct SqliteSchemaTransaction {
+    conn: tokio::sync::Mutex<Option<PoolConnection<sqlx::Sqlite>>>,
+    restore_fk: i64,
+    in_txn: bool,
+}
+
+impl SqliteSchemaTransaction {
+    async fn open(pool: &SqlitePool, transactional: bool) -> Result<Self, OrmError> {
+        let mut conn = pool.acquire().await.map_err(map_error)?;
+        let restore_fk: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(map_error)?;
+        set_foreign_keys(&mut conn, 0).await?;
+        if transactional && let Err(err) = SqliteTransactionManager::begin(&mut *conn, None).await {
+            drop(set_foreign_keys(&mut conn, restore_fk).await);
+            return Err(map_error(err).into());
+        }
+        Ok(Self {
+            conn: tokio::sync::Mutex::new(Some(conn)),
+            restore_fk,
+            in_txn: transactional,
+        })
+    }
+
+    async fn take(&self) -> Result<PoolConnection<sqlx::Sqlite>, OrmError> {
+        self.conn
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| QueryError::TransactionClosed.into())
+    }
+}
+
+impl Drop for SqliteSchemaTransaction {
+    fn drop(&mut self) {
+        if let Some(mut conn) = self.conn.get_mut().take() {
+            if self.in_txn {
+                SqliteTransactionManager::start_rollback(&mut *conn);
+            }
+            // Do not return a connection whose foreign_keys pragma we changed.
+            conn.close_on_drop();
+        }
+    }
+}
+
+#[async_trait]
+impl Executor for SqliteSchemaTransaction {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::sqlite()
+    }
+
+    async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
+        let compiled = compile(plan, &Sqlite)?;
+        with_schema_conn!(self, conn => fetch_rows(conn, &compiled.sql, compiled.params).await)
+    }
+
+    async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
+        let compiled = compile_write(plan, &Sqlite)?;
+        let returning = !plan.returning().is_empty();
+        with_schema_conn!(self, conn => run_write(conn, compiled, returning).await)
+    }
+
+    async fn fetch_raw(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError> {
+        with_schema_conn!(self, conn => fetch_rows(conn, sql, params).await)
+    }
+
+    async fn execute_raw(&self, sql: &str, params: Vec<Value>) -> Result<u64, OrmError> {
+        with_schema_conn!(self, conn => execute_rows(conn, sql, params).await)
+    }
+
+    async fn execute_script(&self, sql: &str) -> Result<(), OrmError> {
+        with_schema_conn!(self, conn => script_result(sqlx::Executor::execute(conn, sql).await))
+    }
+}
+
+#[async_trait]
+impl Transaction for SqliteSchemaTransaction {
+    async fn commit(&self) -> Result<(), OrmError> {
+        let mut conn = self.take().await?;
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(map_error)?;
+        if !violations.is_empty() {
+            if self.in_txn {
+                drop(SqliteTransactionManager::rollback(&mut *conn).await);
+            }
+            drop(set_foreign_keys(&mut conn, self.restore_fk).await);
+            return Err(BackendError::Constraint(format!(
+                "SQLite foreign_key_check failed after schema change ({} violation(s))",
+                violations.len()
+            ))
+            .into());
+        }
+        if self.in_txn
+            && let Err(err) = SqliteTransactionManager::commit(&mut *conn).await
+        {
+            drop(set_foreign_keys(&mut conn, self.restore_fk).await);
+            return Err(map_error(err).into());
+        }
+        set_foreign_keys(&mut conn, self.restore_fk).await?;
+        Ok(())
+    }
+
+    async fn rollback(&self) -> Result<(), OrmError> {
+        let mut conn = self.take().await?;
+        let rollback = if self.in_txn {
+            SqliteTransactionManager::rollback(&mut *conn)
+                .await
+                .map_err(map_error)
+        } else {
+            Ok(())
+        };
+        let restore = set_foreign_keys(&mut conn, self.restore_fk).await;
+        rollback?;
+        restore
+    }
+}
+
+async fn set_foreign_keys(
+    conn: &mut PoolConnection<sqlx::Sqlite>,
+    on: i64,
+) -> Result<(), OrmError> {
+    let sql = if on == 0 {
+        "PRAGMA foreign_keys = OFF"
+    } else {
+        "PRAGMA foreign_keys = ON"
+    };
+    sqlx::query(sql)
+        .execute(&mut **conn)
+        .await
+        .map(|_| ())
+        .map_err(|e| map_error(e).into())
 }
 
 fn bind_all(

@@ -116,14 +116,14 @@ copied as written.
 SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add
 or drop table constraints. For `AlterField`, `RemoveField`,
 `AddConstraint`, and `DeleteConstraint` the editor rebuilds the table
-(`PRAGMA foreign_keys = OFF`, create `__siderite_new`, copy, rename,
-recreate indexes).
+(create `__siderite_new`, copy, drop, rename, recreate indexes).
 
-`PRAGMA foreign_keys` is a no-op inside a transaction. Atomic migrations
-that rebuild a table referenced by other tables may fail the `DROP`;
-rebuild unreferenced tables, or set `atomic: false`. Simple `AddField` uses
-`ALTER TABLE ... ADD COLUMN`. Adding `UNIQUE` / `PRIMARY KEY` on SQLite
-also rebuilds.
+`PRAGMA foreign_keys` is a no-op inside a transaction, so the migrator
+turns it off on the dedicated connection *before* `BEGIN`, runs
+`PRAGMA foreign_key_check` before commit, and restores the previous value
+afterwards. Child rows with `ON DELETE CASCADE` survive a rebuild of the
+parent table. Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding
+`UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
 
 ## MySQL
 

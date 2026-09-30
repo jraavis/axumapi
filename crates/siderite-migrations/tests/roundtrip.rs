@@ -11,7 +11,7 @@ use siderite_migrations::executor::Migrator;
 use siderite_migrations::loader::{self, MigrationGraph};
 use siderite_migrations::migration::Migration;
 use siderite_migrations::operation::Operation;
-use siderite_migrations::state::FieldState;
+use siderite_migrations::state::{FieldState, ProjectState};
 use siderite_migrations::{MigrationError, SqlType, make_migrations};
 use siderite_orm::{Db, Value};
 
@@ -272,4 +272,89 @@ async fn unreadable_history_is_an_error_not_a_fresh_db() {
     assert!(err.is_err(), "expected an error, got {err:?}");
     // Nothing was replayed.
     assert!(db.raw_sql("SELECT 1 FROM authors", vec![]).await.is_err());
+}
+
+/// Rebuild of a parent table must not CASCADE-delete child rows.
+///
+/// SQLite ignores `PRAGMA foreign_keys` inside a transaction, and the
+/// migrator wraps atomic SQLite migrations in one. The rebuild has to turn
+/// FKs off on the *same* connection *before* `BEGIN`.
+#[tokio::test]
+async fn sqlite_rebuild_of_parent_keeps_cascade_children() {
+    let dir = temp_dir();
+    let db_path = dir.join("app.db");
+    let url = format!("sqlite://{}?mode=rwc", db_path.display());
+    let db = Db::new(SqliteBackend::connect(&url).await.unwrap());
+    let models: &[&'static siderite_orm::ModelMeta] = &[author_meta(), book_meta()];
+    let first = make_migrations(models, &dir, None, false).unwrap().unwrap();
+    cli::run(models, &db, &dir, ["migrate".to_owned()])
+        .await
+        .unwrap();
+
+    db.raw_execute(
+        "INSERT INTO authors (name) VALUES (?)",
+        vec![Value::Text("Ann".into())],
+    )
+    .await
+    .unwrap();
+    db.raw_execute(
+        "INSERT INTO books (title, author_id) VALUES (?, ?)",
+        vec![Value::Text("Pigs".into()), Value::Int(1)],
+    )
+    .await
+    .unwrap();
+
+    let mut name = ProjectState::from_metas(&[author_meta()])
+        .model("Author")
+        .unwrap()
+        .field("name")
+        .unwrap()
+        .clone();
+    name.max_length = Some(200);
+    let alter = Migration::new(
+        "0002_widen_author_name",
+        vec![first.id],
+        vec![Operation::AlterField {
+            model: "Author".into(),
+            name: "name".into(),
+            field: name,
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &alter).unwrap();
+    cli::run(models, &db, &dir, ["migrate".to_owned()])
+        .await
+        .unwrap();
+
+    let books = db.raw_sql("SELECT title FROM books", vec![]).await.unwrap();
+    assert_eq!(
+        books.rows.len(),
+        1,
+        "ON DELETE CASCADE child rows must survive AlterField on the parent"
+    );
+    assert_eq!(
+        books.rows[0].get("title"),
+        Some(&Value::Text("Pigs".into()))
+    );
+    let authors = db
+        .raw_sql("SELECT name FROM authors", vec![])
+        .await
+        .unwrap();
+    assert_eq!(
+        authors.rows[0].get("name"),
+        Some(&Value::Text("Ann".into()))
+    );
+    let orphan = db
+        .raw_execute(
+            "INSERT INTO books (title, author_id) VALUES (?, ?)",
+            vec![Value::Text("Ghost".into()), Value::Int(999)],
+        )
+        .await;
+    assert!(
+        orphan.is_err(),
+        "foreign keys must still be enforced after the rebuild"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -421,7 +421,11 @@ impl<'a> Migrator<'a> {
                 Ok::<_, MigrationError>(())
             }
         };
-        if runs_in_transaction(self.db, migration) {
+        if self.kind() == BackendKind::Sqlite {
+            self.db
+                .schema_change(runs_in_transaction(self.db, migration), run)
+                .await?;
+        } else if runs_in_transaction(self.db, migration) {
             self.db.transaction(run).await?;
         } else {
             run(self.db.clone()).await?;
@@ -456,7 +460,11 @@ impl<'a> Migrator<'a> {
                 Ok::<_, MigrationError>(())
             }
         };
-        if runs_in_transaction(self.db, migration) {
+        if self.kind() == BackendKind::Sqlite {
+            self.db
+                .schema_change(runs_in_transaction(self.db, migration), run)
+                .await?;
+        } else if runs_in_transaction(self.db, migration) {
             self.db.transaction(run).await?;
         } else {
             run(self.db.clone()).await?;

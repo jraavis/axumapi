@@ -76,12 +76,11 @@ fn sqlite_remove_field_rebuilds_table() {
     let sql = schema_editor::render(BackendKind::Sqlite, &op, &state)
         .unwrap()
         .join(";\n");
-    assert!(sql.contains("PRAGMA foreign_keys = OFF"));
+    assert!(!sql.contains("PRAGMA foreign_keys"), "{sql}");
     assert!(sql.contains("CREATE TABLE \"books__siderite_new\""));
     assert!(sql.contains("INSERT INTO \"books__siderite_new\""));
     assert!(sql.contains("DROP TABLE \"books\""));
     assert!(sql.contains("ALTER TABLE \"books__siderite_new\" RENAME TO \"books\""));
-    assert!(sql.contains("PRAGMA foreign_keys = ON"));
     assert!(!sql.contains("\"pages\""), "{sql}");
 }
 

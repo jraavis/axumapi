@@ -102,14 +102,12 @@ MySQL DDL is described in [MySQL](#mysql). Other backends (MongoDB, Redis) retur
 
 SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add or drop table constraints. For `AlterField`, `RemoveField`, `AddConstraint` and `DeleteConstraint` the editor:
 
-1. `PRAGMA foreign_keys = OFF`
-2. `CREATE TABLE "<table>__siderite_new" (...)`
-3. `INSERT INTO ... SELECT` overlapping columns (with `CAST` when the type changes)
-4. `DROP TABLE` / `ALTER TABLE ... RENAME TO`
-5. Recreate indexes
-6. `PRAGMA foreign_keys = ON`
+1. `CREATE TABLE "<table>__siderite_new" (...)`
+2. `INSERT INTO ... SELECT` overlapping columns (with `CAST` when the type changes)
+3. `DROP TABLE` / `ALTER TABLE ... RENAME TO`
+4. Recreate indexes
 
-`PRAGMA foreign_keys` is a no-op inside a transaction. Atomic migrations that rebuild a table referenced by other tables may therefore fail the `DROP`; rebuild unreferenced tables, or set `atomic: false`.
+`PRAGMA foreign_keys` is a no-op inside a transaction, so the migrator turns it off on the dedicated connection *before* `BEGIN`, runs `PRAGMA foreign_key_check` before commit, and restores the previous value afterwards. Child rows with `ON DELETE CASCADE` survive a rebuild of the parent table.
 
 Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding `UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
 

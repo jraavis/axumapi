@@ -108,6 +108,19 @@ pub trait Backend: Executor {
         &self,
         isolation: Option<IsolationLevel>,
     ) -> Result<Box<dyn Transaction>, OrmError>;
+
+    /// Connection for a schema migration.
+    ///
+    /// When `transactional` is true this is a transaction, same as
+    /// [`begin`](Self::begin) with no isolation override. SQLite turns
+    /// `PRAGMA foreign_keys` off on that connection *before* `BEGIN` (the
+    /// pragma is a no-op inside a transaction), runs `PRAGMA foreign_key_check`
+    /// before commit, and restores the previous pragma value afterwards.
+    /// Other backends ignore the SQLite-specific work.
+    async fn begin_schema(&self, transactional: bool) -> Result<Box<dyn Transaction>, OrmError> {
+        let _ = transactional;
+        self.begin(None).await
+    }
 }
 
 /// An open transaction.
