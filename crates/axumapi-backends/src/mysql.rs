@@ -26,10 +26,14 @@
 //!   allocate the whole block of a plain `INSERT .. VALUES` at once; the step
 //!   is `@@auto_increment_increment`). Supplied keys are used as they are.
 //!   The rows are then re-read by key, in key order.
-//! * **`UPDATE` / `DELETE`**: the affected keys are read `FOR UPDATE` in a
-//!   transaction (an `UPDATE` by primary-key equality skips that), the
-//!   statement runs, and the rows are read back (after an `UPDATE`) or were
-//!   read beforehand (`DELETE`).
+//! * **`UPDATE` / `DELETE`**: the affected keys are read `FOR UPDATE` (an
+//!   `UPDATE` by primary-key equality skips that read), the statement runs,
+//!   and the rows are read back (after an `UPDATE`) or were read beforehand
+//!   (`DELETE`).
+//!
+//! Each emulated write, single-row ones included, runs in a transaction (or
+//! the caller's), so the rows read back are the ones written: no concurrent
+//! statement can change or delete them in between.
 //!
 //! The primary key and the auto-increment column are looked up once per table
 //! in `information_schema` and cached; [`execute_script`](Executor::execute_script)
@@ -138,16 +142,13 @@ impl Executor for MySqlBackend {
         }
         let prepared = prepare(plan)?;
         let info = self.tables.table(&self.pool, table_of(plan)).await?;
-        if writes_one_row_by_key(plan, &info) {
-            // One write plus a read: no transaction needed.
-            let mut conn = self.pool.acquire().await.map_err(db_error)?;
-            write_returning(&mut conn, &info, plan, prepared).await
-        } else {
-            let mut tx = self.pool.begin().await.map_err(db_error)?;
-            let result = write_returning(&mut tx, &info, plan, prepared).await?;
-            tx.commit().await.map_err(db_error)?;
-            Ok(result)
-        }
+        // Even a single-row write runs in a transaction: the write's row lock
+        // is held until the read-back, so a concurrent update or delete
+        // cannot change or remove the row in between.
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let result = write_returning(&mut tx, &info, plan, prepared).await?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(result)
     }
 
     async fn fetch_raw(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError> {
@@ -445,16 +446,6 @@ fn locking_read<C: Clone + Into<axumapi_orm::expr::Ident>>(
         plan = plan.select(Expr::col(column.clone()), None);
     }
     plan
-}
-
-/// Whether the write is an `UPDATE` addressing one row by its primary key
-/// (what `save` issues), or an `INSERT`: both are one statement plus a read.
-fn writes_one_row_by_key(plan: &WritePlan, info: &TableInfo) -> bool {
-    match plan {
-        WritePlan::Insert(_) => true,
-        WritePlan::Update(p) => key_equality(info, p.filter.as_ref()).is_some(),
-        WritePlan::Delete(_) => false,
-    }
 }
 
 /// The key of a filter of the form `pk = value` on a single-column key.
