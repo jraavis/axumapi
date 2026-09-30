@@ -437,3 +437,52 @@ async fn cached_head_keeps_the_representation_length() {
     assert_eq!(header(&hit, "x-cache"), Some("hit"));
     assert_eq!(header(&hit, "content-length"), Some("7"));
 }
+
+#[tokio::test]
+async fn credential_like_headers_bypass_by_default() {
+    let (client, hits) = counted_app(Arc::default(), Duration::from_secs(60));
+    for credential in [
+        ("x-auth-token", "t"),
+        ("x-session-id", "s"),
+        ("x-jwt", "j"),
+        ("x-access-key", "k"),
+    ] {
+        let res = call(&client, Method::GET, "/item", &[credential]).await;
+        assert_eq!(header(&res, "x-cache"), Some("miss"), "{credential:?}");
+    }
+    let anonymous = client.get("/item").await.unwrap();
+    assert_eq!(header(&anonymous, "x-cache"), Some("miss"));
+    assert_eq!(hits.load(Ordering::SeqCst), 5);
+}
+
+#[tokio::test]
+async fn host_is_part_of_the_key() {
+    let (client, hits) = counted_app(Arc::default(), Duration::from_secs(60));
+    let _ = call(&client, Method::GET, "/item", &[("host", "a.example")]).await;
+    let other = call(&client, Method::GET, "/item", &[("host", "b.example")]).await;
+    assert_eq!(header(&other, "x-cache"), Some("miss"));
+    let again = call(&client, Method::GET, "/item", &[("host", "A.example")]).await;
+    assert_eq!(header(&again, "x-cache"), Some("hit"));
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn split_header_values_do_not_collide() {
+    let (client, hits) = counted_app(Arc::default(), Duration::from_secs(60));
+    let _ = call(
+        &client,
+        Method::GET,
+        "/item",
+        &[("accept", "ab"), ("accept", "c")],
+    )
+    .await;
+    let other = call(
+        &client,
+        Method::GET,
+        "/item",
+        &[("accept", "a"), ("accept", "bc")],
+    )
+    .await;
+    assert_eq!(header(&other, "x-cache"), Some("miss"));
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}

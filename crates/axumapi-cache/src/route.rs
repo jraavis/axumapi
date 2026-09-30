@@ -4,8 +4,8 @@ use crate::Cache;
 use axumapi_core::middleware::{BoxService, Next, from_fn};
 use axumapi_core::{ApiError, Body, IntoResponse, Request, Response};
 use http::header::{
-    ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CACHE_CONTROL, COOKIE, PROXY_AUTHORIZATION, SET_COOKIE,
-    VARY,
+    ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CACHE_CONTROL, COOKIE, HOST, PROXY_AUTHORIZATION,
+    SET_COOKIE, VARY,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use serde::{Deserialize, Serialize};
@@ -66,13 +66,16 @@ struct CachedResponse {
 ///
 /// # Behaviour
 /// * Only [`GET`](Method::GET) and [`HEAD`](Method::HEAD) are considered.
-/// * The cache key is `{method} {uri}` (path and query, as received) plus the
-///   request's `Accept` and `Accept-Encoding` values.
+/// * The cache key is the method, scheme, `Host`, path and query (as
+///   received), plus the request's `Accept` and `Accept-Encoding` values, so
+///   virtual hosts sharing one cache never see each other's responses.
 /// * Requests carrying credentials bypass the cache: `Authorization`,
-///   `Proxy-Authorization`, `Cookie`, `X-API-Key`, and any header added with
-///   [`RouteCache::bypass_header`]. **Register every custom authentication
-///   header** (for example an [`ApiKey`](axumapi_core::security::ApiKey)
-///   header name), or authenticated responses would be served to anyone.
+///   `Proxy-Authorization`, `Cookie`, `X-API-Key`, any header whose name
+///   contains `auth`, `token`, `session`, `jwt`, `secret`, `api-key`,
+///   `apikey` or `access-key`, and any header added with
+///   [`RouteCache::bypass_header`]. **Register every other authentication
+///   header** your app uses, or authenticated responses would be served to
+///   anyone.
 /// * Responses are stored only when the status is 200, there is no
 ///   `Set-Cookie`, `Cache-Control` does not contain `no-store` or `private`,
 ///   `Vary` names no header outside the key, and the body length is known
@@ -157,6 +160,26 @@ fn is_cacheable_method(method: &Method) -> bool {
 
 fn request_bypasses_cache(headers: &HeaderMap, bypass: &[HeaderName]) -> bool {
     bypass.iter().any(|name| headers.contains_key(name))
+        || headers.keys().any(looks_like_credential)
+}
+
+/// Header names that commonly carry credentials (`X-Auth-Token`,
+/// `X-Session-Id`, `X-Jwt`, `X-Access-Key`, ...). Errs toward bypassing: a
+/// false positive only skips the cache, a false negative serves a private
+/// response to anyone.
+fn looks_like_credential(name: &HeaderName) -> bool {
+    const NEEDLES: [&str; 8] = [
+        "auth",
+        "token",
+        "session",
+        "jwt",
+        "secret",
+        "api-key",
+        "apikey",
+        "access-key",
+    ];
+    let name = name.as_str();
+    NEEDLES.iter().any(|needle| name.contains(needle))
 }
 
 /// True when `Vary` names `*` or a header that is not part of the key.
@@ -203,15 +226,49 @@ fn is_cacheable_response(response: &Response, max_body: u64) -> bool {
             .is_some_and(|len| len <= max_body)
 }
 
+/// Build the cache key from method, scheme, host, path and query, and the
+/// keyed headers. Every part is length-prefixed so different requests can
+/// never produce the same key.
 fn cache_key(req: &Request) -> String {
-    let mut key = format!("{} {}", req.method(), req.uri());
+    let mut key = String::new();
+    push_part(&mut key, req.method().as_str().as_bytes());
+    push_part(&mut key, req.uri().scheme_str().unwrap_or("").as_bytes());
+    let host = req
+        .headers()
+        .get(HOST)
+        .map(HeaderValue::as_bytes)
+        .or_else(|| req.uri().authority().map(|a| a.as_str().as_bytes()))
+        .unwrap_or_default();
+    push_part(&mut key, &host.to_ascii_lowercase());
+    let target = req
+        .uri()
+        .path_and_query()
+        .map_or("/", http::uri::PathAndQuery::as_str);
+    push_part(&mut key, target.as_bytes());
     for name in &KEYED_HEADERS {
-        key.push('\n');
-        for value in req.headers().get_all(name) {
-            key.push_str(&String::from_utf8_lossy(value.as_bytes()));
+        let values = req.headers().get_all(name);
+        key.push_str(&format!("#{}", values.iter().count()));
+        for value in values {
+            push_part(&mut key, value.as_bytes());
         }
     }
     key
+}
+
+/// Append `bytes` as `s{len}:{text}` (UTF-8) or `x{len}:{hex}` (anything else).
+fn push_part(key: &mut String, bytes: &[u8]) {
+    use std::fmt::Write as _;
+    match std::str::from_utf8(bytes) {
+        Ok(text) => {
+            let _ = write!(key, "s{}:{text}", text.len());
+        }
+        Err(_) => {
+            let _ = write!(key, "x{}:", bytes.len());
+            for byte in bytes {
+                let _ = write!(key, "{byte:02x}");
+            }
+        }
+    }
 }
 
 fn encode(headers: &HeaderMap, body: Vec<u8>) -> Result<Vec<u8>, serde_json::Error> {
@@ -277,7 +334,8 @@ async fn dispatch<C: Cache>(cache: Arc<C>, policy: Policy, req: Request, next: N
     }
 
     let (mut parts, body) = response.into_parts();
-    let bytes = match body.into_bytes().await {
+    let limit = usize::try_from(policy.max_body).unwrap_or(usize::MAX);
+    let bytes = match body.into_bytes_limited(limit).await {
         Ok(bytes) => bytes,
         Err(_) => {
             return ApiError::internal("failed to buffer a cacheable response body")
