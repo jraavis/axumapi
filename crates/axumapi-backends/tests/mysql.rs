@@ -1057,3 +1057,48 @@ async fn raw_sql_uses_question_mark_placeholders() {
     assert!(db.raw_sql("SELEC nope", vec![]).await.is_err());
     t.cleanup().await;
 }
+
+/// `update_or_create` locks its lookup (`FOR UPDATE`), and retries as an
+/// update when a concurrent insert of the missing row wins.
+#[tokio::test]
+async fn update_or_create_serializes_with_concurrent_writers() {
+    use std::time::Duration;
+
+    let Some(t) = TestDb::open().await else {
+        return;
+    };
+    let db = &t.db;
+    let bump = |t: &mut Tag| t.label = (t.label.parse::<i32>().unwrap() + 1).to_string();
+    // Runs `sql` in a transaction held open while `update_or_create` starts,
+    // then bumps the `slug` row.
+    let race = |sql: &'static str, slug: &'static str| async move {
+        let holder = db.transaction(|tx| async move {
+            tx.raw_execute(sql, vec![]).await?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Ok::<_, OrmError>(())
+        });
+        let waiter = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Tag::objects(db)
+                .update_or_create(Tag::slug.eq(slug), || Tag::new(slug, "unused"), bump)
+                .await
+        };
+        let (held, outcome) = tokio::join!(holder, waiter);
+        held.unwrap();
+        outcome.unwrap()
+    };
+
+    // Without the lock the lookup would read "0" and overwrite the held "1".
+    Tag::new("c", "0").save(db).await.unwrap();
+    let (tag, created) = race("UPDATE tags SET label = '1' WHERE slug = 'c'", "c").await;
+    assert!(!created);
+    assert_eq!(tag.label, "2");
+
+    // The row is missing; the held insert wins and the loser updates it.
+    let (tag, created) = race("INSERT INTO tags (slug, label) VALUES ('r', '1')", "r").await;
+    assert!(!created);
+    assert_eq!(tag.label, "2");
+    let stored = Tag::objects(db).get(Tag::slug.eq("r")).await.unwrap();
+    assert_eq!(stored.label, "2");
+    t.cleanup().await;
+}
