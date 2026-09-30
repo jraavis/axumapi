@@ -13,6 +13,12 @@ impl App {
     pub fn static_files(mut self, prefix: &str, dir: impl Into<PathBuf>) -> Self {
         let prefix = prefix.trim_end_matches('/').to_owned();
         let dir = dir.into();
+        if !prefix.is_empty() && !prefix.starts_with('/') {
+            self.config_errors.push(format!(
+                "static files prefix `{prefix}` must start with `/`"
+            ));
+            return self;
+        }
         if prefix.is_empty() {
             // Unknown paths that are not files still get the 404 problem document.
             let not_found =

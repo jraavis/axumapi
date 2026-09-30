@@ -193,7 +193,8 @@ method_routes! {
 }
 
 impl MethodRouter {
-    /// Route an arbitrary method to `handler`.
+    /// Route `method` to `handler`. Methods outside GET, POST, PUT, PATCH,
+    /// DELETE, HEAD, OPTIONS and TRACE are rejected when the app is built.
     #[must_use]
     pub fn on<H: Handler<T>, T: 'static>(mut self, method: Method, handler: H) -> Self {
         self.endpoints.push(Endpoint::new(method, handler));

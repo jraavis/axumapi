@@ -104,6 +104,9 @@ pub struct App {
     pub(crate) di: DiRegistry,
     /// Named databases, exposed to handlers as `State<Databases>`.
     databases: Option<Databases>,
+    /// Builder misuse reported by [`validate`](Self::validate) instead of
+    /// panicking while the router is built.
+    pub(crate) config_errors: Vec<String>,
 }
 
 impl std::fmt::Debug for App {
@@ -150,6 +153,7 @@ impl App {
             middleware: Vec::new(),
             di: DiRegistry::default(),
             databases: None,
+            config_errors: Vec::new(),
         }
     }
 
@@ -202,7 +206,8 @@ impl App {
         self
     }
 
-    /// Mount `app` under `prefix` (e.g. `/api/v1`). See the module docs.
+    /// Mount `app` under `prefix` (e.g. `/api/v1`); `/` merges its routes
+    /// into this app. See the module docs.
     #[must_use]
     pub fn mount(mut self, prefix: &str, app: App) -> Self {
         self.mounts.push(Mount {
@@ -263,7 +268,7 @@ impl App {
             .collect();
         for mount in &self.mounts {
             for (path, e) in mount.app.endpoints() {
-                let full = if path == "/" {
+                let full = if path == "/" && !mount.prefix.is_empty() {
                     mount.prefix.clone()
                 } else {
                     format!("{}{path}", mount.prefix)
@@ -296,6 +301,14 @@ impl App {
         builder.build()
     }
 
+    /// The first builder error recorded by this app or a mounted one.
+    fn first_config_error(&self) -> Option<&str> {
+        self.config_errors
+            .first()
+            .map(String::as_str)
+            .or_else(|| self.mounts.iter().find_map(|m| m.app.first_config_error()))
+    }
+
     /// Validate route paths and reject duplicate `(path, method)` pairs.
     fn validate(&self) -> Result<(), ServerError> {
         let mut seen: BTreeMap<(String, String), ()> = BTreeMap::new();
@@ -303,6 +316,12 @@ impl App {
             if !path.starts_with('/') {
                 return Err(ServerError::Configuration(format!(
                     "route path `{path}` must start with `/`"
+                )));
+            }
+            if e.openapi_method().is_none() {
+                return Err(ServerError::Configuration(format!(
+                    "unsupported HTTP method {} for route {path}",
+                    e.method
                 )));
             }
             if seen
@@ -315,8 +334,33 @@ impl App {
                 )));
             }
         }
+        for (name, url) in [
+            ("openapi_url", &self.docs.openapi_url),
+            ("swagger_url", &self.docs.swagger_url),
+            ("redoc_url", &self.docs.redoc_url),
+        ] {
+            if let Some(url) = url
+                && !url.starts_with('/')
+            {
+                return Err(ServerError::Configuration(format!(
+                    "docs `{name}` `{url}` must start with `/`"
+                )));
+            }
+        }
+        if let Some(message) = self.first_config_error() {
+            return Err(ServerError::Configuration(message.to_owned()));
+        }
         for m in &self.mounts {
-            if !m.prefix.starts_with('/') {
+            // An empty prefix is a root mount (`mount("/", ..)`); its routes
+            // merge into this app, which keeps the fallback.
+            if m.prefix.is_empty() && m.app.fallback.is_some() {
+                return Err(ServerError::Configuration(
+                    "an app mounted at `/` cannot serve root static files; \
+                     call `static_files(\"/\", ..)` on the parent app"
+                        .to_owned(),
+                ));
+            }
+            if !m.prefix.is_empty() && !m.prefix.starts_with('/') {
                 return Err(ServerError::Configuration(format!(
                     "mount prefix `{}` must start with `/`",
                     m.prefix
@@ -355,7 +399,12 @@ impl App {
         }
         for mount in self.mounts {
             let (child, middleware, _) = mount.app.build_router(hooks, false);
-            router = router.nest(&mount.prefix, apply_middleware(child, middleware));
+            let child = apply_middleware(child, middleware);
+            router = if mount.prefix.is_empty() {
+                router.merge(child)
+            } else {
+                router.nest(&mount.prefix, child)
+            };
         }
         for service in self.services {
             router = service(router);

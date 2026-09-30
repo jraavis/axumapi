@@ -233,6 +233,45 @@ fn misconfiguration_is_an_error_not_a_panic() {
         TestClient::try_new(bad),
         Err(ServerError::Configuration(_))
     ));
+    let custom = ::http::Method::from_bytes(b"PURGE").unwrap();
+    let method = App::new().route("/a", get(opaque).on(custom, opaque));
+    assert!(matches!(
+        TestClient::try_new(method),
+        Err(ServerError::Configuration(_))
+    ));
+    let docs = App::new().docs(DocsConfig {
+        swagger_url: Some("docs".to_owned()),
+        ..DocsConfig::default()
+    });
+    assert!(matches!(
+        TestClient::try_new(docs),
+        Err(ServerError::Configuration(_))
+    ));
+    let assets = App::new().static_files("assets", std::env::temp_dir());
+    assert!(matches!(
+        TestClient::try_new(assets),
+        Err(ServerError::Configuration(_))
+    ));
+    let nested = App::new().mount(
+        "/v1",
+        App::new().static_files("assets", std::env::temp_dir()),
+    );
+    assert!(matches!(
+        TestClient::try_new(nested),
+        Err(ServerError::Configuration(_))
+    ));
+}
+
+#[tokio::test]
+async fn mount_at_root_merges_routes() {
+    let client = TestClient::new(
+        App::new()
+            .route("/a", get(opaque))
+            .mount("/", App::new().route("/b", get(opaque))),
+    );
+    assert_eq!(client.get("/b").await.unwrap().text(), "opaque");
+    let spec: Value = client.get("/openapi.json").await.unwrap().json().unwrap();
+    assert!(spec["paths"]["/b"].is_object());
 }
 
 fn tracing_stub(_: &str) {}
