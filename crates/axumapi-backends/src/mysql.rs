@@ -398,7 +398,9 @@ impl TableCache {
 struct Prepared {
     /// The write itself, without `RETURNING`.
     write: CompiledQuery,
-    /// `UPDATE` / `DELETE`: the locking read of the affected rows.
+    /// `DELETE`: the locking read of the affected rows. (An `UPDATE`'s read
+    /// selects the primary key, known only once the table is looked up; see
+    /// [`read_keys`].)
     read: Option<CompiledQuery>,
 }
 
@@ -423,21 +425,18 @@ fn without_returning(plan: &WritePlan) -> WritePlan {
 fn prepare(plan: &WritePlan) -> Result<Prepared, OrmError> {
     let write = compile_write(&without_returning(plan), &MySql)?;
     let read = match plan {
-        WritePlan::Insert(_) => None,
-        WritePlan::Update(p) => Some(locking_read(&p.table, p.filter.as_ref(), &[])),
+        WritePlan::Insert(_) | WritePlan::Update(_) => None,
         WritePlan::Delete(p) => Some(locking_read(&p.table, p.filter.as_ref(), &p.returning)),
     };
     let read = read.map(|plan| compile(&plan, &MySql)).transpose()?;
     Ok(Prepared { write, read })
 }
 
-/// `SELECT columns FROM table WHERE filter FOR UPDATE`; with no `columns`
-/// the projection is a placeholder that [`write_returning`] never uses (the
-/// primary key is selected instead, see [`key_read`]).
-fn locking_read(
+/// `SELECT columns FROM table WHERE filter FOR UPDATE`.
+fn locking_read<C: Clone + Into<axumapi_orm::expr::Ident>>(
     table: &str,
     filter: Option<&Expr>,
-    columns: &[axumapi_orm::expr::Ident],
+    columns: &[C],
 ) -> QueryPlan {
     let mut plan = QueryPlan::from_table(table.to_owned());
     plan.filter = filter.cloned();
@@ -526,10 +525,7 @@ async fn write_returning(
             }
             let keys = match key_equality(info, p.filter.as_ref()) {
                 Some(keys) => vec![keys],
-                None => match read {
-                    Some(read) => read_keys(conn, info, &read).await?,
-                    None => Vec::new(),
-                },
+                None => read_keys(conn, info, p.filter.as_ref()).await?,
             };
             if keys.is_empty() {
                 return Ok(affected_result(0));
@@ -622,30 +618,18 @@ async fn generated_keys(
         .collect()
 }
 
-/// Primary keys of the rows `read` selects (a `FOR UPDATE` read of the
+/// Primary keys of the rows `filter` selects, read with `FOR UPDATE` (the
 /// filter of an `UPDATE`).
 async fn read_keys(
     conn: &mut MySqlConnection,
     info: &TableInfo,
-    read: &CompiledQuery,
+    filter: Option<&Expr>,
 ) -> Result<Vec<Vec<Value>>, OrmError> {
-    // The prepared read has no projection: swap in the key columns.
-    let mut sql = String::from("SELECT ");
-    for (i, key) in info.primary_key.iter().enumerate() {
-        if i > 0 {
-            sql.push_str(", ");
-        }
-        ident(&mut sql, key);
-    }
-    let from = read
-        .sql
-        .strip_prefix("SELECT * FROM")
-        .ok_or_else(|| QueryError::Model("unexpected locking read".into()))?;
-    sql.push_str(" FROM");
-    sql.push_str(from);
-    let rows = fetch_rows(&mut *conn, &sql, read.params.clone())
-        .await?
-        .rows;
+    let read = compile(
+        &locking_read(&info.table, filter, &info.primary_key),
+        &MySql,
+    )?;
+    let rows = fetch_rows(&mut *conn, &read.sql, read.params).await?.rows;
     rows.iter()
         .map(|row| {
             info.primary_key
