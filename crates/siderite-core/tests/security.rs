@@ -193,6 +193,13 @@ async fn optional_bearer_is_none_without_credentials() {
 }
 
 #[tokio::test]
+async fn optional_bearer_rejects_malformed_credentials() {
+    let client = TestClient::new(app());
+    let bad = call(&client, "/optional", &[("authorization", "Bearer a b")]).await;
+    assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn basic_decodes_credentials() {
     let client = TestClient::new(app());
     let auth = basic_header("ann:pa:ss");

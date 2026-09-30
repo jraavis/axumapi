@@ -33,6 +33,9 @@ pub struct ApiError {
     /// Extra response headers (for example `WWW-Authenticate`); boxed for the
     /// same reason as `errors`.
     headers: Option<Box<HeaderMap>>,
+    /// Set when the request lacks the input entirely (see
+    /// [`absent`](Self::absent)).
+    absent: bool,
 }
 
 #[derive(Serialize)]
@@ -57,6 +60,7 @@ impl ApiError {
             detail: Some(detail.into()),
             errors: None,
             headers: None,
+            absent: false,
         }
     }
 
@@ -100,6 +104,22 @@ impl ApiError {
             .get_or_insert_with(Default::default)
             .append(name, value);
         self
+    }
+
+    /// Mark this error as "the input is not there at all" rather than
+    /// "the input is there but wrong".
+    ///
+    /// `Option<T>` extractors turn absent errors into `None` and let every
+    /// other error through, so a malformed value still fails the request.
+    #[must_use]
+    pub fn absent(mut self) -> Self {
+        self.absent = true;
+        self
+    }
+
+    /// Whether this error was marked with [`absent`](Self::absent).
+    pub fn is_absent(&self) -> bool {
+        self.absent
     }
 
     /// Extra response headers attached with [`with_header`](Self::with_header).

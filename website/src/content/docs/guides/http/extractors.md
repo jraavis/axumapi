@@ -49,6 +49,24 @@ API.
 `App::docs` serves Swagger UI and ReDoc; static files are
 `App` helpers in `siderite-core` (`static_files`).
 
+## Optional extractors
+
+Wrap an extractor in `Option` to accept requests without that input.
+`Option<T>` is `None` only when the input is **absent**; input that is
+present but invalid still fails the request with `T`'s error:
+
+| Extractor | `None` when | Still an error |
+|---|---|---|
+| `Header<H>` | the header is not sent | an undecodable value (`422`) |
+| `Query<T>` | there is no query string and `T` rejects the empty input | any query string `T` rejects (`422`) |
+| `HttpBearer`, `OAuth2PasswordBearer<S>` | no `Authorization` header, or another scheme | a malformed token (`401`) |
+| `HttpBasic` | no `Authorization` header, or another scheme | undecodable credentials (`401`) |
+| `ApiKey<S>` | the key is not sent | |
+| `Security<T, S>` | its credentials are absent | `T::authenticate` fails (`401`) |
+
+`State<T>`, `Provided<T>` and `Resource<T>` never become `None`: a missing
+value is a server misconfiguration and stays an error.
+
 ## Custom extractors
 
 Implement `FromRequestParts` (or `FromRequest`) and optionally `describe` so
@@ -71,6 +89,16 @@ impl FromRequestParts for ApiKey {
 `IntoResponse::describe` works the same way (`op.add_response(..)`). The
 default `describe` documents nothing, so an undocumented extractor still
 runs.
+
+For `Option<YourExtractor>` to be `None` when the input is missing, mark
+that error with `ApiError::absent()`. Unmarked errors propagate through the
+`Option`:
+
+```rust
+let key = parts.headers.get("x-api-key").ok_or_else(|| {
+    ApiError::new(StatusCode::UNAUTHORIZED, "Not authenticated.").absent()
+})?;
+```
 
 Types used in bodies, queries, and responses derive `Schema`. Nested types
 go through `registry.subschema::<T>()`, so named types become

@@ -55,9 +55,17 @@ impl<T: FromRequestParts> FromRequest for T {
     }
 }
 
+/// Optional extraction: `None` when the input is absent, the error otherwise.
+///
+/// Only errors marked [`ApiError::absent`] become `None`; a header, query
+/// string or credential that is present but invalid still fails the request.
 impl<T: FromRequestParts> FromRequestParts for Option<T> {
     async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
-        Ok(T::from_request_parts(parts).await.ok())
+        match T::from_request_parts(parts).await {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if error.is_absent() => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Documents `T`, with everything it adds marked optional. Security
@@ -182,9 +190,12 @@ where
     T: DeserializeOwned + Send + Schema + Validate + 'static,
 {
     async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
-        let input = urlencoded_to_value(parts.uri.query().unwrap_or_default())
+        let query = parts.uri.query().unwrap_or_default();
+        let input = urlencoded_to_value(query)
             .map_err(|e| invalid("query", "query_invalid", e.to_string()))?;
-        validated(input, ValidationContext::for_text().at_root("query")).map(Query)
+        validated(input, ValidationContext::for_text().at_root("query"))
+            .map(Query)
+            .map_err(|e| if query.is_empty() { e.absent() } else { e })
     }
 
     fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {

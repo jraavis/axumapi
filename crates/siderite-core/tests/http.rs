@@ -40,6 +40,10 @@ async fn hello(Path(name): Path<String>, Query(p): Query<Params>) -> PlainText<S
     PlainText(if p.shout { name.to_uppercase() } else { name })
 }
 
+async fn maybe_shout(q: Option<Query<Params>>) -> PlainText<String> {
+    PlainText(q.map_or_else(|| "none".into(), |Query(p)| p.shout.to_string()))
+}
+
 async fn create(Json(item): Json<Item>) -> WithStatus<Json<Item>> {
     WithStatus(http::StatusCode::CREATED, Json(item))
 }
@@ -69,6 +73,7 @@ fn client() -> TestClient {
             .route("/hello/{name}", get(hello))
             .route("/items", post(create))
             .route("/missing", get(missing))
+            .route("/maybe-shout", get(maybe_shout))
             .route("/counter", get(counter))
             .route("/nostate", get(unregistered))
             .nest("/api/v1", v1)
@@ -208,4 +213,14 @@ async fn malformed_json_is_still_json_invalid() {
     let body = res.json::<Value>().unwrap();
     assert_eq!(body["errors"][0]["code"], "json_invalid");
     assert_eq!(body["errors"][0]["location"], json!(["body"]));
+}
+
+#[tokio::test]
+async fn optional_query_is_none_only_without_a_query_string() {
+    let none = client().get("/maybe-shout").await.unwrap();
+    assert_eq!(none.text(), "none");
+    let some = client().get("/maybe-shout?shout=true").await.unwrap();
+    assert_eq!(some.text(), "true");
+    let bad = client().get("/maybe-shout?shout=maybe").await.unwrap();
+    assert_eq!(bad.status, 422);
 }

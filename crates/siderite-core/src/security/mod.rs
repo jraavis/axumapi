@@ -96,7 +96,7 @@ pub(crate) fn bearer_token(parts: &Parts) -> Result<String, ApiError> {
     match authorization_credentials(parts, "Bearer") {
         Some(token) if !token.contains(char::is_whitespace) => Ok(token.to_owned()),
         Some(_) => Err(unauthorized("Bearer", "Invalid bearer token.")),
-        None => Err(unauthorized("Bearer", NOT_AUTHENTICATED)),
+        None => Err(unauthorized("Bearer", NOT_AUTHENTICATED).absent()),
     }
 }
 

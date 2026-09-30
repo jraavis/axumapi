@@ -86,7 +86,7 @@ fn decode_basic(encoded: &str) -> Option<HttpBasic> {
 impl FromRequestParts for HttpBasic {
     async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
         let encoded = authorization_credentials(parts, "Basic")
-            .ok_or_else(|| unauthorized(BASIC_CHALLENGE, NOT_AUTHENTICATED))?;
+            .ok_or_else(|| unauthorized(BASIC_CHALLENGE, NOT_AUTHENTICATED).absent())?;
         decode_basic(encoded)
             .ok_or_else(|| unauthorized(BASIC_CHALLENGE, "Invalid basic credentials."))
     }

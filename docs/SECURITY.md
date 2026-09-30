@@ -132,3 +132,7 @@ object are all required. Extractors follow the handler signature:
 | `HttpBearer, ApiKey<K>` | `[{"HTTPBearer": [], "K": []}]` (both required) |
 | `Option<HttpBearer>` | `[{}, {"HTTPBearer": []}]` (anonymous or bearer) |
 | `ApiKey<K>, Option<HttpBearer>` | `[{"K": []}, {"K": [], "HTTPBearer": []}]` |
+
+At runtime, `Option<Scheme>` is `None` only when no credentials are sent.
+Malformed credentials, or a `Security<T, S>` whose `authenticate` rejects
+them, still return `401`.

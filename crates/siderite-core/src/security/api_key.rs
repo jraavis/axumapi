@@ -116,7 +116,7 @@ impl<S: ApiKeySpec> FromRequestParts for ApiKey<S> {
             }
         };
         key.map(Self::new)
-            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "Not authenticated."))
+            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "Not authenticated.").absent())
     }
 
     fn describe(op: &mut Operation, registry: &mut SchemaRegistry) {

@@ -86,6 +86,10 @@ async fn optional_ua(ua: Option<Header<UserAgent>>) -> PlainText<String> {
     )
 }
 
+async fn maybe_foo(h: Option<Header<OnlyFoo>>) -> &'static str {
+    if h.is_some() { "foo" } else { "none" }
+}
+
 async fn need_foo(_h: Header<OnlyFoo>) -> &'static str {
     "ok"
 }
@@ -174,6 +178,7 @@ fn io_app() -> App {
         .route("/ua", get(need_ua))
         .route("/ua-optional", get(optional_ua))
         .route("/foo", get(need_foo))
+        .route("/foo-optional", get(maybe_foo))
         .route("/accept", get(need_accept))
         .route("/cookies", get(read_cookies))
         .route("/set-cookie", get(set_cookie))
@@ -703,4 +708,18 @@ async fn raw_body_over_default_limit_is_413_problem() {
         .unwrap();
     assert_eq!(res.status, 413);
     assert_eq!(problem(&res)["status"], 413);
+}
+
+#[tokio::test]
+async fn optional_header_rejects_invalid_values() {
+    let missing = client().get("/foo-optional").await.unwrap();
+    assert_eq!(missing.text(), "none");
+    let bad = ::http::Request::builder()
+        .uri("/foo-optional")
+        .header("x-foo", "bar")
+        .body(Body::empty())
+        .unwrap();
+    let res = client().send(bad).await.unwrap();
+    assert_eq!(res.status, 422);
+    assert_eq!(problem(&res)["errors"][0]["code"], "header_invalid");
 }

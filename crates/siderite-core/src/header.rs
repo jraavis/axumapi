@@ -31,15 +31,15 @@ pub trait NamedHeader: Sized + Send {
 ///
 /// Missing headers yield `422` with code `missing` and location
 /// `["header", H::NAME]`. Invalid values yield code `header_invalid`.
-/// Wrap in [`Option`] to make the header optional; extraction failures
-/// become `None` via the blanket [`FromRequestParts`] impl.
+/// Wrap in [`Option`] to make the header optional: a missing header becomes
+/// `None`, an invalid one is still `422`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header<H: NamedHeader>(pub H);
 
 impl<H: NamedHeader> FromRequestParts for Header<H> {
     async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
         let value = parts.headers.get(H::NAME).ok_or_else(|| {
-            header_error(H::NAME, "missing", format!("missing header `{}`", H::NAME))
+            header_error(H::NAME, "missing", format!("missing header `{}`", H::NAME)).absent()
         })?;
         let text = value.to_str().map_err(|_| {
             header_error(

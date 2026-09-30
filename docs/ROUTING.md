@@ -147,6 +147,12 @@ impl FromRequestParts for ApiKey {
 The default `describe` documents nothing, so an undocumented extractor
 still works.
 
+`Option<T>` makes an extractor optional. It is `None` only when `T` fails
+with an error marked `ApiError::absent()` (a missing header, query string or
+credential); any other error, such as a malformed value, still fails the
+request. Custom extractors call `.absent()` on their "input missing" error to
+opt in.
+
 Types used in bodies, queries and responses derive `Schema` (see below);
 nested types are always obtained through `registry.subschema::<T>()`, so named
 types become `components.schemas` entries referenced by `$ref`.

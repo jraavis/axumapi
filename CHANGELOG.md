@@ -12,6 +12,7 @@
 - GitHub Pages documentation site (`website/`, Astro Starlight) covering getting started, tutorials, HTTP/data/production guides, reference, internals, and contributing. Deployed from `.github/workflows/pages.yml` with rustdoc at `/api/`.
 
 ### Fixed
+- **Extractors:** `Option<T>` is `None` only when the input is absent (a missing header, query string or credential). Present but invalid input now fails with `T`'s error instead of becoming `None`. `ApiError::absent()` / `is_absent()` mark and detect such errors. **Breaking:** `Option<Security<..>>` with an invalid token returns `401` instead of treating the request as anonymous, and custom extractors must mark their missing-input error with `.absent()` to keep returning `None`.
 - Security review fixes:
   - **Body:** `Body::into_bytes` stops at `DEFAULT_BODY_LIMIT` (2 MiB) instead of buffering without limit; `Body::into_bytes_limited` sets another cap. `BodyError::is_too_large` reports the overflow and `?` into `ApiError` returns a `413` problem response. **Breaking:** callers reading larger bodies must use `into_bytes_limited`.
   - **Config:** secret detection in error messages matches key substrings and suffixes (`database_url`, `access_token`, `private-key`, `smtp_pass`, `*_dsn`, ...), and out-of-range integer errors are redacted too.

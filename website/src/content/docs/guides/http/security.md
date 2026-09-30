@@ -145,6 +145,10 @@ object are all required:
 | `Option<HttpBearer>` | `[{}, {"HTTPBearer": []}]` (anonymous or bearer) |
 | `ApiKey<K>, Option<HttpBearer>` | `[{"K": []}, {"K": [], "HTTPBearer": []}]` |
 
+At runtime, `Option<Scheme>` is `None` only when no credentials are sent.
+Malformed credentials, or a `Security<T, S>` whose `authenticate` rejects
+them, still return `401`; an invalid token never falls back to anonymous.
+
 `Security<T, S>` re-emits the scheme its credentials add, listing
 `S::SCOPES` on that same requirement object. Duplicate scheme names on one
 operation collapse to a single entry.
