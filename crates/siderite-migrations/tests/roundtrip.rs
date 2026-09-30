@@ -360,6 +360,116 @@ async fn sqlite_rebuild_of_parent_keeps_cascade_children() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A pre-existing FK violation in an unrelated row must not block a rebuild.
+///
+/// The pre-commit `foreign_key_check` is scoped to *new* violations: the
+/// orphan below predates the migration, so widening `authors.name` must
+/// succeed and leave the orphan untouched.
+#[tokio::test]
+async fn sqlite_rebuild_ignores_preexisting_violations() {
+    let dir = temp_dir();
+    let db_path = dir.join("app.db");
+    let url = format!("sqlite://{}?mode=rwc", db_path.display());
+    let db = Db::new(SqliteBackend::connect(&url).await.unwrap());
+    let models: &[&'static siderite_orm::ModelMeta] = &[author_meta(), book_meta()];
+    let first = make_migrations(models, &dir, None, false).unwrap().unwrap();
+    cli::run(models, &db, &dir, ["migrate".to_owned()])
+        .await
+        .unwrap();
+
+    db.raw_execute(
+        "INSERT INTO authors (name) VALUES (?)",
+        vec![Value::Text("Ann".into())],
+    )
+    .await
+    .unwrap();
+    // `PRAGMA foreign_keys` is per-connection, so the OFF/ON pair must wrap
+    // the orphan insert in one script on one pooled connection.
+    db.execute_script(
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO books (title, author_id) VALUES ('Ghost', 999);
+         PRAGMA foreign_keys = ON;",
+    )
+    .await
+    .unwrap();
+
+    let mut name = ProjectState::from_metas(&[author_meta()])
+        .model("Author")
+        .unwrap()
+        .field("name")
+        .unwrap()
+        .clone();
+    name.max_length = Some(200);
+    let alter = Migration::new(
+        "0002_widen_author_name",
+        vec![first.id],
+        vec![Operation::AlterField {
+            model: "Author".into(),
+            name: "name".into(),
+            field: name,
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &alter).unwrap();
+    cli::run(models, &db, &dir, ["migrate".to_owned()])
+        .await
+        .unwrap();
+
+    let ghosts = db
+        .raw_sql("SELECT title FROM books WHERE title = 'Ghost'", vec![])
+        .await
+        .unwrap();
+    assert_eq!(ghosts.rows.len(), 1, "pre-existing orphan must survive");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// When foreign keys were already off, the pre-commit check is skipped.
+#[tokio::test]
+async fn sqlite_rebuild_skips_check_when_fks_were_off() {
+    let db = memory_db().await;
+    db.execute_script(
+        "CREATE TABLE authors (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(100) NOT NULL);
+         CREATE TABLE books (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, author_id BIGINT NOT NULL REFERENCES authors (id) ON DELETE CASCADE, pages INTEGER);",
+    )
+    .await
+    .unwrap();
+    // Single-connection `:memory:` pool: this OFF persists for the migration.
+    db.execute_script(
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO authors (name) VALUES ('Ann');
+         INSERT INTO books (title, author_id) VALUES ('Ghost', 999);",
+    )
+    .await
+    .unwrap();
+
+    let dir = temp_dir();
+    let alter = Migration::new(
+        "0001_widen",
+        Vec::new(),
+        vec![Operation::RunSQL {
+            sql: "CREATE TABLE t (n INTEGER)".into(),
+            reverse_sql: Some("DROP TABLE t".into()),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &alter).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    let ghosts = db
+        .raw_sql("SELECT title FROM books WHERE title = 'Ghost'", vec![])
+        .await
+        .unwrap();
+    assert_eq!(ghosts.rows.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Two concurrent migrators must apply each migration once.
 #[tokio::test]
 async fn concurrent_sqlite_migrate_applies_once() {

@@ -153,10 +153,17 @@ macro_rules! with_schema_conn {
 ///
 /// SQLite ignores `PRAGMA foreign_keys` inside a transaction, so the pragma
 /// is applied *before* `BEGIN` and restored after commit or rollback.
+///
+/// The pre-commit `foreign_key_check` is scoped to violations this schema
+/// change introduced: the count at open is the baseline, and commit fails
+/// only when it grows. Pre-existing violations in unrelated tables must not
+/// block every future migration. When foreign keys were already off
+/// (`restore_fk == 0`) the check is skipped entirely.
 struct SqliteSchemaTransaction {
     conn: tokio::sync::Mutex<Option<PoolConnection<sqlx::Sqlite>>>,
     restore_fk: i64,
     in_txn: bool,
+    fk_baseline: Option<i64>,
 }
 
 impl SqliteSchemaTransaction {
@@ -166,6 +173,18 @@ impl SqliteSchemaTransaction {
             .fetch_one(&mut *conn)
             .await
             .map_err(map_error)?;
+        // Baseline for the pre-commit check: only *new* violations fail the
+        // migration. Skipped when FKs were already off (nothing to enforce).
+        let fk_baseline: Option<i64> = if restore_fk == 0 {
+            None
+        } else {
+            Some(
+                sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .map_err(map_error)?,
+            )
+        };
         set_foreign_keys(&mut conn, 0).await?;
         if transactional
             && let Err(err) =
@@ -178,6 +197,7 @@ impl SqliteSchemaTransaction {
             conn: tokio::sync::Mutex::new(Some(conn)),
             restore_fk,
             in_txn: transactional,
+            fk_baseline,
         })
     }
 
@@ -236,20 +256,24 @@ impl Executor for SqliteSchemaTransaction {
 impl Transaction for SqliteSchemaTransaction {
     async fn commit(&self) -> Result<(), OrmError> {
         let mut conn = self.take().await?;
-        let violations = sqlx::query("PRAGMA foreign_key_check")
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(map_error)?;
-        if !violations.is_empty() {
-            if self.in_txn {
-                drop(SqliteTransactionManager::rollback(&mut *conn).await);
+        if let Some(baseline) = self.fk_baseline {
+            let violations = sqlx::query("PRAGMA foreign_key_check")
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(map_error)?;
+            if violations.len() as i64 > baseline {
+                if self.in_txn {
+                    drop(SqliteTransactionManager::rollback(&mut *conn).await);
+                }
+                drop(set_foreign_keys(&mut conn, self.restore_fk).await);
+                return Err(BackendError::Constraint(format!(
+                    "SQLite foreign_key_check found {} new violation(s) after schema change ({} total): {}",
+                    violations.len() as i64 - baseline,
+                    violations.len(),
+                    violation_summary(&violations),
+                ))
+                .into());
             }
-            drop(set_foreign_keys(&mut conn, self.restore_fk).await);
-            return Err(BackendError::Constraint(format!(
-                "SQLite foreign_key_check failed after schema change ({} violation(s))",
-                violations.len()
-            ))
-            .into());
         }
         if self.in_txn
             && let Err(err) = SqliteTransactionManager::commit(&mut *conn).await
@@ -273,6 +297,26 @@ impl Transaction for SqliteSchemaTransaction {
         let restore = set_foreign_keys(&mut conn, self.restore_fk).await;
         rollback?;
         restore
+    }
+}
+
+/// One-line summary of `PRAGMA foreign_key_check` rows for error messages.
+fn violation_summary(violations: &[SqliteRow]) -> String {
+    let mut locations: Vec<String> = violations
+        .iter()
+        .filter_map(|row| {
+            let table: String = row.try_get("table").ok()?;
+            let rowid: i64 = row.try_get("rowid").ok()?;
+            Some(format!("{table} row {rowid}"))
+        })
+        .collect();
+    locations.sort();
+    locations.dedup();
+    locations.truncate(5);
+    if locations.is_empty() {
+        "see PRAGMA foreign_key_check".to_owned()
+    } else {
+        locations.join(", ")
     }
 }
 
