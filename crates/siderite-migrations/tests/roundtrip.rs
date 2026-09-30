@@ -607,6 +607,19 @@ async fn concurrent_sqlite_migrate_applies_once() {
         1,
         "one replica applies, the other sees history: {ra:?} {rb:?}"
     );
+    for r in [&ra, &rb] {
+        // `sql` must describe what was planned under the lock, not the
+        // pre-lock preview: the loser applies nothing, so it must report
+        // no SQL either.
+        if r.applied.is_empty() {
+            assert!(
+                r.sql.is_empty(),
+                "loser must not report stale pre-lock SQL: {r:?}"
+            );
+        } else {
+            assert!(!r.sql.is_empty(), "winner must report its SQL: {r:?}");
+        }
+    }
     let shown = Migrator::new(&db, &graph).show().await.unwrap();
     assert_eq!(shown.len(), 1);
     assert!(shown[0].1);

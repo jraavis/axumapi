@@ -76,26 +76,11 @@ impl<'a> Migrator<'a> {
         dry_run: bool,
     ) -> Result<Report, MigrationError> {
         self.require_backend()?;
-        let history = self.load_history().await?;
-        self.verify_checksums(&history)?;
-        let plan = self.forward_plan(&history, target)?;
-        let mut state = replay(self.graph, &history)?;
-        let mut sql = Vec::new();
-        if !history.table_exists {
-            sql.push(create_history_sql(self.kind()));
-        }
-        for id in &plan {
-            let migration = self.require_migration(id)?;
-            sql.extend(schema_editor::statements(
-                self.kind(),
-                &state,
-                &migration.operations,
-            )?);
-            for op in &migration.operations {
-                op.apply_to_state(&mut state)?;
-            }
-        }
         if dry_run {
+            let history = self.load_history().await?;
+            self.verify_checksums(&history)?;
+            let plan = self.forward_plan(&history, target)?;
+            let (sql, _) = self.plan_sql(&history, &plan)?;
             return Ok(Report {
                 planned: plan,
                 sql,
@@ -106,15 +91,24 @@ impl<'a> Migrator<'a> {
         self.with_lock(|session| {
             let this = self;
             async move {
-                if !this.history_table_exists_on(&session).await? {
+                let created_history = if !this.history_table_exists_on(&session).await? {
                     session
                         .execute_script(&create_history_sql(this.kind()))
                         .await?;
-                }
+                    true
+                } else {
+                    false
+                };
                 let history = this.load_history_from(&session).await?;
                 this.verify_checksums(&history)?;
                 let plan = this.forward_plan(&history, target)?;
-                let mut state = replay(this.graph, &history)?;
+                // Render under the lock from the re-read plan: the pre-lock
+                // preview above may be stale when a concurrent replica
+                // applied migrations in between.
+                let (mut sql, mut state) = this.plan_sql(&history, &plan)?;
+                if created_history {
+                    sql.insert(0, create_history_sql(this.kind()));
+                }
                 let mut applied = Vec::new();
                 for id in &plan {
                     let migration = this.require_migration(id)?.clone();
@@ -147,16 +141,11 @@ impl<'a> Migrator<'a> {
         dry_run: bool,
     ) -> Result<Report, MigrationError> {
         self.require_backend()?;
-        let history = self.load_history().await?;
-        self.verify_checksums(&history)?;
-        let plan = self.rollback_plan(&history, target, steps)?;
-        let mut sql = Vec::new();
-        for id in &plan {
-            let migration = self.require_migration(id)?;
-            let state_before = state_before_migration(self.graph, &history, id)?;
-            sql.extend(reverse_sql(self.kind(), migration, &state_before)?);
-        }
         if dry_run {
+            let history = self.load_history().await?;
+            self.verify_checksums(&history)?;
+            let plan = self.rollback_plan(&history, target, steps)?;
+            let sql = self.rollback_sql(&history, &plan)?;
             return Ok(Report {
                 planned: plan,
                 sql,
@@ -167,14 +156,21 @@ impl<'a> Migrator<'a> {
         self.with_lock(|session| {
             let this = self;
             async move {
-                if !this.history_table_exists_on(&session).await? {
+                let created_history = if !this.history_table_exists_on(&session).await? {
                     session
                         .execute_script(&create_history_sql(this.kind()))
                         .await?;
-                }
+                    true
+                } else {
+                    false
+                };
                 let history = this.load_history_from(&session).await?;
                 this.verify_checksums(&history)?;
                 let plan = this.rollback_plan(&history, target, steps)?;
+                let mut sql = this.rollback_sql(&history, &plan)?;
+                if created_history {
+                    sql.insert(0, create_history_sql(this.kind()));
+                }
                 let mut unapplied = Vec::new();
                 for id in &plan {
                     let migration = this.require_migration(id)?.clone();
@@ -263,6 +259,51 @@ impl<'a> Migrator<'a> {
         self.graph
             .get(id)
             .ok_or_else(|| MigrationError::usage(format!("unknown migration `{id}`")))
+    }
+
+    /// Render `plan` to SQL, replaying project state from `history`.
+    ///
+    /// Returns the statements and the pre-plan state (callers feed it to
+    /// `apply_one`, which advances it migration by migration so rendering
+    /// and execution agree).
+    fn plan_sql(
+        &self,
+        history: &History,
+        plan: &[String],
+    ) -> Result<(Vec<String>, ProjectState), MigrationError> {
+        let state = replay(self.graph, history)?;
+        let mut render = state.clone();
+        let mut sql = Vec::new();
+        if !history.table_exists {
+            sql.push(create_history_sql(self.kind()));
+        }
+        for id in plan {
+            let migration = self.require_migration(id)?;
+            sql.extend(schema_editor::statements(
+                self.kind(),
+                &render,
+                &migration.operations,
+            )?);
+            for op in &migration.operations {
+                op.apply_to_state(&mut render)?;
+            }
+        }
+        Ok((sql, state))
+    }
+
+    /// Render reverse SQL for `plan` from `history`.
+    fn rollback_sql(
+        &self,
+        history: &History,
+        plan: &[String],
+    ) -> Result<Vec<String>, MigrationError> {
+        let mut sql = Vec::new();
+        for id in plan {
+            let migration = self.require_migration(id)?;
+            let state_before = state_before_migration(self.graph, history, id)?;
+            sql.extend(reverse_sql(self.kind(), migration, &state_before)?);
+        }
+        Ok(sql)
     }
 
     fn forward_plan(
