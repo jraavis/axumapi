@@ -156,8 +156,12 @@ tokens, and passwords in constant time (for example with the `subtle`
 crate), not with `==`. Store password hashes, not passwords, and compare
 hashes with a purpose-built verifier.
 
-If you cache GET responses with `RouteCache`, register every custom
-authentication header with `bypass_header`. See [Cache](/axumapi/guides/production/cache/).
+If you cache GET responses with `RouteCache`, credential-like headers
+(`Authorization`, `Cookie`, `X-API-Key`, and names containing `auth`,
+`token`, `session`, `jwt`, `secret`, `api-key` or `access-key`) skip the
+cache automatically. Register any other header that decides who may see a
+response, such as `X-Tenant` or `X-Signature`, with `bypass_header`. See
+[Cache](/axumapi/guides/production/cache/).
 
 ## See also
 

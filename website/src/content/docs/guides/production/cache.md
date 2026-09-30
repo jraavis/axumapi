@@ -56,19 +56,25 @@ let app = App::new()
     .routes(routes![list_items])
     .layer(
         RouteCache::new(MemoryCache::new(1024), Duration::from_secs(30))
-            .bypass_header(http::HeaderName::from_static("x-tenant-token"))
+            .bypass_header(http::HeaderName::from_static("x-tenant"))
             .max_body_bytes(256 * 1024),
     );
 ```
 
-- **Key:** method, URI (path and query), and the request’s `Accept` and
-  `Accept-Encoding` values.
+- **Key:** method, scheme, `Host`, path and query, and the request’s `Accept`
+  and `Accept-Encoding` values. Each part is length-prefixed, so virtual
+  hosts sharing one cache never see each other's responses and different
+  header values cannot collide.
 - **Bypass:** requests carrying credentials skip the cache:
-  `Authorization`, `Proxy-Authorization`, `Cookie`, `X-API-Key`, and any
-  header added with `bypass_header`. **Register every custom authentication
-  header** (for example the header name of an `ApiKey` scheme). Otherwise
-  an authenticated response would be stored and served to anonymous
-  callers.
+  `Authorization`, `Proxy-Authorization`, `Cookie`, `X-API-Key`, any header
+  whose name contains `auth`, `token`, `session`, `jwt`, `secret`,
+  `api-key`, `apikey` or `access-key` (so `X-Auth-Token`, `X-Session-Id`
+  and `X-Jwt` are covered), and any header added with `bypass_header`.
+- **Register every other credential header** with `bypass_header`. Names
+  outside the list above, such as `X-Tenant`, `X-Signature` or
+  `X-Client-Id`, are not detected. If one of them decides who may see a
+  response, an authenticated response would be stored and served to
+  anonymous callers.
 - **Stored only when** the status is `200`, there is no `Set-Cookie`, and
   `Cache-Control` has neither `no-store` nor `private`. `Vary` may name
   only `Accept` or `Accept-Encoding`. The body length must be known and at

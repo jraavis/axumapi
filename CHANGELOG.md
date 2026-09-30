@@ -6,6 +6,12 @@
 - GitHub Pages documentation site (`website/`, Astro Starlight) covering getting started, tutorials, HTTP/data/production guides, reference, internals, and contributing. Deployed from `.github/workflows/pages.yml` with rustdoc at `/api/`.
 
 ### Fixed
+- Security review fixes:
+  - **Body:** `Body::into_bytes` stops at `DEFAULT_BODY_LIMIT` (2 MiB) instead of buffering without limit; `Body::into_bytes_limited` sets another cap. `BodyError::is_too_large` reports the overflow and `?` into `ApiError` returns a `413` problem response. **Breaking:** callers reading larger bodies must use `into_bytes_limited`.
+  - **Config:** secret detection in error messages matches key substrings and suffixes (`database_url`, `access_token`, `private-key`, `smtp_pass`, `*_dsn`, ...), and out-of-range integer errors are redacted too.
+  - **Validation:** `#[field(url)]` now rejects values that are not absolute URLs (`url_parsing`). **Breaking:** `Constraint` has a new `Url` variant.
+  - **RouteCache:** the key includes scheme and `Host` and is length-prefixed, so virtual hosts sharing a cache stay isolated and split header values cannot collide. Headers whose names look like credentials (`X-Auth-Token`, `X-Session-Id`, ...) bypass the cache by default; other credential headers still need `bypass_header`.
+  - **Observability:** the docs routes (`/openapi.json`, `/docs`, `/redoc`) record their matched route in `http.request` spans instead of `<unmatched>`.
 - Phase 6 review fixes:
   - **RouteCache:** requests carrying `X-API-Key`, `Proxy-Authorization` or a header registered with `bypass_header` skip the cache. Keys include `Accept` and `Accept-Encoding`, and responses that `Vary` on other headers are not cached. Streaming bodies and bodies above `max_body_bytes` are never buffered. Cached `HEAD` responses keep the original `Content-Length`.
   - **Security:** the schemes of one handler form a single requirement object (all are required); `Option<Scheme>` adds an anonymous alternative.
