@@ -116,6 +116,8 @@ SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add or d
 
 Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding `UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
 
+A `migrate` / `rollback` run on SQLite is a single transaction (`BEGIN IMMEDIATE` doubles as the concurrency lock), so it is all-or-nothing: a failing migration rolls back the earlier ones in the same run. The per-migration `atomic` flag has no effect on SQLite.
+
 ## MySQL
 
 The MySQL schema editor (`crates/siderite-migrations/src/schema_editor/mysql.rs`) targets MySQL 8.0.31+ and mirrors the PostgreSQL editor, with the differences MySQL forces.

@@ -231,6 +231,12 @@ impl<'a> Migrator<'a> {
         F: FnOnce(Db) -> Fut,
         Fut: Future<Output = Result<Report, MigrationError>>,
     {
+        // SQLite holds a single `BEGIN IMMEDIATE` transaction for the whole
+        // run (the transaction *is* the lock): `migrate`/`rollback` there
+        // are all-or-nothing, and the per-migration `atomic` flag has no
+        // effect. PostgreSQL and MySQL hold a session lock on a
+        // non-transactional connection instead, and each migration commits
+        // on its own.
         let transactional = self.kind() == BackendKind::Sqlite;
         self.db
             .schema_change(transactional, |session| async move {
@@ -453,11 +459,12 @@ impl<'a> Migrator<'a> {
                 Ok::<_, MigrationError>(())
             }
         };
+        // Migrations always run under `with_lock`. On SQLite that holds one
+        // transaction for the whole run (the lock), so this branch always
+        // hits; on other backends each migration gets its own transaction
+        // when `runs_in_transaction`.
         if db.in_transaction() {
             run(db.clone()).await?;
-        } else if self.kind() == BackendKind::Sqlite {
-            db.schema_change(runs_in_transaction(db, &migration), run)
-                .await?;
         } else if runs_in_transaction(db, &migration) {
             db.transaction(run).await?;
         } else {
@@ -489,11 +496,10 @@ impl<'a> Migrator<'a> {
                 Ok::<_, MigrationError>(())
             }
         };
+        // See `apply_one`: SQLite always arrives inside the run-wide
+        // transaction held by `with_lock`.
         if db.in_transaction() {
             run(db.clone()).await?;
-        } else if self.kind() == BackendKind::Sqlite {
-            db.schema_change(runs_in_transaction(db, migration), run)
-                .await?;
         } else if runs_in_transaction(db, migration) {
             db.transaction(run).await?;
         } else {

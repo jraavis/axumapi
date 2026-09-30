@@ -23,6 +23,10 @@ pub struct Migration {
     /// Ordered operations.
     pub operations: Vec<Operation>,
     /// Wrap execution in a transaction when the backend supports it.
+    ///
+    /// No effect on SQLite: the whole `migrate`/`rollback` run is already
+    /// one transaction there (the lock), so a run is all-or-nothing. MySQL
+    /// never wraps DDL regardless of this flag.
     #[serde(default = "default_true")]
     pub atomic: bool,
     /// Ids this squash replaces. The loader treats this migration as applied

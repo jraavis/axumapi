@@ -137,6 +137,11 @@ parents, insert parents first) — the pre-commit check rejects newly
 created orphans and names the offending table and row. Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding
 `UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
 
+A `migrate` / `rollback` run on SQLite is a single transaction
+(`BEGIN IMMEDIATE` doubles as the concurrency lock), so it is
+all-or-nothing: a failing migration rolls back the earlier ones in the
+same run. The per-migration `atomic` flag has no effect on SQLite.
+
 ## MySQL
 
 The editor targets MySQL 8.0.31+.

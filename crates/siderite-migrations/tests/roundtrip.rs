@@ -529,6 +529,59 @@ async fn run_rust_sees_no_fk_enforcement_on_sqlite() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A failing migration rolls the whole SQLite run back.
+///
+/// `with_lock` holds a single `BEGIN IMMEDIATE` transaction for the entire
+/// run (the lock), so a later failure undoes earlier migrations too — unlike
+/// PostgreSQL, where each migration commits on its own.
+#[tokio::test]
+async fn sqlite_migrate_run_is_all_or_nothing() {
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let first = Migration::new(
+        "0001_t",
+        Vec::new(),
+        vec![Operation::RunSQL {
+            sql: "CREATE TABLE t (n INTEGER)".into(),
+            reverse_sql: Some("DROP TABLE t".into()),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    let second = Migration::new(
+        "0002_bad",
+        vec![first.id.clone()],
+        vec![
+            Operation::RunSQL {
+                sql: "CREATE TABLE u (n INTEGER)".into(),
+                reverse_sql: Some("DROP TABLE u".into()),
+            },
+            Operation::RunSQL {
+                sql: "CREATE TABLE u (n INTEGER)".into(),
+                reverse_sql: Some("DROP TABLE u".into()),
+            },
+        ],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &first).unwrap();
+    loader::write_migration(&dir, &second).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap_err();
+    assert!(
+        db.raw_sql("SELECT n FROM t", vec![]).await.is_err(),
+        "the first migration must roll back with the failed run"
+    );
+    let shown = Migrator::new(&db, &graph).show().await.unwrap();
+    assert!(shown.iter().all(|(_, applied)| !applied));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Two concurrent migrators must apply each migration once.
 #[tokio::test]
 async fn concurrent_sqlite_migrate_applies_once() {
