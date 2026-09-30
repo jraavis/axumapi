@@ -7,7 +7,7 @@ written by model signal receivers.
 ## Run
 
 ```bash
-export DATABASE_URL=postgres://axumapi:axumapi@127.0.0.1:55432/axumapi
+export DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite
 cargo run -p blog_postgres -- migrate          # apply examples/blog_postgres/migrations
 ADDR=127.0.0.1:18080 cargo run -p blog_postgres -- runserver
 ```

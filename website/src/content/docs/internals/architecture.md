@@ -3,7 +3,7 @@ title: Architecture
 description: Crate graph, connection ownership, query pipeline, and error architecture.
 ---
 
-axumapi is an async-first Rust web framework. It takes API ergonomics from
+siderite is an async-first Rust web framework. It takes API ergonomics from
 FastAPI, its validation model from Pydantic v2, and its ORM ergonomics from
 the Django ORM. It favours compilable, idiomatic Rust over Python
 look-alike syntax: where a Python feature has no natural Rust mapping, the
@@ -11,7 +11,7 @@ Rust equivalent is documented instead.
 
 Status: **Phase 6 (production tooling) complete, pre-alpha.**
 
-The crate table and dependency rules are in [Crate map](/axumapi/reference/crates/).
+The crate table and dependency rules are in [Crate map](/siderite/reference/crates/).
 This page is the “why”.
 
 ## Connection ownership
@@ -19,7 +19,7 @@ This page is the “why”.
 - An application registers backends under **aliases** (`"default"`,
   `"analytics"`) as `Arc<dyn Backend>` in a `Databases` registry
   (`App::database` / `App::databases`). A `DatabaseRouter` picks the alias
-  per model. See [Database routing](/axumapi/guides/data/database-routing/).
+  per model. See [Database routing](/siderite/guides/data/database-routing/).
 - Handlers receive a `Db` handle through dependency injection. It is a
   cheap clone of the pool handle, never a raw SQLx pool.
 - Transactions are **scoped closures**:
@@ -45,8 +45,8 @@ This page is the “why”.
 5. The executor returns `QueryResult { rows }`. Typed decoding is
    `Model::from_row`.
 
-See [QueryPlan IR](/axumapi/internals/query-plan/) and
-[Typed field constants](/axumapi/internals/typed-fields/).
+See [QueryPlan IR](/siderite/internals/query-plan/) and
+[Typed field constants](/siderite/internals/typed-fields/).
 
 ## Query result decoding
 
@@ -111,6 +111,6 @@ Library code has no `unwrap` / `expect`: clippy `unwrap_used` and
 
 ## See also
 
-- [Crate map](/axumapi/reference/crates/)
-- [Errors](/axumapi/guides/http/errors/)
-- [Typed field constants](/axumapi/internals/typed-fields/)
+- [Crate map](/siderite/reference/crates/)
+- [Errors](/siderite/guides/http/errors/)
+- [Typed field constants](/siderite/internals/typed-fields/)

@@ -1,6 +1,6 @@
 # Security
 
-Security schemes are extractors that document themselves, in the spirit of FastAPI's `fastapi.security`. Reading credentials and describing them in OpenAPI happen in one place, so the generated document mirrors the handler signature. Items live in `axumapi_core::security` and are re-exported as `axumapi::security`; the commonly used types are also at the crate root.
+Security schemes are extractors that document themselves, in the spirit of FastAPI's `fastapi.security`. Reading credentials and describing them in OpenAPI happen in one place, so the generated document mirrors the handler signature. Items live in `siderite_core::security` and are re-exported as `siderite::security`; the commonly used types are also at the crate root.
 
 The extractors **read** credentials. They never decide whether the credentials are valid. To do that, implement `Authenticate` and use `Security<T, S>` (see below).
 
@@ -23,7 +23,7 @@ Details:
 * `Debug` on every credential type prints `[REDACTED]` instead of tokens, keys, passwords and client secrets.
 
 ```rust
-use axumapi::security::{ApiKey, ApiKeyLocation, ApiKeySpec};
+use siderite::security::{ApiKey, ApiKeyLocation, ApiKeySpec};
 
 struct PartnerKey;
 
@@ -41,7 +41,7 @@ async fn feed(key: ApiKey<PartnerKey>) -> String {
 An OAuth2 password flow pairs a token endpoint with a bearer extractor:
 
 ```rust
-use axumapi::security::{OAuth2PasswordBearer, OAuth2PasswordRequestForm, OAuth2Spec};
+use siderite::security::{OAuth2PasswordBearer, OAuth2PasswordRequestForm, OAuth2Spec};
 
 struct Oauth;
 
@@ -65,8 +65,8 @@ async fn items(token: OAuth2PasswordBearer<Oauth>) -> String {
 ## Verifying credentials: `Authenticate` and `Security`
 
 ```rust
-use axumapi::security::{Authenticate, HttpBearer, Security, check_scopes};
-use axumapi::{ApiError, scopes};
+use siderite::security::{Authenticate, HttpBearer, Security, check_scopes};
+use siderite::{ApiError, scopes};
 use http::request::Parts;
 
 struct CurrentUser(String);

@@ -1,6 +1,6 @@
 # Signals
 
-Model signals are the ORM's counterpart of Django's `pre_save`, `post_save`, `pre_delete`, `post_delete` and `m2m_changed`. Items live in `axumapi_orm::signals` (`axumapi::orm::signals`).
+Model signals are the ORM's counterpart of Django's `pre_save`, `post_save`, `pre_delete`, `post_delete` and `m2m_changed`. Items live in `siderite_orm::signals` (`siderite::orm::signals`).
 
 ## Kinds
 
@@ -19,9 +19,9 @@ Model signals are the ORM's counterpart of Django's `pre_save`, `post_save`, `pr
 A receiver is an async function over one model. `#[receiver(signal, model = M)]` keeps the function and generates `fn <name>_receiver() -> Receiver`:
 
 ```rust
-use axumapi::orm::signals::{SignalError, SignalEvent, Signals};
-use axumapi::prelude::*;
-use axumapi::receiver;
+use siderite::orm::signals::{SignalError, SignalEvent, Signals};
+use siderite::prelude::*;
+use siderite::receiver;
 
 #[receiver(post_save, model = User)]
 async fn audit(user: &User, event: &SignalEvent<'_>) -> Result<(), SignalError> {

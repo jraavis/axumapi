@@ -3,7 +3,7 @@ title: QueryPlan IR
 description: Backend-neutral QueryPlan, expression nodes, compiler rules, and how QuerySet builds a plan.
 ---
 
-`axumapi_orm::QueryPlan` is the single backend-neutral representation that
+`siderite_orm::QueryPlan` is the single backend-neutral representation that
 every high-level query compiles into.
 
 - **Immutable builder.** Each method takes and returns `self`. `clone()` a
@@ -101,6 +101,6 @@ whose members are themselves grouped with different names.
 
 ## See also
 
-- [QuerySets](/axumapi/guides/data/querysets/)
-- [Backends](/axumapi/guides/data/backends/)
-- [Typed field constants](/axumapi/internals/typed-fields/)
+- [QuerySets](/siderite/guides/data/querysets/)
+- [Backends](/siderite/guides/data/backends/)
+- [Typed field constants](/siderite/internals/typed-fields/)

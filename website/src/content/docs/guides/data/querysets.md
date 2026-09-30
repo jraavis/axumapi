@@ -21,7 +21,7 @@ Mistakes that can only be detected while building (an unknown annotation
 name, a filter on a window function) are remembered and returned by the
 next terminal method, so builder chains stay infallible.
 
-The method list with signatures is in [QuerySet API](/axumapi/reference/queryset/).
+The method list with signatures is in [QuerySet API](/siderite/reference/queryset/).
 
 ## Lookups
 
@@ -40,7 +40,7 @@ inherent methods that exist only where they make sense:
 
 Boolean combination is `.and()` / `.or()` on `Expr`. Related traversal is
 `Post::author.join(Author::name)` — a field of `Post` typed `String`,
-resolved into a `JOIN` when compiled. See [Relations](/axumapi/guides/data/relations/).
+resolved into a `JOIN` when compiled. See [Relations](/siderite/guides/data/relations/).
 
 ## Reads
 
@@ -83,7 +83,7 @@ User::objects(&db)
 - `using(&db)` rebinds the queryset to a handle you already hold.
 - `distinct_on([User::name])` needs `Feature::DistinctOn` (PostgreSQL).
 - `select_for_update()`, `nowait()`, `skip_locked()` need row locking and
-  belong inside `Db::transaction`. See [Transactions](/axumapi/guides/data/transactions/).
+  belong inside `Db::transaction`. See [Transactions](/siderite/guides/data/transactions/).
 
 ## Annotations and grouping
 
@@ -98,7 +98,7 @@ the model’s default ordering is dropped. Group with
 `project([..]).annotate(..)`. A filter on a window function is an error.
 
 ```rust
-use axumapi::orm::expr::Aggregate;
+use siderite::orm::expr::Aggregate;
 
 let row = User::objects(&db)
     .aggregate([Aggregate::Count.star().alias("n")])
@@ -127,7 +127,7 @@ transaction handle counts as its pool.
 A queryset with joins, a limit, or distinct becomes
 `WHERE pk IN (SELECT pk ..)` for `update` / `delete`. Bulk operations and
 queryset `update` / `delete` send **no signals** — they never load
-instances. See [Signals](/axumapi/guides/data/signals/).
+instances. See [Signals](/siderite/guides/data/signals/).
 
 ## Subqueries
 
@@ -138,6 +138,6 @@ any SQL is sent.
 
 ## See also
 
-- [QuerySet API](/axumapi/reference/queryset/)
-- [QueryPlan IR](/axumapi/internals/query-plan/)
-- [Backends](/axumapi/guides/data/backends/)
+- [QuerySet API](/siderite/reference/queryset/)
+- [QueryPlan IR](/siderite/internals/query-plan/)
+- [Backends](/siderite/guides/data/backends/)

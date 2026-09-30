@@ -1,13 +1,13 @@
 # Migrations
 
-Django-inspired schema migrations. The autodetector diffs [`ModelMeta`](../crates/axumapi-orm/src/model.rs) snapshots; the executor applies JSON files through `axumapi_orm::Db`.
+Django-inspired schema migrations. The autodetector diffs [`ModelMeta`](../crates/siderite-orm/src/model.rs) snapshots; the executor applies JSON files through `siderite_orm::Db`.
 
 ## Commands
 
 Call them from the **application binary** so `makemigrations` sees compiled metadata:
 
 ```rust
-axumapi_migrations::cli::run(
+siderite_migrations::cli::run(
     &[User::META, Post::META],
     &db,
     Path::new("migrations"),
@@ -24,7 +24,7 @@ axumapi_migrations::cli::run(
 | `showmigrations` | `[X]` applied / `[ ]` pending, in graph order. |
 | `squashmigrations FROM TO [--name SLUG]` | Collapse a contiguous range into one migration with `replaces`. |
 
-The `axumapi` CLI binary runs `migrate`, `rollback`, `showmigrations` and `squashmigrations` from JSON files plus `--database-url` / `DATABASE_URL`. SQLite is always available; PostgreSQL and MySQL URLs need `axumapi-cli` built with `--features postgres` / `--features mysql`. See [CLI.md](CLI.md) for the application-side commands (`AppCli`). For `makemigrations` it prints the snippet above: the binary cannot see your models.
+The `siderite` CLI binary runs `migrate`, `rollback`, `showmigrations` and `squashmigrations` from JSON files plus `--database-url` / `DATABASE_URL`. SQLite is always available; PostgreSQL and MySQL URLs need `siderite-cli` built with `--features postgres` / `--features mysql`. See [CLI.md](CLI.md) for the application-side commands (`AppCli`). For `makemigrations` it prints the snippet above: the binary cannot see your models.
 
 `--dry-run` prints SQL (or operations) and executes nothing.
 
@@ -103,7 +103,7 @@ MySQL DDL is described in [MySQL](#mysql). Other backends (MongoDB, Redis) retur
 SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add or drop table constraints. For `AlterField`, `RemoveField`, `AddConstraint` and `DeleteConstraint` the editor:
 
 1. `PRAGMA foreign_keys = OFF`
-2. `CREATE TABLE "<table>__axumapi_new" (...)`
+2. `CREATE TABLE "<table>__siderite_new" (...)`
 3. `INSERT INTO ... SELECT` overlapping columns (with `CAST` when the type changes)
 4. `DROP TABLE` / `ALTER TABLE ... RENAME TO`
 5. Recreate indexes
@@ -115,7 +115,7 @@ Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding `UNIQUE` / `PRIMARY 
 
 ## MySQL
 
-The MySQL schema editor (`crates/axumapi-migrations/src/schema_editor/mysql.rs`) targets MySQL 8.0.31+ and mirrors the PostgreSQL editor, with the differences MySQL forces.
+The MySQL schema editor (`crates/siderite-migrations/src/schema_editor/mysql.rs`) targets MySQL 8.0.31+ and mirrors the PostgreSQL editor, with the differences MySQL forces.
 
 ### DDL is not transactional
 
@@ -156,7 +156,7 @@ InnoDB rejects `ON DELETE SET DEFAULT`, so a foreign key using it is reported as
 ## History table
 
 ```sql
-CREATE TABLE IF NOT EXISTS "axumapi_migrations" (
+CREATE TABLE IF NOT EXISTS "siderite_migrations" (
   "id" TEXT PRIMARY KEY,
   "checksum" TEXT NOT NULL,
   "applied_at" TEXT NOT NULL

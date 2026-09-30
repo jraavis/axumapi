@@ -5,8 +5,8 @@
 | Backend | SQL compile | Execution | Notes |
 |---|---|---|---|
 | SQLite | yes | yes (`SqliteBackend`, SQLx) | Row locking, regex, `DISTINCT ON`, arrays and `STDDEV` / `VARIANCE` are rejected with a capability error |
-| PostgreSQL | yes | yes (`PgBackend`, SQLx, feature `postgres`), live suite passed against `postgres:17` on 2026-09-29 | `tests/postgres.rs` runs when `DATABASE_URL` starts with `postgres` and is skipped otherwise. Example: `docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:17` then `DATABASE_URL=postgres://postgres:postgres@localhost/postgres cargo test -p axumapi-backends --all-features --test postgres` |
-| MySQL | yes | yes (`MySqlBackend`, SQLx, feature `mysql`), MySQL 8.0.31+, live suite passed against `mysql:8.4` on 2026-09-29 | `tests/mysql.rs` runs when `MYSQL_URL` (or `DATABASE_URL`) starts with `mysql`. Example: `MYSQL_URL=mysql://root@127.0.0.1:3306/axumapi_test cargo test -p axumapi-backends --all-features --test mysql` |
+| PostgreSQL | yes | yes (`PgBackend`, SQLx, feature `postgres`), live suite passed against `postgres:17` on 2026-09-29 | `tests/postgres.rs` runs when `DATABASE_URL` starts with `postgres` and is skipped otherwise. Example: `docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:17` then `DATABASE_URL=postgres://postgres:postgres@localhost/postgres cargo test -p siderite-backends --all-features --test postgres` |
+| MySQL | yes | yes (`MySqlBackend`, SQLx, feature `mysql`), MySQL 8.0.31+, live suite passed against `mysql:8.4` on 2026-09-29 | `tests/mysql.rs` runs when `MYSQL_URL` (or `DATABASE_URL`) starts with `mysql`. Example: `MYSQL_URL=mysql://root@127.0.0.1:3306/siderite_test cargo test -p siderite-backends --all-features --test mysql` |
 | MongoDB | subset, to aggregation pipelines | yes (`MongoBackend`, feature `mongodb`), MongoDB 5.0+, replica set for transactions, live suite passed against `mongo:8` as a single-node replica set on 2026-09-29 | `tests/mongodb.rs` runs when `MONGODB_URL` starts with `mongodb` |
 | Redis | not applicable | yes (`RedisStore`, feature `redis`) | A key/hash/set API; **not** a QuerySet backend. Live suite passed against `redis:7` on 2026-09-29. `tests/redis.rs` runs when `REDIS_URL` starts with `redis` (use db 15) |
 | DynamoDB | not applicable | not applicable | Design note only; not planned for v1 |
@@ -42,7 +42,7 @@ Bulk operations chunk their rows to `max_params`, so a 10 000 row `bulk_create` 
 
 ## Canonical storage forms
 
-PostgreSQL stores every `Value` natively. SQLite has fewer storage classes, so the adapter binds and expects the canonical forms from `axumapi_orm::types`. Decoding accepts both the native and the canonical form.
+PostgreSQL stores every `Value` natively. SQLite has fewer storage classes, so the adapter binds and expects the canonical forms from `siderite_orm::types`. Decoding accepts both the native and the canonical form.
 
 | Rust type | PostgreSQL | SQLite | MySQL | MongoDB |
 |---|---|---|---|---|
@@ -89,8 +89,8 @@ Two details matter in practice:
 ## MongoDB notes
 
 * Requires MongoDB 5.0+; transactions need a replica set (a single-node one is enough). No savepoints, so `bulk_create` inside a transaction is a capability error.
-* A table is a collection. The primary key column (default `id`; register others with `MongoBackend::with_keys(Keys::default().with(collection, column))`) is stored as `_id` and renamed back on read. Missing keys are generated as consecutive `i64` values from the `axumapi_counters` collection, outside the transaction, so rollbacks leave gaps; explicit keys do not advance the counter.
-* Reads compile to aggregation pipelines (`$match`, `$group`, `$sort`, `$skip`, `$limit`, `$project`). Plans are checked and compiled entirely before any I/O; see the module docs of `axumapi_backends::mongodb` for the full mapping of plan nodes.
+* A table is a collection. The primary key column (default `id`; register others with `MongoBackend::with_keys(Keys::default().with(collection, column))`) is stored as `_id` and renamed back on read. Missing keys are generated as consecutive `i64` values from the `siderite_counters` collection, outside the transaction, so rollbacks leave gaps; explicit keys do not advance the counter.
+* Reads compile to aggregation pipelines (`$match`, `$group`, `$sort`, `$skip`, `$limit`, `$project`). Plans are checked and compiled entirely before any I/O; see the module docs of `siderite_backends::mongodb` for the full mapping of plan nodes.
 * Predicates follow SQL three-valued logic: negations carry explicit non-`NULL` guards, and `= NULL` means `IS NULL`.
 * `update()`/`delete()` on a queryset with a limit, `distinct` or joins becomes `pk IN (subquery)` and is therefore a `Subqueries` capability error.
 * No foreign keys or cascades; only `_id` is unique, plus indexes made with `MongoBackend::create_unique_index`. Duplicate-key and validation failures map to `BackendError::Constraint`.

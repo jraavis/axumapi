@@ -3,13 +3,13 @@ title: Testing
 description: In-process TestClient, TestDatabase fixtures, DI overrides, and live database suites.
 ---
 
-`axumapi-testkit` drives an `App` in process, without sockets, and provides
+`siderite-testkit` drives an `App` in process, without sockets, and provides
 disposable databases. Add it as a dev-dependency.
 
 ## `TestClient`
 
 ```rust
-use axumapi_testkit::TestClient;
+use siderite_testkit::TestClient;
 
 let client = TestClient::new(app());
 let response = client.get("/users/1").await?;
@@ -23,7 +23,7 @@ client.post_json("/users", &NewUser { name: "ann".into() }).await?;
 paths, OpenAPI failures); `try_new` returns the error so a test can assert
 on it. Requests: `get`, `delete`, `post_json`,
 `post_raw(path, content_type, body)`, and `send(Request<Body>)` for
-anything else (`axumapi_testkit::http` is re-exported). A `TestResponse`
+anything else (`siderite_testkit::http` is re-exported). A `TestResponse`
 has `status`, `headers`, `body`, `json::<T>()`, `text()`, and
 `content_type()`.
 
@@ -46,13 +46,13 @@ let client = TestClient::builder(app())
 ```
 
 `override_dependency` and `override_value` are the `App` methods described
-in [Dependency injection](/axumapi/guides/http/di/). `with_database` calls
+in [Dependency injection](/siderite/guides/http/di/). `with_database` calls
 `App::database`, so handlers see it through `State<Databases>`.
 
 ## `TestDatabase`
 
 ```rust
-use axumapi_testkit::TestDatabase;
+use siderite_testkit::TestDatabase;
 
 let db = TestDatabase::sqlite_memory()
     .await?
@@ -99,9 +99,9 @@ ports so they do not collide with local servers.
 
 ```bash
 docker compose up -d --wait
-DATABASE_URL=postgres://axumapi:axumapi@127.0.0.1:55432/axumapi \
-MYSQL_URL=mysql://root:axumapi@127.0.0.1:53306/axumapi \
-MONGODB_URL='mongodb://127.0.0.1:57017/axumapi?directConnection=true' \
+DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite \
+MYSQL_URL=mysql://root:siderite@127.0.0.1:53306/siderite \
+MONGODB_URL='mongodb://127.0.0.1:57017/siderite?directConnection=true' \
 REDIS_URL=redis://127.0.0.1:56379/15 \
 cargo test --workspace --all-features -- --include-ignored
 docker compose down
@@ -118,6 +118,6 @@ The credentials in the compose file are for local testing only.
 
 ## See also
 
-- [Dependency injection](/axumapi/guides/http/di/)
-- [Backends](/axumapi/guides/data/backends/)
-- [Signals](/axumapi/guides/data/signals/)
+- [Dependency injection](/siderite/guides/http/di/)
+- [Backends](/siderite/guides/data/backends/)
+- [Signals](/siderite/guides/data/signals/)

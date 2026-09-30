@@ -1,10 +1,10 @@
 //! Model signal receivers: an audit trail for posts.
 
 use crate::models::{AuditEntry, Post};
-use axumapi::orm::ModelOps;
-use axumapi::orm::signals::{SignalError, SignalEvent, SignalKind, Signals};
-use axumapi::prelude::*;
-use axumapi::receiver;
+use siderite::orm::ModelOps;
+use siderite::orm::signals::{SignalError, SignalEvent, SignalKind, Signals};
+use siderite::prelude::*;
+use siderite::receiver;
 
 /// Append one [`AuditEntry`] through the handle of the operation, so the
 /// entry commits or rolls back together with the change it describes.

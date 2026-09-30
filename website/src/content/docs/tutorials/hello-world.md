@@ -4,7 +4,7 @@ description: Walk the hello_world example — routes, extractors, validation, an
 ---
 
 Package: `examples/hello_world`. This is the same app as
-[First application](/axumapi/start/first-app/), expanded into a checklist you can
+[First application](/siderite/start/first-app/), expanded into a checklist you can
 run.
 
 ## Run
@@ -19,7 +19,7 @@ The binary listens on `127.0.0.1:8000` unless `ADDR` is set.
 
 | Method | Path | Handler |
 |---|---|---|
-| `GET` | `/` | `index` — `PlainText("Hello, axumapi!")` |
+| `GET` | `/` | `index` — `PlainText("Hello, siderite!")` |
 | `GET` | `/hello/{name}` | `hello` — path + query (`shout`) |
 | `POST` | `/echo` | `echo` — JSON `Message` with `min_length = 1` |
 
@@ -44,4 +44,4 @@ The empty message is 422. OpenAPI lives at `/docs`, `/redoc`, and
 - `#[derive(Deserialize, Validate, Schema)]` on request bodies
 - `App::new().title(..).version(..).routes(..).run(..)`
 
-Next: [Todo on SQLite](/axumapi/tutorials/todo-sqlite/).
+Next: [Todo on SQLite](/siderite/tutorials/todo-sqlite/).

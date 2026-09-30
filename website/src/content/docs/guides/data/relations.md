@@ -105,6 +105,6 @@ Book::objects(&db).filter(Book::author.eq(id)).all().await?;
 
 ## See also
 
-- [Models](/axumapi/guides/data/models/)
-- [Signals](/axumapi/guides/data/signals/) — `m2m_changed`
-- [Backends](/axumapi/guides/data/backends/) — join support
+- [Models](/siderite/guides/data/models/)
+- [Signals](/siderite/guides/data/signals/) — `m2m_changed`
+- [Backends](/siderite/guides/data/backends/) — join support

@@ -30,7 +30,7 @@ only its own routes. Rejections from built-ins are RFC 7807 problems.
 Logging never records headers (Authorization, Cookie, API keys), query strings
 or bodies; a test asserts this. Register `request_id` before `request_logging`.
 Request spans are documented in [OBSERVABILITY.md](OBSERVABILITY.md). HTTP GET/HEAD
-response caching is `RouteCache` in `axumapi-cache`; see [CACHE.md](CACHE.md).
+response caching is `RouteCache` in `siderite-cache`; see [CACHE.md](CACHE.md).
 
 `RateLimit` is **process-local**: with N replicas the effective limit is N times
 higher and a restart resets it. The client key is the socket peer (available

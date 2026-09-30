@@ -40,7 +40,7 @@ Invalid `Json<T>`, `Query<T>`, or `Form<T>` never reaches the handler:
 }
 ```
 
-See [Validation](/axumapi/guides/http/validation/) for the pipeline and location
+See [Validation](/siderite/guides/http/validation/) for the pipeline and location
 rules.
 
 ## Building an `ApiError`
@@ -51,7 +51,7 @@ helpers) and, when a response must carry headers (for example
 extractors.
 
 Capability errors mean “this backend cannot run this plan”. They are raised
-before any I/O. See [Backends](/axumapi/guides/data/backends/).
+before any I/O. See [Backends](/siderite/guides/data/backends/).
 
 ## What is never returned to the client
 
@@ -61,6 +61,6 @@ such as an unknown database alias are 500s, not client errors.
 
 ## See also
 
-- [Security](/axumapi/guides/http/security/) — 401 / 403 from extractors
-- [Observability](/axumapi/guides/production/observability/) — what spans record
-- [Architecture](/axumapi/internals/architecture/) — error architecture
+- [Security](/siderite/guides/http/security/) — 401 / 403 from extractors
+- [Observability](/siderite/guides/production/observability/) — what spans record
+- [Architecture](/siderite/internals/architecture/) — error architecture

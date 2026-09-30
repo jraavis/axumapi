@@ -2,7 +2,7 @@
 
 Published documentation lives on GitHub Pages:
 
-**https://jraavis.github.io/axumapi/**
+**https://jraavis.github.io/siderite/**
 
 The site sources are Markdown/MDX under `website/src/content/docs/`. Edit those
 files, not the guides in this folder.

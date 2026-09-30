@@ -10,8 +10,8 @@ or a separate store for analytics. `Databases` is the registry, and a
 ## Registering databases
 
 ```rust
-use axumapi::orm::Databases;
-use axumapi::prelude::*;
+use siderite::orm::Databases;
+use siderite::prelude::*;
 
 let app = App::new()
     .database("default", primary)
@@ -36,8 +36,8 @@ otherwise (`Databases::DEFAULT`).
 ## Writing a router
 
 ```rust
-use axumapi::orm::ModelMeta;
-use axumapi::orm::router::DatabaseRouter;
+use siderite::orm::ModelMeta;
+use siderite::orm::router::DatabaseRouter;
 
 struct AppRouter;
 
@@ -103,11 +103,11 @@ A queryset turned into a subquery (`QuerySet::subquery(..)` or
 update/delete that contains a subquery from another database fails the
 same way. A transaction handle counts as its pool’s database.
 
-The [Two databases](/axumapi/tutorials/polyglot/) tutorial walks the `polyglot`
+The [Two databases](/siderite/tutorials/polyglot/) tutorial walks the `polyglot`
 example.
 
 ## See also
 
-- [CLI](/axumapi/guides/production/cli/) — `AppCli::database_router`
-- [Transactions](/axumapi/guides/data/transactions/)
-- [QuerySets](/axumapi/guides/data/querysets/)
+- [CLI](/siderite/guides/production/cli/) — `AppCli::database_router`
+- [Transactions](/siderite/guides/data/transactions/)
+- [QuerySets](/siderite/guides/data/querysets/)

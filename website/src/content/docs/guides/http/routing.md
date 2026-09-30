@@ -10,7 +10,7 @@ from those same values, so the docs cannot drift from the code.
 ## Function API
 
 ```rust
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 let app = App::new()
     .title("Users")
@@ -82,23 +82,23 @@ visibility, the macro emits:
 ```rust
 #[doc(hidden)]
 #[allow(non_snake_case, dead_code)]
-fn __axumapi_route_create_user() -> ::axumapi::Route {
-    ::axumapi::Route::new(
+fn __siderite_route_create_user() -> ::siderite::Route {
+    ::siderite::Route::new(
         "/users",
-        ::axumapi::post(create_user)
+        ::siderite::post(create_user)
             .operation_id("create_user")
             .summary("Create a user.")
             .description("Stores the user and returns it.")
             .tag("users")
-            .status(::axumapi::http::StatusCode::from_u16(201)
-                .unwrap_or(::axumapi::http::StatusCode::OK))
+            .status(::siderite::http::StatusCode::from_u16(201)
+                .unwrap_or(::siderite::http::StatusCode::OK))
             .response_model::<UserOut>(),
     )
 }
 ```
 
 `deprecated` and `hidden` add `.deprecated()` / `.hidden()`. `#[ws]` uses
-`::axumapi::get`. The `unwrap_or` fallback is unreachable: the status is
+`::siderite::get`. The `unwrap_or` fallback is unreachable: the status is
 validated at compile time.
 
 </details>
@@ -109,7 +109,7 @@ validated at compile time.
 App::new().routes(routes![create_user, users::list])
 ```
 
-expands to a `Vec` of the generated `__axumapi_route_*` functions. Only the
+expands to a `Vec` of the generated `__siderite_route_*` functions. Only the
 last path segment is rewritten (a leading `::` is kept). Generic arguments
 are rejected. `routes![]` is an empty `Vec`; a trailing comma is fine.
 
@@ -147,6 +147,6 @@ handlers by a path where they are defined (`users::list`), not through a
 
 ## See also
 
-- [Extractors and responses](/axumapi/guides/http/extractors/)
-- [OpenAPI 3.1](/axumapi/guides/http/openapi/)
-- [Dependency injection](/axumapi/guides/http/di/)
+- [Extractors and responses](/siderite/guides/http/extractors/)
+- [OpenAPI 3.1](/siderite/guides/http/openapi/)
+- [Dependency injection](/siderite/guides/http/di/)

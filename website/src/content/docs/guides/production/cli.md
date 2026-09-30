@@ -1,11 +1,11 @@
 ---
 title: CLI
-description: AppCli versus the standalone axumapi binary, commands, flags, check, and dbshell.
+description: AppCli versus the standalone siderite binary, commands, flags, check, and dbshell.
 ---
 
 Two entry points share the same flags and the migration commands.
 
-| | Standalone `axumapi` binary | `AppCli` in your application binary |
+| | Standalone `siderite` binary | `AppCli` in your application binary |
 |---|---|---|
 | Needs your `App` and models | no | yes |
 | Commands | `migrate`, `rollback`, `showmigrations`, `squashmigrations` | all of those, plus `makemigrations`, `runserver`, `routes`, `check`, `dbshell` |
@@ -22,13 +22,13 @@ error.
 ## Standalone binary
 
 ```bash
-cargo install --path crates/axumapi-cli --features postgres,mysql
-axumapi migrate --database-url postgres://app@localhost/app
-axumapi showmigrations --migrations-dir db/migrations
+cargo install --path crates/siderite-cli --features postgres,mysql
+siderite migrate --database-url postgres://app@localhost/app
+siderite showmigrations --migrations-dir db/migrations
 ```
 
 SQLite is always compiled in. PostgreSQL and MySQL are opt-in cargo
-features of `axumapi-cli`: `postgres` and `mysql`. The backend is picked by
+features of `siderite-cli`: `postgres` and `mysql`. The backend is picked by
 URL scheme (`sqlite:`, `postgres://`, `mysql://`); a URL for a backend that
 was not compiled in is an error. Error messages never contain the URL.
 `squashmigrations` only reads and writes files, so it works without a
@@ -37,8 +37,8 @@ database URL.
 ## `AppCli`
 
 ```rust
-use axumapi_cli::{AppCli, CliSettings};
-use axumapi::prelude::*;
+use siderite_cli::{AppCli, CliSettings};
+use siderite::prelude::*;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -57,7 +57,7 @@ async fn main() -> std::process::ExitCode {
 
 `AppCli::new` takes a factory: `check` builds the app more than once.
 `CliSettings` holds the listen address and database URLs by alias. Build it
-from loaded configuration with `CliSettings::from(&axumapi::config::load()?)`,
+from loaded configuration with `CliSettings::from(&siderite::config::load()?)`,
 which takes `server.addr` and every `databases.<alias>.url`. Its `Debug`
 output lists aliases only. `AppCli::run_from(args)` takes explicit
 arguments, which is handy in tests.
@@ -72,7 +72,7 @@ AppCli::new(build_app)
 ```
 
 `configure_db` runs once per connected alias, before registration.
-`database_router` installs a [DatabaseRouter](/axumapi/guides/data/database-routing/).
+`database_router` installs a [DatabaseRouter](/siderite/guides/data/database-routing/).
 
 ## Commands
 
@@ -88,7 +88,7 @@ AppCli::new(build_app)
 | `showmigrations` | `[X]` applied / `[ ]` pending |
 | `squashmigrations FROM TO [--name SLUG]` | Collapses a range. Never connects to a database |
 
-See [Migrations](/axumapi/guides/data/migrations/) for the file format and
+See [Migrations](/siderite/guides/data/migrations/) for the file format and
 reversibility.
 
 ### Global flags
@@ -144,7 +144,7 @@ Messages never contain database URLs.
 | `backend.W001` | warning | the backend has no schema migrations; `migrate` will refuse to run |
 
 Migration checks are skipped when no migrations directory is passed to
-`axumapi_cli::check`; `AppCli` always passes its own.
+`siderite_cli::check`; `AppCli` always passes its own.
 
 ## `dbshell`
 
@@ -160,6 +160,6 @@ Redis are not supported.
 
 ## See also
 
-- [Migrations](/axumapi/guides/data/migrations/)
-- [Configuration](/axumapi/guides/production/config/)
-- [Signals](/axumapi/guides/data/signals/)
+- [Migrations](/siderite/guides/data/migrations/)
+- [Configuration](/siderite/guides/production/config/)
+- [Signals](/siderite/guides/data/signals/)

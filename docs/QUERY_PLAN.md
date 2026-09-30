@@ -1,6 +1,6 @@
 # QueryPlan IR
 
-`axumapi_orm::QueryPlan` is the single backend-neutral representation that every high-level query compiles into.
+`siderite_orm::QueryPlan` is the single backend-neutral representation that every high-level query compiles into.
 
 * **Immutable builder.** Each method takes and returns `self`. `clone()` a base plan to branch safely.
 * **Pure data.** Building a plan never performs I/O.

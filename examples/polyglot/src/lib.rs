@@ -13,10 +13,10 @@
 //! `GET /users/{id}/events` joins in the application. Combining querysets of
 //! different databases is rejected (`GET /cross-database-union`).
 
-use axumapi::orm::router::DatabaseRouter;
-use axumapi::orm::{Databases, ModelMeta, OrmError, QueryError};
-use axumapi::prelude::*;
-use axumapi_migrations::{ProjectState, diff, schema_editor};
+use siderite::orm::router::DatabaseRouter;
+use siderite::orm::{Databases, ModelMeta, OrmError, QueryError};
+use siderite::prelude::*;
+use siderite_migrations::{ProjectState, diff, schema_editor};
 
 /// Alias of the users database.
 pub const USERS: &str = "default";

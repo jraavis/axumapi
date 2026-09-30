@@ -5,9 +5,9 @@ use crate::db::Conn;
 use crate::models::Comment;
 use crate::pagination::{PageParams, Paginated, paginate};
 use crate::posts::visible_post;
-use axumapi::orm::ModelOps;
-use axumapi::prelude::*;
-use axumapi::security::Security;
+use siderite::orm::ModelOps;
+use siderite::prelude::*;
+use siderite::security::Security;
 
 /// A comment as returned to clients.
 #[derive(Debug, Serialize, Schema)]

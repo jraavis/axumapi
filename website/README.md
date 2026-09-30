@@ -1,6 +1,6 @@
-# axumapi documentation site
+# siderite documentation site
 
-Astro Starlight sources for https://jraavis.github.io/axumapi/.
+Astro Starlight sources for https://jraavis.github.io/siderite/.
 
 ```bash
 cd website
@@ -10,7 +10,7 @@ bun run dev
 
 | Command | Action |
 |---|---|
-| `bun run dev` | Dev server at http://localhost:4321/axumapi/ |
+| `bun run dev` | Dev server at http://localhost:4321/siderite/ |
 | `bun run build` | Production build into `dist/` |
 | `bun run preview` | Preview the production build |
 

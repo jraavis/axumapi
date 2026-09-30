@@ -2,7 +2,7 @@
 
 Two entry points share the same flags and the migration commands.
 
-| | Standalone `axumapi` binary | `AppCli` in your application binary |
+| | Standalone `siderite` binary | `AppCli` in your application binary |
 |---|---|---|
 | Needs your `App` and models | no | yes |
 | Commands | `migrate`, `rollback`, `showmigrations`, `squashmigrations` | all of those, plus `makemigrations`, `runserver`, `routes`, `check`, `dbshell` |
@@ -15,18 +15,18 @@ Exit codes: `0` success, `1` failure (or `check` found an error), `2` usage erro
 ## Standalone binary
 
 ```bash
-cargo install --path crates/axumapi-cli --features postgres,mysql
-axumapi migrate --database-url postgres://app@localhost/app
-axumapi showmigrations --migrations-dir db/migrations
+cargo install --path crates/siderite-cli --features postgres,mysql
+siderite migrate --database-url postgres://app@localhost/app
+siderite showmigrations --migrations-dir db/migrations
 ```
 
-SQLite is always compiled in. PostgreSQL and MySQL are opt-in **cargo features** of `axumapi-cli`: `postgres` and `mysql`. The backend is picked by URL scheme (`sqlite:`, `postgres://`, `mysql://`); a URL for a backend that was not compiled in is an error. Error messages never contain the URL, which may hold a password. `squashmigrations` only reads and writes files, so it works without a database URL.
+SQLite is always compiled in. PostgreSQL and MySQL are opt-in **cargo features** of `siderite-cli`: `postgres` and `mysql`. The backend is picked by URL scheme (`sqlite:`, `postgres://`, `mysql://`); a URL for a backend that was not compiled in is an error. Error messages never contain the URL, which may hold a password. `squashmigrations` only reads and writes files, so it works without a database URL.
 
 ## `AppCli`
 
 ```rust
-use axumapi_cli::{AppCli, CliSettings};
-use axumapi::prelude::*;
+use siderite_cli::{AppCli, CliSettings};
+use siderite::prelude::*;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -43,7 +43,7 @@ async fn main() -> std::process::ExitCode {
 }
 ```
 
-`CliSettings` is a thin adapter holding the listen address and the database URLs by alias. Build it from loaded configuration with `CliSettings::from(&axumapi::config::load()?)`, which takes `server.addr` and every `databases.<alias>.url`, or set the fields by hand. Its `Debug` output lists aliases only, because URLs can contain passwords. `AppCli::run_from(args)` takes explicit arguments, which is handy in tests.
+`CliSettings` is a thin adapter holding the listen address and the database URLs by alias. Build it from loaded configuration with `CliSettings::from(&siderite::config::load()?)`, which takes `server.addr` and every `databases.<alias>.url`, or set the fields by hand. Its `Debug` output lists aliases only, because URLs can contain passwords. `AppCli::run_from(args)` takes explicit arguments, which is handy in tests.
 
 `runserver` connects every SQL alias and registers them as the app's `Databases`. Two hooks shape that registry:
 
@@ -116,7 +116,7 @@ Flags may appear anywhere and take `--flag value` or `--flag=value`.
 | `backend.E003` | error | the schema cannot be created on the `default` backend |
 | `backend.W001` | warning | the backend has no schema migrations; `migrate` will refuse to run |
 
-Migration checks are skipped when no migrations directory is passed to the library function `axumapi_cli::check`; `AppCli` always passes its own.
+Migration checks are skipped when no migrations directory is passed to the library function `siderite_cli::check`; `AppCli` always passes its own.
 
 ## `dbshell`
 

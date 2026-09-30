@@ -3,9 +3,9 @@
 use crate::auth::{CurrentUser, DEFAULT_SCOPES, hash_password};
 use crate::db::Conn;
 use crate::models::User;
-use axumapi::orm::ModelOps;
-use axumapi::prelude::*;
-use axumapi::security::Security;
+use siderite::orm::ModelOps;
+use siderite::prelude::*;
+use siderite::security::Security;
 
 /// Body of `POST /users`.
 #[derive(Debug, Deserialize, Validate, Schema)]

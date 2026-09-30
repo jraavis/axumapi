@@ -2,11 +2,11 @@
 //! print a notice and pass. Each test uses its own throw-away database.
 #![allow(clippy::unwrap_used)]
 
-use axumapi::Body;
-use axumapi::http::StatusCode;
-use axumapi_testkit::{TestClient, TestResponse};
 use http::{Method, Request, header};
 use serde_json::{Value, json};
+use siderite::Body;
+use siderite::http::StatusCode;
+use siderite_testkit::{TestClient, TestResponse};
 use todo_mongo::{app, open_db};
 
 /// A client on a fresh database, plus the URL and name to drop afterwards.
@@ -30,7 +30,7 @@ fn rand_suffix() -> u64 {
 }
 
 async fn cleanup(url: &str, name: &str) {
-    let backend = axumapi_backends::mongodb::MongoBackend::connect(url, name)
+    let backend = siderite_backends::mongodb::MongoBackend::connect(url, name)
         .await
         .unwrap();
     backend.database().drop().await.unwrap();

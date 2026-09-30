@@ -1,13 +1,13 @@
 //! Blog API command line.
 //!
 //! ```text
-//! export DATABASE_URL=postgres://axumapi:axumapi@127.0.0.1:55432/axumapi
+//! export DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite
 //! cargo run -p blog_postgres -- migrate
 //! ADDR=127.0.0.1:18080 cargo run -p blog_postgres -- runserver
 //! ```
 
-use axumapi_cli::{AppCli, CliSettings};
 use blog_postgres::{DATABASE_URL_ENV, MIGRATIONS_DIR, app, models, receivers};
+use siderite_cli::{AppCli, CliSettings};
 use std::process::ExitCode;
 
 #[tokio::main]

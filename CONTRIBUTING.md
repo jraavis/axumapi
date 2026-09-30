@@ -17,7 +17,7 @@ Rules:
 - Never add `Co-Authored-By` or any AI attribution to commits, PRs, or signatures.
 
 The full contributor guide is on GitHub Pages:
-[Development](https://jraavis.github.io/axumapi/contributing/development/).
+[Development](https://jraavis.github.io/siderite/contributing/development/).
 
 Documentation site sources are in `website/`. From that directory: `bun install && bun run dev`.
 

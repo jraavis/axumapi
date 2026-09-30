@@ -1,0 +1,32 @@
+[package]
+name = "siderite-testkit"
+description = "Testing helpers for siderite applications"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["sqlite"]
+# In-memory SQLite test databases (`TestDatabase::sqlite_memory`).
+sqlite = ["dep:siderite-backends", "siderite-backends/sqlite"]
+
+[dependencies]
+siderite-core.workspace = true
+siderite-orm.workspace = true
+siderite-migrations.workspace = true
+siderite-backends = { workspace = true, optional = true }
+http.workspace = true
+tower.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

@@ -48,12 +48,12 @@ Key names for JSON always come from Serde (`rename`, `rename_all`).
 
 ## Model-level
 
-See [Models](/axumapi/guides/data/models/) for `#[model(...)]` and
-[Validation](/axumapi/guides/http/validation/) for `#[model_config(...)]` and
+See [Models](/siderite/guides/data/models/) for `#[model(...)]` and
+[Validation](/siderite/guides/http/validation/) for `#[model_config(...)]` and
 `#[model_hooks]`.
 
 ## See also
 
-- [Validation](/axumapi/guides/http/validation/)
-- [Models](/axumapi/guides/data/models/)
-- [Pydantic v2 mapping](/axumapi/reference/pydantic/)
+- [Validation](/siderite/guides/http/validation/)
+- [Models](/siderite/guides/data/models/)
+- [Pydantic v2 mapping](/siderite/reference/pydantic/)

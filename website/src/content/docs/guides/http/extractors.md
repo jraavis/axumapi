@@ -8,7 +8,7 @@ that implements `IntoResponse`. Every argument except the last implements
 `FromRequestParts`. The **last** argument may implement `FromRequest` and
 consume the request body.
 
-All of these traits are axumapi’s own. No axum types leak into the public
+All of these traits are siderite’s own. No axum types leak into the public
 API.
 
 ## Built-in extractors
@@ -17,16 +17,16 @@ API.
 |---|---|---|
 | `Path<T>` | Path parameters | Struct → one parameter per field; tuple → positional; scalar → one parameter named from the template |
 | `Query<T>` | Query string | One parameter per field of `T`. Repeated keys fill a `Vec` field. Text input always allows string-to-number coercion |
-| `Json<T>` | JSON body | Runs the [validation](/axumapi/guides/http/validation/) pipeline |
+| `Json<T>` | JSON body | Runs the [validation](/siderite/guides/http/validation/) pipeline |
 | `Form<T>` | `application/x-www-form-urlencoded` | Same validation pipeline; text input |
 | `Multipart` | `multipart/form-data` | Streaming fields |
 | `State<T>` | `App::with_state` | `Arc<T>` |
-| `Depends<T>` | DI | See [Dependency injection](/axumapi/guides/http/di/) |
+| `Depends<T>` | DI | See [Dependency injection](/siderite/guides/http/di/) |
 | `Provided<T>` | `App::provide` | Application-scoped value that is not a `Dependency` |
 | `Header<H>` | Named header | `H: NamedHeader` |
 | `UserAgent`, `Accept` | Common headers | |
 | `Cookies` | Cookie header | |
-| `HttpBearer` and other schemes | Credentials | See [Security](/axumapi/guides/http/security/) |
+| `HttpBearer` and other schemes | Credentials | See [Security](/siderite/guides/http/security/) |
 | `WebSocketUpgrade` | WebSocket handshake | Pair with `#[ws]` |
 | `RawRequest` | Whole request | Escape hatch |
 
@@ -47,7 +47,7 @@ API.
 | `FileResponse` | 200 | file / static |
 
 `App::docs` serves Swagger UI and ReDoc; static files are
-`App` helpers in `axumapi-core` (`static_files`).
+`App` helpers in `siderite-core` (`static_files`).
 
 ## Custom extractors
 
@@ -97,6 +97,6 @@ constraints (`min_length`, `max_length`, `pattern` / `regex`, `gt`, `ge`,
 
 ## See also
 
-- [Routing](/axumapi/guides/http/routing/)
-- [Validation](/axumapi/guides/http/validation/)
-- [OpenAPI 3.1](/axumapi/guides/http/openapi/)
+- [Routing](/siderite/guides/http/routing/)
+- [Validation](/siderite/guides/http/validation/)
+- [OpenAPI 3.1](/siderite/guides/http/openapi/)

@@ -10,7 +10,7 @@ foreign keys, because joins are a capability error.
 ## Run
 
 ```bash
-export MONGODB_URL='mongodb://127.0.0.1:57017/axumapi?directConnection=true'
+export MONGODB_URL='mongodb://127.0.0.1:57017/siderite?directConnection=true'
 MONGODB_DATABASE=todos ADDR=127.0.0.1:18080 cargo run -p todo_mongo
 curl -XPOST localhost:18080/todos -H 'content-type: application/json' -d '{"title":"try mongo"}'
 curl 'localhost:18080/todos?done=false&limit=10&offset=0'
@@ -26,7 +26,7 @@ test; without the variable the tests print a notice and pass.
 Single-collection CRUD, `filter` / `exclude`, ordering, `limit` / `offset`,
 `count`, `save` (update by key). The `id` column is stored as `_id`; when
 it is omitted the backend generates increasing `i64` keys from
-`axumapi_counters`.
+`siderite_counters`.
 
 ## What the backend rejects
 
@@ -49,6 +49,6 @@ Other differences:
 
 ## See also
 
-- [Backends](/axumapi/guides/data/backends/)
-- [Backend matrix](/axumapi/reference/backend-matrix/)
-- [Todo on SQLite](/axumapi/tutorials/todo-sqlite/)
+- [Backends](/siderite/guides/data/backends/)
+- [Backend matrix](/siderite/reference/backend-matrix/)
+- [Todo on SQLite](/siderite/tutorials/todo-sqlite/)

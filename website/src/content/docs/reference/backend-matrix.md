@@ -4,7 +4,7 @@ description: QuerySet feature support on PostgreSQL, SQLite, MySQL, and MongoDB.
 ---
 
 Unsupported features fail with a `BackendCapabilityError` before any I/O.
-Narrative notes: [Backends](/axumapi/guides/data/backends/). Redis is a key/hash/set
+Narrative notes: [Backends](/siderite/guides/data/backends/). Redis is a key/hash/set
 client and is not in this table.
 
 | Feature | PostgreSQL | SQLite | MySQL | MongoDB |
@@ -41,6 +41,6 @@ client and is not in this table.
 
 ## See also
 
-- [Backends](/axumapi/guides/data/backends/)
-- [Migrations](/axumapi/guides/data/migrations/)
-- [Transactions](/axumapi/guides/data/transactions/)
+- [Backends](/siderite/guides/data/backends/)
+- [Migrations](/siderite/guides/data/migrations/)
+- [Transactions](/siderite/guides/data/transactions/)

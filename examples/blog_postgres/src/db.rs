@@ -1,8 +1,8 @@
 //! Access to the application database from handlers and authentication.
 
-use axumapi::orm::Databases;
-use axumapi::prelude::*;
 use http::request::Parts;
+use siderite::orm::Databases;
+use siderite::prelude::*;
 use std::sync::Arc;
 
 /// Handler argument holding the `"default"` database.

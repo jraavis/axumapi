@@ -7,7 +7,7 @@ description: Builder and terminal methods on QuerySet, with what each returns.
 return `Self` (or `Result<Self, QueryError>` for set operations). Terminals
 are `async` and talk to the queryset’s `Db`. Clone to branch.
 
-Narrative guide: [QuerySets](/axumapi/guides/data/querysets/).
+Narrative guide: [QuerySets](/siderite/guides/data/querysets/).
 
 ## Construction
 
@@ -83,6 +83,6 @@ A plan whose nested subquery was built against another database is
 
 ## See also
 
-- [QuerySets](/axumapi/guides/data/querysets/)
-- [Relations](/axumapi/guides/data/relations/)
-- [QueryPlan IR](/axumapi/internals/query-plan/)
+- [QuerySets](/siderite/guides/data/querysets/)
+- [Relations](/siderite/guides/data/relations/)
+- [QueryPlan IR](/siderite/internals/query-plan/)

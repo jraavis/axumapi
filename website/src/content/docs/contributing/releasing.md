@@ -10,7 +10,7 @@ description: Release checklist and crate publish order.
    `cargo test --workspace --all-features`,
    `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features`.
 2. Run the live-database suites against `docker-compose.yml` (see
-   [Testing](/axumapi/guides/production/testing/)).
+   [Testing](/siderite/guides/production/testing/)).
 3. Check the MSRV: `cargo +1.92.0 check --workspace --all-features --all-targets`.
 4. Run `cargo deny check`.
 5. Move the `[Unreleased]` section of `CHANGELOG.md` under the new version
@@ -22,26 +22,26 @@ description: Release checklist and crate publish order.
 
 Each crate depends only on crates listed before it (normal dependencies):
 
-1. `axumapi-config`
-2. `axumapi-macros`
-3. `axumapi-validation`
-4. `axumapi-openapi`
-5. `axumapi-orm`
-6. `axumapi-backends`
-7. `axumapi-core`
-8. `axumapi-migrations`
-9. `axumapi-cache`
-10. `axumapi-cli`
-11. `axumapi-testkit`
-12. `axumapi`
+1. `siderite-config`
+2. `siderite-macros`
+3. `siderite-validation`
+4. `siderite-openapi`
+5. `siderite-orm`
+6. `siderite-backends`
+7. `siderite-core`
+8. `siderite-migrations`
+9. `siderite-cache`
+10. `siderite-cli`
+11. `siderite-testkit`
+12. `siderite`
 
-`axumapi-bench` and the examples are `publish = false`.
+`siderite-bench` and the examples are `publish = false`.
 
-Several crates use `axumapi-testkit` as a dev-dependency while the testkit
+Several crates use `siderite-testkit` as a dev-dependency while the testkit
 depends on them. Cargo does not build dev-dependencies when it verifies a
 package.
 
 ## See also
 
-- [Development](/axumapi/contributing/development/)
-- [Crate map](/axumapi/reference/crates/)
+- [Development](/siderite/contributing/development/)
+- [Crate map](/siderite/reference/crates/)

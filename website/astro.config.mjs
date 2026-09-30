@@ -6,23 +6,23 @@ import starlightLinksValidator from 'starlight-links-validator';
 // https://astro.build/config
 export default defineConfig({
 	site: 'https://jraavis.github.io',
-	base: '/axumapi/',
+	base: '/siderite/',
 	integrations: [
 		starlight({
-			title: 'axumapi',
+			title: 'siderite',
 			description:
 				'A FastAPI-style Rust web framework with Pydantic-style validation and a Django-style ORM.',
 			favicon: '/favicon.svg',
 			logo: {
 				light: './src/assets/logo-light.svg',
 				dark: './src/assets/logo-dark.svg',
-				alt: 'axumapi',
+				alt: 'siderite',
 			},
 			social: [
-				{ icon: 'github', label: 'GitHub', href: 'https://github.com/jraavis/axumapi' },
+				{ icon: 'github', label: 'GitHub', href: 'https://github.com/jraavis/siderite' },
 			],
 			editLink: {
-				baseUrl: 'https://github.com/jraavis/axumapi/edit/master/website/',
+				baseUrl: 'https://github.com/jraavis/siderite/edit/master/website/',
 			},
 			customCss: ['./src/styles/theme.css'],
 			head: [
@@ -35,7 +35,7 @@ export default defineConfig({
 				starlightLinksValidator({
 					errorOnRelativeLinks: true,
 					errorOnLocalLinks: false,
-					exclude: ['/axumapi/api', '/axumapi/api/**'],
+					exclude: ['/siderite/api', '/siderite/api/**'],
 				}),
 			],
 			sidebar: [

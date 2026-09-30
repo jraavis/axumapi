@@ -1,18 +1,18 @@
 //! End-to-end tests on in-memory SQLite, using the generated migrations.
 #![allow(clippy::unwrap_used)]
 
-use axumapi::Body;
-use axumapi::http::StatusCode;
-use axumapi::orm::Model;
-use axumapi_testkit::{TestClient, TestDatabase, TestResponse};
 use blog_postgres::models::{AuditEntry, Comment, all_models};
 use blog_postgres::{MIGRATIONS_DIR, app};
 use http::{Method, Request, header};
 use serde_json::{Value, json};
+use siderite::Body;
+use siderite::http::StatusCode;
+use siderite::orm::Model;
+use siderite_testkit::{TestClient, TestDatabase, TestResponse};
 
 struct Fixture {
     client: TestClient,
-    db: axumapi::orm::Db,
+    db: siderite::orm::Db,
 }
 
 async fn fixture() -> Fixture {
@@ -398,8 +398,8 @@ async fn openapi_documents_the_oauth2_scheme_and_tags() {
 
 #[test]
 fn check_finds_no_errors_with_a_database_configured() {
-    let settings = axumapi_cli::CliSettings::new().database("default", "sqlite::memory:");
-    let issues = axumapi_cli::check(
+    let settings = siderite_cli::CliSettings::new().database("default", "sqlite::memory:");
+    let issues = siderite_cli::check(
         &app(),
         &all_models(),
         &settings,
@@ -408,7 +408,7 @@ fn check_finds_no_errors_with_a_database_configured() {
     assert!(
         !issues
             .iter()
-            .any(|i| i.level == axumapi_cli::CheckLevel::Error),
+            .any(|i| i.level == siderite_cli::CheckLevel::Error),
         "{issues:?}"
     );
 }

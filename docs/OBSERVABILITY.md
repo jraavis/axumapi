@@ -1,6 +1,6 @@
 # Observability
 
-axumapi emits [`tracing`](https://docs.rs/tracing) spans and events. Install a subscriber in your binary (`axumapi::config::init_tracing` builds one from `LogSettings`; `RUST_LOG` wins) and the spans below appear in your logs or exporter.
+siderite emits [`tracing`](https://docs.rs/tracing) spans and events. Install a subscriber in your binary (`siderite::config::init_tracing` builds one from `LogSettings`; `RUST_LOG` wins) and the spans below appear in your logs or exporter.
 
 Bind parameters, passwords, tokens, API keys and `Secret` values are never recorded.
 
@@ -27,7 +27,7 @@ Headers (including `Authorization`, `Cookie` and API keys), query strings and
 bodies are never recorded. Handler spans and ORM `orm.query` spans nest inside
 `http.request`, so one request id ties a request to its queries.
 
-Install a subscriber with `axumapi::config::init_tracing(&settings.log)`.
+Install a subscriber with `siderite::config::init_tracing(&settings.log)`.
 `RUST_LOG` overrides `log.level`, and `log.json = true` switches to JSON output.
 
 ## ORM query spans
@@ -41,6 +41,6 @@ Every `Db` entry point that talks to the database runs inside an `orm.query` spa
 | `db.table` | the table the plan targets; empty for raw SQL and scripts |
 | `elapsed_ms` | duration in milliseconds, recorded when the call finishes (success or failure) |
 
-The span is created in `crates/axumapi-orm/src/db.rs` and covers reads, writes, `raw_sql`, `raw_execute` and `execute_script`. Enable it with, for example, `RUST_LOG=axumapi_orm=debug`.
+The span is created in `crates/siderite-orm/src/db.rs` and covers reads, writes, `raw_sql`, `raw_execute` and `execute_script`. Enable it with, for example, `RUST_LOG=siderite_orm=debug`.
 
-SQL text is logged only by the raw entry points and script execution, and only at `trace` level (`RUST_LOG=axumapi_orm=trace`). Because raw SQL is written by the developer, keep secrets out of it and pass values as bind parameters. Parameters are never recorded, at any level.
+SQL text is logged only by the raw entry points and script execution, and only at `trace` level (`RUST_LOG=siderite_orm=trace`). Because raw SQL is written by the developer, keep secrets out of it and pass values as bind parameters. Parameters are never recorded, at any level.

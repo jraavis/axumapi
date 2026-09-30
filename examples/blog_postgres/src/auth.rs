@@ -18,15 +18,15 @@
 
 use crate::db::Conn;
 use crate::models::{AccessToken, User};
-use axumapi::http::header::WWW_AUTHENTICATE;
-use axumapi::http::{HeaderValue, StatusCode};
-use axumapi::orm::uuid::Uuid;
-use axumapi::prelude::*;
-use axumapi::scopes;
-use axumapi::security::{
+use http::request::Parts;
+use siderite::http::header::WWW_AUTHENTICATE;
+use siderite::http::{HeaderValue, StatusCode};
+use siderite::orm::uuid::Uuid;
+use siderite::prelude::*;
+use siderite::scopes;
+use siderite::security::{
     Authenticate, OAuth2PasswordBearer, OAuth2PasswordRequestForm, OAuth2Spec, check_scopes,
 };
-use http::request::Parts;
 
 /// How long an issued token stays valid.
 pub const TOKEN_TTL_HOURS: i64 = 1;
@@ -210,7 +210,7 @@ async fn issue_token(
             token: token.clone(),
             user: ForeignKey::new(user.id),
             scopes: scope.clone(),
-            expires_at: Utc::now() + axumapi::orm::chrono::Duration::hours(TOKEN_TTL_HOURS),
+            expires_at: Utc::now() + siderite::orm::chrono::Duration::hours(TOKEN_TTL_HOURS),
         })
         .await?;
     Ok(Json(TokenResponse {

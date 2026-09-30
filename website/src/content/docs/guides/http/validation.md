@@ -3,11 +3,11 @@ title: Validation
 description: Pydantic-style pipeline, field constraints, hooks, Dump, and the 422 problem document.
 ---
 
-axumapi validation is modelled on Pydantic v2, built from Rust traits and
+siderite validation is modelled on Pydantic v2, built from Rust traits and
 derives rather than runtime type inspection.
 
 ```rust
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 #[derive(Deserialize, Validate, Schema)]
 #[serde(rename_all = "camelCase")]
@@ -97,7 +97,7 @@ from Serde (`rename`, `rename_all`).
 | `title`, `description`, `examples(...)` | — | Annotations |
 
 The combined Validate + Model + Schema key list is in
-[Field attributes](/axumapi/reference/field-attributes/).
+[Field attributes](/siderite/reference/field-attributes/).
 
 ## Hooks
 
@@ -179,11 +179,11 @@ limits (as `x-` schema extensions). Use the `Decimal` type to enforce them.
 
 `impl Validate for T {}` opts a type in without checks. For text input
 (query strings, forms), implement `prepare` as well; without it,
-`?flag=true` remains a string. `axumapi::validation::model::{prepare_object,
+`?flag=true` remains a string. `siderite::validation::model::{prepare_object,
 FieldSpec, check}` are the building blocks the derive uses.
 
 ## See also
 
-- [Pydantic v2 mapping](/axumapi/reference/pydantic/)
-- [Errors](/axumapi/guides/http/errors/)
-- [OpenAPI 3.1](/axumapi/guides/http/openapi/)
+- [Pydantic v2 mapping](/siderite/reference/pydantic/)
+- [Errors](/siderite/guides/http/errors/)
+- [OpenAPI 3.1](/siderite/guides/http/openapi/)

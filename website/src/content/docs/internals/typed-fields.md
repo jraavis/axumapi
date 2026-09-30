@@ -29,10 +29,10 @@ Django `__` traversal is `Post::author.join(Author::name)` (and further
 hops on the joined handle). There are no keyword arguments in Rust, so
 `name__icontains=` is not possible.
 
-Implemented in `axumapi_orm::expr::{Expr, Field, Operand, Lookup}`.
+Implemented in `siderite_orm::expr::{Expr, Field, Operand, Lookup}`.
 
 ## See also
 
-- [QuerySets](/axumapi/guides/data/querysets/)
-- [Architecture](/axumapi/internals/architecture/)
-- [QueryPlan IR](/axumapi/internals/query-plan/)
+- [QuerySets](/siderite/guides/data/querysets/)
+- [Architecture](/siderite/internals/architecture/)
+- [QueryPlan IR](/siderite/internals/query-plan/)

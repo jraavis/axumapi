@@ -3,7 +3,7 @@
 //! Table names are explicit so the migrations do not depend on how the Rust
 //! type names are converted (`user` is a reserved word in PostgreSQL).
 
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 /// A registered account.
 #[derive(Debug, Clone, Model)]
@@ -124,7 +124,7 @@ pub struct AuditEntry {
 }
 
 /// Every model, in dependency order, for `makemigrations` and tests.
-pub fn all_models() -> [&'static axumapi::orm::ModelMeta; 6] {
+pub fn all_models() -> [&'static siderite::orm::ModelMeta; 6] {
     [
         User::META,
         Tag::META,

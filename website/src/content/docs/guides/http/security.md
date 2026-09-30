@@ -6,7 +6,7 @@ description: HTTP Bearer, Basic, API keys, OAuth2 password flow, Authenticate, a
 Security schemes are extractors that document themselves. Reading credentials
 and describing them in OpenAPI happen in one place, so the generated
 document mirrors the handler signature. Items live in
-`axumapi_core::security` and are re-exported as `axumapi::security`.
+`siderite_core::security` and are re-exported as `siderite::security`.
 
 The extractors **read** credentials. They never decide whether the
 credentials are valid. Implement `Authenticate` and use `Security<T, S>`
@@ -37,7 +37,7 @@ for that.
 - `Debug` on every credential type prints `[REDACTED]`.
 
 ```rust
-use axumapi::security::{ApiKey, ApiKeyLocation, ApiKeySpec};
+use siderite::security::{ApiKey, ApiKeyLocation, ApiKeySpec};
 
 struct PartnerKey;
 
@@ -55,7 +55,7 @@ async fn feed(key: ApiKey<PartnerKey>) -> String {
 OAuth2 password flow pairs a token endpoint with a bearer extractor:
 
 ```rust
-use axumapi::security::{OAuth2PasswordBearer, OAuth2PasswordRequestForm, OAuth2Spec};
+use siderite::security::{OAuth2PasswordBearer, OAuth2PasswordRequestForm, OAuth2Spec};
 
 struct Oauth;
 
@@ -79,8 +79,8 @@ async fn items(token: OAuth2PasswordBearer<Oauth>) -> String {
 ## `Authenticate` and `Security`
 
 ```rust
-use axumapi::security::{Authenticate, HttpBearer, Security, check_scopes};
-use axumapi::{ApiError, scopes};
+use siderite::security::{Authenticate, HttpBearer, Security, check_scopes};
+use siderite::{ApiError, scopes};
 use http::request::Parts;
 
 struct CurrentUser(String);
@@ -161,10 +161,10 @@ If you cache GET responses with `RouteCache`, credential-like headers
 `token`, `session`, `jwt`, `secret`, `api-key` or `access-key`) skip the
 cache automatically. Register any other header that decides who may see a
 response, such as `X-Tenant` or `X-Signature`, with `bypass_header`. See
-[Cache](/axumapi/guides/production/cache/).
+[Cache](/siderite/guides/production/cache/).
 
 ## See also
 
-- [OpenAPI 3.1](/axumapi/guides/http/openapi/)
-- [Errors](/axumapi/guides/http/errors/)
-- [Blog on PostgreSQL](/axumapi/tutorials/blog-postgres/) — OAuth2 password flow in an example
+- [OpenAPI 3.1](/siderite/guides/http/openapi/)
+- [Errors](/siderite/guides/http/errors/)
+- [Blog on PostgreSQL](/siderite/tutorials/blog-postgres/) — OAuth2 password flow in an example

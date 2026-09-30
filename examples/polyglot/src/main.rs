@@ -3,11 +3,11 @@
 //! `USERS_DATABASE_URL` (default a SQLite file) and `ANALYTICS_DATABASE_URL`
 //! (a SQLite file, or `postgres://...`) select the databases.
 
-use axumapi::ServerError;
-use axumapi_cli::connect_url;
 use polyglot::{app, provision, registry};
+use siderite::ServerError;
+use siderite_cli::connect_url;
 
-async fn connect(var: &str, default: &str) -> Result<axumapi::orm::Db, ServerError> {
+async fn connect(var: &str, default: &str) -> Result<siderite::orm::Db, ServerError> {
     let url = std::env::var(var).unwrap_or_else(|_| default.to_owned());
     connect_url(&url)
         .await

@@ -1,13 +1,13 @@
-# axumapi
+# siderite
 
 A FastAPI-style Rust web framework with Pydantic-style validation and a Django-style ORM. It is async-first, type-safe, and targets stable Rust (edition 2024, MSRV 1.92).
 
-**Documentation:** [jraavis.github.io/axumapi](https://jraavis.github.io/axumapi/)
+**Documentation:** [jraavis.github.io/siderite](https://jraavis.github.io/siderite/)
 
-> **Status: Phase 6 (production tooling) complete, pre-alpha.** The APIs will change. The [architecture](https://jraavis.github.io/axumapi/internals/architecture/) page lists what is implemented.
+> **Status: Phase 6 (production tooling) complete, pre-alpha.** The APIs will change. The [architecture](https://jraavis.github.io/siderite/internals/architecture/) page lists what is implemented.
 
 ```rust
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 #[derive(Deserialize, Validate, Schema)]
 struct Greeting { shout: Option<bool> }
@@ -51,19 +51,19 @@ let adults = User::objects(&db)
 
 | Crate | Purpose |
 |---|---|
-| `axumapi` | Facade and prelude. Most users depend only on this crate. |
-| `axumapi-core` | App, routing, extractors, responses, RFC 7807 errors |
-| `axumapi-validation` | Validation errors, rules, constrained types, schema metadata |
-| `axumapi-orm` | `Model`, `QuerySet`, relations, transactions, QueryPlan IR |
-| `axumapi-backends` | SQL compiler and executors: SQLite (default), PostgreSQL, MySQL, MongoDB (subset); Redis key/hash/set client |
-| `axumapi-testkit` | In-process `TestClient`, `TestDatabase` fixtures and isolation |
-| `axumapi-config` | Layered configuration (TOML, environment, overrides), `Secret` |
-| `axumapi-cache` | Cache trait, in-memory LRU and Redis caches, `RouteCache` middleware |
-| `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Model, Validate, Schema)]` |
-| `axumapi-openapi` | OpenAPI 3.1 model, builder, docs UIs |
-| `axumapi-migrations` | Autodetector, JSON migrations, schema editor |
-| `axumapi-cli` | `AppCli` (`runserver`, `routes`, `check`, `dbshell`, migrations) and the `axumapi` migration binary |
-| `axumapi-bench` | Criterion benchmarks (not published) |
+| `siderite` | Facade and prelude. Most users depend only on this crate. |
+| `siderite-core` | App, routing, extractors, responses, RFC 7807 errors |
+| `siderite-validation` | Validation errors, rules, constrained types, schema metadata |
+| `siderite-orm` | `Model`, `QuerySet`, relations, transactions, QueryPlan IR |
+| `siderite-backends` | SQL compiler and executors: SQLite (default), PostgreSQL, MySQL, MongoDB (subset); Redis key/hash/set client |
+| `siderite-testkit` | In-process `TestClient`, `TestDatabase` fixtures and isolation |
+| `siderite-config` | Layered configuration (TOML, environment, overrides), `Secret` |
+| `siderite-cache` | Cache trait, in-memory LRU and Redis caches, `RouteCache` middleware |
+| `siderite-macros` | Route attributes, `routes![]`, `#[derive(Model, Validate, Schema)]` |
+| `siderite-openapi` | OpenAPI 3.1 model, builder, docs UIs |
+| `siderite-migrations` | Autodetector, JSON migrations, schema editor |
+| `siderite-cli` | `AppCli` (`runserver`, `routes`, `check`, `dbshell`, migrations) and the `siderite` migration binary |
+| `siderite-bench` | Criterion benchmarks (not published) |
 
 ## Development
 
@@ -85,7 +85,7 @@ Examples (in `examples/`):
 | `todo_mongo` | Todo API on MongoDB (needs `MONGODB_URL`) |
 | `polyglot` | Users and analytics on two databases via database routing (`USERS_DATABASE_URL`, `ANALYTICS_DATABASE_URL`) |
 
-Guides: [configuration](https://jraavis.github.io/axumapi/guides/production/config/) and [cache](https://jraavis.github.io/axumapi/guides/production/cache/).
+Guides: [configuration](https://jraavis.github.io/siderite/guides/production/config/) and [cache](https://jraavis.github.io/siderite/guides/production/cache/).
 
 Backends other than SQLite are behind cargo features (`postgres`, `mysql`, `mongodb`, `redis`). Their live tests are skipped unless a server URL is set:
 
@@ -96,20 +96,20 @@ Backends other than SQLite are behind cargo features (`postgres`, `mysql`, `mong
 | MongoDB | `mongodb` | `MONGODB_URL=mongodb://...` |
 | Redis | `redis` | `REDIS_URL=redis://...` |
 
-To run them locally, start the databases from `docker-compose.yml` and export the URLs listed in its header ([testing](https://jraavis.github.io/axumapi/guides/production/testing/)):
+To run them locally, start the databases from `docker-compose.yml` and export the URLs listed in its header ([testing](https://jraavis.github.io/siderite/guides/production/testing/)):
 
 ```bash
 docker compose up -d --wait
 cargo test --workspace --all-features
 ```
 
-Unsupported features fail with a `BackendCapabilityError` before any I/O; see the [backend matrix](https://jraavis.github.io/axumapi/reference/backend-matrix/). Redis is a key/hash/set client, not a `QuerySet` backend.
+Unsupported features fail with a `BackendCapabilityError` before any I/O; see the [backend matrix](https://jraavis.github.io/siderite/reference/backend-matrix/). Redis is a key/hash/set client, not a `QuerySet` backend.
 
 ## Security defaults
 
 - Request bodies read with `Body::into_bytes` are capped at 2 MiB (`413` above it), like the `Json` and `Form` extractors. Use `into_bytes_limited` for another cap.
 - Configuration errors redact values of secret-looking keys (`*_url`, `*token*`, `*secret*`, `*passw*`, `*_key`, ...).
-- `RouteCache` keys on scheme, host, path, query, `Accept` and `Accept-Encoding`, and skips requests with credential-like headers (`Authorization`, `Cookie`, `X-API-Key`, names containing `auth`, `token`, `session`, `jwt`, `secret`, `api-key` or `access-key`). **Register any other header that decides who sees a response** (for example `X-Tenant` or `X-Signature`) with `RouteCache::bypass_header`, or private responses can be served from the cache to anyone. See the [cache guide](https://jraavis.github.io/axumapi/guides/production/cache/).
+- `RouteCache` keys on scheme, host, path, query, `Accept` and `Accept-Encoding`, and skips requests with credential-like headers (`Authorization`, `Cookie`, `X-API-Key`, names containing `auth`, `token`, `session`, `jwt`, `secret`, `api-key` or `access-key`). **Register any other header that decides who sees a response** (for example `X-Tenant` or `X-Signature`) with `RouteCache::bypass_header`, or private responses can be served from the cache to anyone. See the [cache guide](https://jraavis.github.io/siderite/guides/production/cache/).
 
 ## Roadmap
 
@@ -118,7 +118,7 @@ Unsupported features fail with a `BackendCapabilityError` before any I/O; see th
 3. Validation and serialization: done (Pydantic-style pipeline, validators, computed fields, dump options, constrained types)
 4. ORM models, QuerySet, relations, transactions, migrations: done
 5. MySQL, MongoDB, Redis: done (MongoDB compiles the supported QuerySet subset; Redis is a typed client)
-6. Production tooling: done (configuration, observability, security schemes, signals, database routing, cache, CLI, testkit, benchmarks, CI, docker-compose; see [releasing](https://jraavis.github.io/axumapi/contributing/releasing/))
+6. Production tooling: done (configuration, observability, security schemes, signals, database routing, cache, CLI, testkit, benchmarks, CI, docker-compose; see [releasing](https://jraavis.github.io/siderite/contributing/releasing/))
 
 ## License
 

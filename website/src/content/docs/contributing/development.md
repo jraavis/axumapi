@@ -4,8 +4,8 @@ description: Clone, format, clippy, test, rustdoc, and the library-code rules.
 ---
 
 ```bash
-git clone https://github.com/jraavis/axumapi
-cd axumapi
+git clone https://github.com/jraavis/siderite
+cd siderite
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
@@ -17,7 +17,7 @@ MSRV is 1.92:
 cargo +1.92.0 check --workspace --all-features --all-targets
 ```
 
-Live databases: see [Testing](/axumapi/guides/production/testing/). License and
+Live databases: see [Testing](/siderite/guides/production/testing/). License and
 advisory policy: `cargo deny check` (`deny.toml`).
 
 ## Library rules
@@ -48,6 +48,6 @@ The GitHub Pages workflow builds Starlight and copies `cargo doc` to
 
 ## See also
 
-- [Releasing](/axumapi/contributing/releasing/)
-- [Benchmarks](/axumapi/contributing/benchmarks/)
-- [Crate map](/axumapi/reference/crates/)
+- [Releasing](/siderite/contributing/releasing/)
+- [Benchmarks](/siderite/contributing/benchmarks/)
+- [Crate map](/siderite/reference/crates/)

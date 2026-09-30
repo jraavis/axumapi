@@ -1,6 +1,6 @@
 ---
 title: First application
-description: Build a small axumapi app with routes, extractors, validation, and OpenAPI.
+description: Build a small siderite app with routes, extractors, validation, and OpenAPI.
 ---
 
 This page walks `examples/hello_world`. By the end you have three routes, a
@@ -9,7 +9,7 @@ validated JSON body, and generated docs at `/docs`.
 ## The app
 
 ```rust
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 #[derive(Deserialize, Validate, Schema)]
 struct Greeting {
@@ -25,7 +25,7 @@ struct Message {
 /// Plain-text greeting.
 #[get("/")]
 async fn index() -> PlainText<&'static str> {
-    PlainText("Hello, axumapi!")
+    PlainText("Hello, siderite!")
 }
 
 /// Greet somebody by name.
@@ -113,6 +113,6 @@ success response to that code.
 
 ## Next
 
-- [Routing](/axumapi/guides/http/routing/) — function API, `routes![]`, mounting
-- [Validation](/axumapi/guides/http/validation/) — pipeline, `#[field]`, 422 shape
-- [Todo on SQLite](/axumapi/tutorials/todo-sqlite/) — models and CRUD
+- [Routing](/siderite/guides/http/routing/) — function API, `routes![]`, mounting
+- [Validation](/siderite/guides/http/validation/) — pipeline, `#[field]`, 422 shape
+- [Todo on SQLite](/siderite/tutorials/todo-sqlite/) — models and CRUD

@@ -32,9 +32,9 @@ only its own routes. Rejections from built-ins are RFC 7807 problems.
 
 Logging never records headers (`Authorization`, `Cookie`, API keys), query
 strings, or bodies. Register `request_id` before `request_logging`. Request
-spans are documented in [Observability](/axumapi/guides/production/observability/).
+spans are documented in [Observability](/siderite/guides/production/observability/).
 HTTP GET/HEAD response caching is `RouteCache`; see
-[Cache](/axumapi/guides/production/cache/).
+[Cache](/siderite/guides/production/cache/).
 
 `RateLimit` is **process-local**: with N replicas the effective limit is N
 times higher, and a restart resets it. The client key is the socket peer
@@ -58,6 +58,6 @@ bucket.
 
 ## See also
 
-- [Observability](/axumapi/guides/production/observability/)
-- [Cache](/axumapi/guides/production/cache/)
-- [Testing](/axumapi/guides/production/testing/)
+- [Observability](/siderite/guides/production/observability/)
+- [Cache](/siderite/guides/production/cache/)
+- [Testing](/siderite/guides/production/testing/)

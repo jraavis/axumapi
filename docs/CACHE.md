@@ -1,6 +1,6 @@
 # Cache
 
-`axumapi::cache` (crate `axumapi-cache`) provides a small async cache API,
+`siderite::cache` (crate `siderite-cache`) provides a small async cache API,
 two backends and a response-caching middleware.
 
 ## The `Cache` trait
@@ -16,7 +16,7 @@ two backends and a response-caching middleware.
 `CacheExt` is implemented for every `Cache` and adds JSON helpers:
 
 ```rust
-use axumapi::cache::{CacheExt, MemoryCache};
+use siderite::cache::{CacheExt, MemoryCache};
 use std::time::Duration;
 
 let cache = MemoryCache::new(1024);
@@ -46,7 +46,7 @@ stampede lock.
 `RouteCache` caches whole `GET` and `HEAD` responses:
 
 ```rust
-use axumapi::cache::{MemoryCache, RouteCache};
+use siderite::cache::{MemoryCache, RouteCache};
 use std::time::Duration;
 
 let app = App::new()

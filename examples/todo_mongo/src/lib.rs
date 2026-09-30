@@ -6,8 +6,8 @@
 //! for the list. This example sticks to what works: single-collection CRUD,
 //! filters, ordering, `limit`/`offset` and counts.
 
-use axumapi::prelude::*;
-use axumapi_backends::mongodb::MongoBackend;
+use siderite::prelude::*;
+use siderite_backends::mongodb::MongoBackend;
 
 /// Default maximum page size of `GET /todos`.
 pub const MAX_LIMIT: u64 = 100;

@@ -3,7 +3,7 @@ title: Core concepts
 description: App, prelude, handlers, Db, and the difference between Schema and Model.
 ---
 
-A few types show up in every axumapi application. This page names them so the
+A few types show up in every siderite application. This page names them so the
 guides can assume them.
 
 ## `App`
@@ -28,13 +28,13 @@ from `run()`, `into_router_service()`, `App::openapi()`, or
 
 ## Prelude
 
-`use axumapi::prelude::*;` is the intended import for application code. It
+`use siderite::prelude::*;` is the intended import for application code. It
 brings in routing, extractors, responses, `Validate` / `Schema` / `Model`,
 `Db` / `QuerySet` / `ForeignKey`, and `serde`’s `Serialize` / `Deserialize`.
-The full list is in [Prelude](/axumapi/reference/prelude/).
+The full list is in [Prelude](/siderite/reference/prelude/).
 
 Axum and SQLx types do not appear in the public API. `Json`, `Path`, `Query`,
-and `State` are axumapi newtypes, so you can upgrade those internals without
+and `State` are siderite newtypes, so you can upgrade those internals without
 a breaking change of your own.
 
 ## Handlers
@@ -44,7 +44,7 @@ Every argument except the last implements `FromRequestParts`. The last
 argument may implement `FromRequest` and consume the body (`Json<T>`,
 `Form<T>`).
 
-Those traits are axumapi’s own. Each extractor and response can implement a
+Those traits are siderite’s own. Each extractor and response can implement a
 `describe` hook so OpenAPI is derived from the signature.
 
 ## `Db`
@@ -65,8 +65,8 @@ same code runs inside `db.transaction(|tx| async move { … })` if you pass
 `tx` instead of `db`.
 
 Handlers typically receive `Db` through `Provided<Db>`, `Depends<Db>`, or
-`State<Databases>`. See [Dependency injection](/axumapi/guides/http/di/) and
-[Database routing](/axumapi/guides/data/database-routing/).
+`State<Databases>`. See [Dependency injection](/siderite/guides/http/di/) and
+[Database routing](/siderite/guides/data/database-routing/).
 
 ## `Schema` vs `Model`
 
@@ -91,7 +91,7 @@ Missing rows are `QueryError::DoesNotExist` → 404. Constraint failures are
 409 (the database detail is logged, not returned). Everything else that is
 an `ApiError` renders as RFC 7807 `application/problem+json`.
 
-The map is in [Errors](/axumapi/guides/http/errors/).
+The map is in [Errors](/siderite/guides/http/errors/).
 
 ## Capabilities
 
@@ -102,6 +102,6 @@ checked, before any I/O. Nothing is silently ignored.
 
 ## Next
 
-- [Installation](/axumapi/start/installation/)
-- [Architecture](/axumapi/internals/architecture/) — crate graph and ADRs
-- [Examples](/axumapi/start/examples/)
+- [Installation](/siderite/start/installation/)
+- [Architecture](/siderite/internals/architecture/) — crate graph and ADRs
+- [Examples](/siderite/start/examples/)

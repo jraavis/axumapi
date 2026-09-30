@@ -1,7 +1,7 @@
 //! Page-number pagination shared by every list endpoint.
 
-use axumapi::orm::{Model, QuerySet};
-use axumapi::prelude::*;
+use siderite::orm::{Model, QuerySet};
+use siderite::prelude::*;
 
 /// Page size when the client sends none.
 pub const DEFAULT_PER_PAGE: u64 = 20;

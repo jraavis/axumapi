@@ -24,7 +24,7 @@ pub mod posts;
 pub mod receivers;
 pub mod users;
 
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 /// Environment variable holding the PostgreSQL URL.
 pub const DATABASE_URL_ENV: &str = "DATABASE_URL";

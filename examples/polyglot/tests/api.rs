@@ -1,11 +1,11 @@
 //! Two in-memory SQLite databases behind the router.
 #![allow(clippy::unwrap_used)]
 
-use axumapi::http::StatusCode;
-use axumapi::orm::{Db, Model};
-use axumapi_testkit::{TestClient, TestDatabase};
 use polyglot::{ANALYTICS, Event, USERS, User, provision, registry};
 use serde_json::{Value, json};
+use siderite::http::StatusCode;
+use siderite::orm::{Db, Model};
+use siderite_testkit::{TestClient, TestDatabase};
 
 struct Fixture {
     client: TestClient,

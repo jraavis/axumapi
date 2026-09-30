@@ -213,218 +213,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axumapi"
-version = "0.1.0"
-dependencies = [
- "axumapi-backends",
- "axumapi-cache",
- "axumapi-config",
- "axumapi-core",
- "axumapi-macros",
- "axumapi-openapi",
- "axumapi-orm",
- "axumapi-testkit",
- "axumapi-validation",
- "chrono",
- "jsonschema",
- "regex",
- "rust_decimal",
- "serde",
- "serde_json",
- "tokio",
- "trybuild",
- "uuid",
-]
-
-[[package]]
-name = "axumapi-backends"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axumapi-orm",
- "chrono",
- "futures-util",
- "mongodb",
- "redis",
- "rust_decimal",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "axumapi-bench"
-version = "0.1.0"
-dependencies = [
- "axum",
- "axumapi",
- "axumapi-backends",
- "criterion",
- "http",
- "serde",
- "serde_json",
- "tokio",
- "tower",
-]
-
-[[package]]
-name = "axumapi-cache"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axumapi-backends",
- "axumapi-core",
- "axumapi-testkit",
- "bytes",
- "futures-util",
- "http",
- "lru",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tower",
-]
-
-[[package]]
-name = "axumapi-cli"
-version = "0.1.0"
-dependencies = [
- "axumapi-backends",
- "axumapi-config",
- "axumapi-core",
- "axumapi-migrations",
- "axumapi-orm",
- "serde_json",
- "thiserror",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "axumapi-config"
-version = "0.1.0"
-dependencies = [
- "figment",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "axumapi-core"
-version = "0.1.0"
-dependencies = [
- "axum",
- "axumapi-openapi",
- "axumapi-orm",
- "axumapi-testkit",
- "axumapi-validation",
- "base64",
- "bytes",
- "cookie",
- "futures-util",
- "http",
- "http-body-util",
- "jsonschema",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "thiserror",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "axumapi-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "regex",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "axumapi-migrations"
-version = "0.1.0"
-dependencies = [
- "axumapi-backends",
- "axumapi-orm",
- "chrono",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "axumapi-openapi"
-version = "0.1.0"
-dependencies = [
- "axumapi-validation",
- "jsonschema",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "axumapi-orm"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axumapi-validation",
- "chrono",
- "rust_decimal",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "axumapi-testkit"
-version = "0.1.0"
-dependencies = [
- "axumapi-backends",
- "axumapi-core",
- "axumapi-migrations",
- "axumapi-orm",
- "http",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tower",
-]
-
-[[package]]
-name = "axumapi-validation"
-version = "0.1.0"
-dependencies = [
- "regex",
- "rust_decimal",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "thiserror",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "backon"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -503,12 +291,12 @@ dependencies = [
 name = "blog_postgres"
 version = "0.0.0"
 dependencies = [
- "axumapi",
- "axumapi-cli",
- "axumapi-testkit",
  "http",
  "serde",
  "serde_json",
+ "siderite",
+ "siderite-cli",
+ "siderite-testkit",
  "tokio",
 ]
 
@@ -1524,9 +1312,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "hello_world"
 version = "0.0.0"
 dependencies = [
- "axumapi",
  "serde",
  "serde_json",
+ "siderite",
  "tokio",
 ]
 
@@ -2623,13 +2411,13 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "polyglot"
 version = "0.0.0"
 dependencies = [
- "axumapi",
- "axumapi-cli",
- "axumapi-migrations",
- "axumapi-testkit",
  "http",
  "serde",
  "serde_json",
+ "siderite",
+ "siderite-cli",
+ "siderite-migrations",
+ "siderite-testkit",
  "tokio",
 ]
 
@@ -3252,6 +3040,218 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "siderite"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "jsonschema",
+ "regex",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "siderite-backends",
+ "siderite-cache",
+ "siderite-config",
+ "siderite-core",
+ "siderite-macros",
+ "siderite-openapi",
+ "siderite-orm",
+ "siderite-testkit",
+ "siderite-validation",
+ "tokio",
+ "trybuild",
+ "uuid",
+]
+
+[[package]]
+name = "siderite-backends"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "mongodb",
+ "redis",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "siderite-orm",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "siderite-bench"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "criterion",
+ "http",
+ "serde",
+ "serde_json",
+ "siderite",
+ "siderite-backends",
+ "tokio",
+ "tower",
+]
+
+[[package]]
+name = "siderite-cache"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "http",
+ "lru",
+ "serde",
+ "serde_json",
+ "siderite-backends",
+ "siderite-core",
+ "siderite-testkit",
+ "thiserror",
+ "tokio",
+ "tower",
+]
+
+[[package]]
+name = "siderite-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "siderite-backends",
+ "siderite-config",
+ "siderite-core",
+ "siderite-migrations",
+ "siderite-orm",
+ "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "siderite-config"
+version = "0.1.0"
+dependencies = [
+ "figment",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "siderite-core"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "bytes",
+ "cookie",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "siderite-openapi",
+ "siderite-orm",
+ "siderite-testkit",
+ "siderite-validation",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "siderite-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "siderite-migrations"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "siderite-backends",
+ "siderite-orm",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "siderite-openapi"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "siderite-validation",
+ "thiserror",
+]
+
+[[package]]
+name = "siderite-orm"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "siderite-validation",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "siderite-testkit"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "serde",
+ "serde_json",
+ "siderite-backends",
+ "siderite-core",
+ "siderite-migrations",
+ "siderite-orm",
+ "thiserror",
+ "tokio",
+ "tower",
+]
+
+[[package]]
+name = "siderite-validation"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3790,12 +3790,12 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 name = "todo_mongo"
 version = "0.0.0"
 dependencies = [
- "axumapi",
- "axumapi-backends",
- "axumapi-testkit",
  "http",
  "serde",
  "serde_json",
+ "siderite",
+ "siderite-backends",
+ "siderite-testkit",
  "tokio",
 ]
 
@@ -3803,12 +3803,12 @@ dependencies = [
 name = "todo_sqlite"
 version = "0.0.0"
 dependencies = [
- "axumapi",
- "axumapi-backends",
- "axumapi-testkit",
  "http",
  "serde",
  "serde_json",
+ "siderite",
+ "siderite-backends",
+ "siderite-testkit",
  "tokio",
 ]
 

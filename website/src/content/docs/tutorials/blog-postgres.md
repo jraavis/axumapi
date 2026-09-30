@@ -10,7 +10,7 @@ tags, and an audit trail written by model signal receivers.
 ## Run
 
 ```bash
-export DATABASE_URL=postgres://axumapi:axumapi@127.0.0.1:55432/axumapi
+export DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite
 cargo run -p blog_postgres -- migrate
 ADDR=127.0.0.1:18080 cargo run -p blog_postgres -- runserver
 ```
@@ -60,7 +60,7 @@ bcrypt in a real application, and compare secrets in constant time.
 
 ## See also
 
-- [CLI](/axumapi/guides/production/cli/)
-- [Security](/axumapi/guides/http/security/)
-- [Signals](/axumapi/guides/data/signals/)
-- [Migrations](/axumapi/guides/data/migrations/)
+- [CLI](/siderite/guides/production/cli/)
+- [Security](/siderite/guides/http/security/)
+- [Signals](/siderite/guides/data/signals/)
+- [Migrations](/siderite/guides/data/migrations/)

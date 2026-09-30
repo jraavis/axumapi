@@ -4,9 +4,9 @@ use crate::auth::{CurrentUser, WritePosts};
 use crate::db::Conn;
 use crate::models::{Post, Tag};
 use crate::pagination::{PageParams, Paginated, paginate};
-use axumapi::orm::ModelOps;
-use axumapi::prelude::*;
-use axumapi::security::Security;
+use siderite::orm::ModelOps;
+use siderite::prelude::*;
+use siderite::security::Security;
 
 /// Longest slug stem kept from a title.
 const MAX_SLUG_LEN: usize = 200;
@@ -209,7 +209,7 @@ async fn owned_post(db: &Db, slug: &str, user: &CurrentUser) -> Result<Post, Api
         Ok(post)
     } else {
         Err(ApiError::new(
-            axumapi::http::StatusCode::FORBIDDEN,
+            siderite::http::StatusCode::FORBIDDEN,
             "Only the author may change this post.",
         ))
     }

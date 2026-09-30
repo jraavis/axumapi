@@ -1,0 +1,36 @@
+[package]
+name = "siderite-cli"
+description = "The siderite command-line tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+siderite-backends = { workspace = true, features = ["sqlite"] }
+siderite-config.workspace = true
+siderite-core.workspace = true
+siderite-migrations.workspace = true
+siderite-orm.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[features]
+default = []
+postgres = ["siderite-backends/postgres"]
+mysql = ["siderite-backends/mysql"]
+
+[[bin]]
+name = "siderite"
+path = "src/main.rs"
+doc = false
+
+[dev-dependencies]
+serde_json.workspace = true

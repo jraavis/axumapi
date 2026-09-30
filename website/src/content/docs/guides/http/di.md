@@ -3,8 +3,8 @@ title: Dependency injection
 description: Depends, request-scoped caching, provide, overrides, global dependencies, and async teardown.
 ---
 
-axumapi’s DI is inspired by FastAPI’s `Depends`, expressed with plain Rust
-traits. Items live in `axumapi_core::di`.
+siderite’s DI is inspired by FastAPI’s `Depends`, expressed with plain Rust
+traits. Items live in `siderite_core::di`.
 
 ## Declaring a dependency
 
@@ -51,7 +51,7 @@ async fn handler(db: Depends<Db>) -> String { db.tenant.clone() }
   argument (an unused `_auth: Depends<Auth>` is enough).
 
 `TestClient::builder` exposes the same override helpers. See
-[Testing](/axumapi/guides/production/testing/).
+[Testing](/siderite/guides/production/testing/).
 
 ## Teardown
 
@@ -66,6 +66,6 @@ a warning) if no Tokio runtime is available.
 
 ## See also
 
-- [Extractors and responses](/axumapi/guides/http/extractors/)
-- [Security](/axumapi/guides/http/security/)
-- [Testing](/axumapi/guides/production/testing/)
+- [Extractors and responses](/siderite/guides/http/extractors/)
+- [Security](/siderite/guides/http/security/)
+- [Testing](/siderite/guides/production/testing/)

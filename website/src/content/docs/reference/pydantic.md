@@ -1,12 +1,12 @@
 ---
 title: Pydantic v2 mapping
-description: Pydantic v2 features and their axumapi equivalents.
+description: Pydantic v2 features and their siderite equivalents.
 ---
 
 Where the behaviour differs, the difference is stated. Nothing here is an
 exact match.
 
-| Pydantic v2 | axumapi | Notes |
+| Pydantic v2 | siderite | Notes |
 |---|---|---|
 | `class M(BaseModel)` | `#[derive(Deserialize, Validate, Schema)] struct M` | Add `Serialize` for response models |
 | `model_validate(data)` | `validation::parse_value::<M>(value, ValidationContext::new())` | Returns every error at once |
@@ -39,7 +39,7 @@ exact match.
 | `mode='wrap'`, `mode='plain'` | **Deferred** | |
 | `@computed_field` | `#[computed_field]` | Documented as a `readOnly` schema property |
 | `@field_serializer`, `@model_serializer` | Same names | They run on the Serde output |
-| `Optional[int]` with no default | `Option<i32>` | **Differs:** Pydantic v2 requires the key. axumapi follows Serde, so a missing key becomes `None` |
+| `Optional[int]` with no default | `Option<i32>` | **Differs:** Pydantic v2 requires the key. siderite follows Serde, so a missing key becomes `None` |
 | Lax coercion (`"1"` → `1`) | Same in lax mode | JSON strings are never coerced **from** numbers |
 | `EmailStr`, `SecretStr`, `conint`, `constr` | `Email`, `SecretString`, `BoundedI64<..>`, `ConstrainedString<..>` | Newtypes, not factory functions |
 | `HttpUrl`, `AnyUrl`, `IPvAnyAddress`, `UUID4`, `condecimal`, `confloat`, `conlist` | `HttpUrl`, `Url`, `IpAddress`, `Uuid`, `Decimal<D, P>`, `BoundedFloat<B>`, `ConstrainedVec<T, MIN, MAX>` | Float bounds are a bounds type: stable Rust has no `f64` const generics |
@@ -48,5 +48,5 @@ exact match.
 
 ## See also
 
-- [Validation](/axumapi/guides/http/validation/)
-- [Field attributes](/axumapi/reference/field-attributes/)
+- [Validation](/siderite/guides/http/validation/)
+- [Field attributes](/siderite/reference/field-attributes/)

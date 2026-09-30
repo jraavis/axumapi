@@ -1,13 +1,13 @@
 ---
 title: Prelude
-description: What use axumapi::prelude::* brings into scope.
+description: What use siderite::prelude::* brings into scope.
 ---
 
-`use axumapi::prelude::*;` is the intended import for application code.
+`use siderite::prelude::*;` is the intended import for application code.
 
 ## Re-exported items
 
-From `axumapi-core`:
+From `siderite-core`:
 
 `ApiError`, `ApiResult`, `App`, `BackgroundTasks`, `Cookies`, `Dependency`,
 `Depends`, `Form`, `FromRequest`, `FromRequestParts`, `Header`, `Html`,
@@ -16,24 +16,24 @@ From `axumapi-core`:
 `Route`, `ServerError`, `State`, `WebSocket`, `WebSocketUpgrade`,
 `WithStatus`, `delete`, `get`, `head`, `options`, `patch`, `post`, `put`.
 
-From `axumapi-macros`:
+From `siderite-macros`:
 
 `Model`, `Schema`, `Validate`, `delete`, `get`, `head`, `model_hooks`,
 `options`, `patch`, `post`, `put`, `routes`, `ws`.
 
-From `axumapi-orm`:
+From `siderite-orm`:
 
 `Db`, `DbType`, `Expr`, `Field`, `ForeignKey`, `Model`, `ModelOps`,
 `OneToOne`, `OrmError`, `QuerySet`, `Related`.
 
-From `axumapi-validation`:
+From `siderite-validation`:
 
 `Schema`, `SchemaObject`, `SchemaRegistry`, `Validate`, `ValidationError`,
 `ValidationResult`.
 
 Also: `chrono::{DateTime, Utc}` and `serde::{Deserialize, Serialize}`.
 
-The prelude also exposes `axumapi::prelude::orm`, which is the ORM module
+The prelude also exposes `siderite::prelude::orm`, which is the ORM module
 plus `chrono`, `uuid`, and `rust_decimal`.
 
 ## Outside the prelude
@@ -42,21 +42,21 @@ These stay behind explicit paths (they are still public):
 
 | Path | Contents |
 |---|---|
-| `axumapi::config` | `Settings`, `Secret`, `load`, `init_tracing` |
-| `axumapi::cache` | `Cache`, `MemoryCache`, `RedisCache`, `RouteCache` |
-| `axumapi::security` | `HttpBearer`, `HttpBasic`, `ApiKey`, `Security`, … |
-| `axumapi::openapi` | OpenAPI model and `DocsConfig` |
-| `axumapi::orm::signals` | `Signals`, `SignalEvent`, `Receiver` |
-| `axumapi::receiver` | `#[receiver]` |
-| `axumapi_cli` | `AppCli`, `CliSettings` (separate crate) |
-| `axumapi_testkit` | `TestClient`, `TestDatabase` (dev-dependency) |
-| `axumapi_backends::*` | `SqliteBackend`, `PgBackend`, … |
+| `siderite::config` | `Settings`, `Secret`, `load`, `init_tracing` |
+| `siderite::cache` | `Cache`, `MemoryCache`, `RedisCache`, `RouteCache` |
+| `siderite::security` | `HttpBearer`, `HttpBasic`, `ApiKey`, `Security`, … |
+| `siderite::openapi` | OpenAPI model and `DocsConfig` |
+| `siderite::orm::signals` | `Signals`, `SignalEvent`, `Receiver` |
+| `siderite::receiver` | `#[receiver]` |
+| `siderite_cli` | `AppCli`, `CliSettings` (separate crate) |
+| `siderite_testkit` | `TestClient`, `TestDatabase` (dev-dependency) |
+| `siderite_backends::*` | `SqliteBackend`, `PgBackend`, … |
 
-Macro support code lives in `axumapi::__private` and is not part of the
+Macro support code lives in `siderite::__private` and is not part of the
 public API.
 
 ## See also
 
-- [Core concepts](/axumapi/start/concepts/)
-- [Crate map](/axumapi/reference/crates/)
-- [API rustdoc](/axumapi/reference/rustdoc/)
+- [Core concepts](/siderite/start/concepts/)
+- [Crate map](/siderite/reference/crates/)
+- [API rustdoc](/siderite/reference/rustdoc/)

@@ -1,7 +1,7 @@
 # Dependency injection
 
-axumapi's DI is inspired by FastAPI's `Depends`, expressed with plain Rust
-traits. Items live in `axumapi_core::di`.
+siderite's DI is inspired by FastAPI's `Depends`, expressed with plain Rust
+traits. Items live in `siderite_core::di`.
 
 ## Declaring and using a dependency
 

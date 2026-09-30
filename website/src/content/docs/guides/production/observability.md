@@ -3,8 +3,8 @@ title: Observability
 description: http.request and orm.query tracing spans, redaction rules, and JSON logs.
 ---
 
-axumapi emits [`tracing`](https://docs.rs/tracing) spans and events.
-Install a subscriber in your binary (`axumapi::config::init_tracing` builds
+siderite emits [`tracing`](https://docs.rs/tracing) spans and events.
+Install a subscriber in your binary (`siderite::config::init_tracing` builds
 one from `LogSettings`; `RUST_LOG` wins) and the spans below appear in
 your logs or exporter.
 
@@ -34,7 +34,7 @@ Headers (including `Authorization`, `Cookie`, and API keys), query strings,
 and bodies are never recorded. Handler spans and ORM `orm.query` spans nest
 inside `http.request`, so one request id ties a request to its queries.
 
-Install a subscriber with `axumapi::config::init_tracing(&settings.log)`.
+Install a subscriber with `siderite::config::init_tracing(&settings.log)`.
 `RUST_LOG` overrides `log.level`, and `log.json = true` switches to JSON
 output.
 
@@ -50,15 +50,15 @@ Every `Db` entry point that talks to the database runs inside an
 | `db.table` | the table the plan targets; empty for raw SQL and scripts |
 | `elapsed_ms` | duration in milliseconds, recorded when the call finishes |
 
-Enable it with `RUST_LOG=axumapi_orm=debug`.
+Enable it with `RUST_LOG=siderite_orm=debug`.
 
 SQL text is logged only by the raw entry points and script execution, and
-only at `trace` level (`RUST_LOG=axumapi_orm=trace`). Because raw SQL is
+only at `trace` level (`RUST_LOG=siderite_orm=trace`). Because raw SQL is
 written by the developer, keep secrets out of it and pass values as bind
 parameters. Parameters are never recorded, at any level.
 
 ## See also
 
-- [Configuration](/axumapi/guides/production/config/)
-- [Middleware and lifespan](/axumapi/guides/http/middleware/)
-- [Errors](/axumapi/guides/http/errors/)
+- [Configuration](/siderite/guides/production/config/)
+- [Middleware and lifespan](/siderite/guides/http/middleware/)
+- [Errors](/siderite/guides/http/errors/)

@@ -3,7 +3,7 @@ title: OpenAPI 3.1
 description: Generate an OpenAPI 3.1 document from handler signatures, schemas, and security extractors.
 ---
 
-axumapi generates an **OpenAPI 3.1.0** document from your routes. You do not
+siderite generates an **OpenAPI 3.1.0** document from your routes. You do not
 write a separate spec; the document is built from the types in handler
 signatures.
 
@@ -44,11 +44,11 @@ Route metadata overrides or extends what the signature produced:
   handler actually returns (FastAPI’s `response_model`).
 
 Route macros such as `#[post("/users", status = 201)]` expand to these same
-builder calls. See [Routing](/axumapi/guides/http/routing/).
+builder calls. See [Routing](/siderite/guides/http/routing/).
 
 ## Schemas and components
 
-A type appears through the `Schema` trait in `axumapi-validation` (also
+A type appears through the `Schema` trait in `siderite-validation` (also
 re-exported from the facade):
 
 - If `schema_name()` returns a name, the type is emitted **once** under
@@ -78,19 +78,19 @@ These problems are detected when the app is built. `run()` and
 - Paths that do not start with `/`
 
 Tests validate generated documents against the official OpenAPI 3.1 JSON
-Schema in `crates/axumapi-openapi/tests/fixtures`.
+Schema in `crates/siderite-openapi/tests/fixtures`.
 
 ## FastAPI differences
 
 - Documentation hooks live on traits. FastAPI inspects type hints at
-  runtime; axumapi extractors and responses describe themselves.
+  runtime; siderite extractors and responses describe themselves.
 - No reflection. Schemas come from `Schema` implementations, usually
   `#[derive(Schema)]`.
 - Security schemes are extractors, so the document matches the handler
-  signature. See [Security](/axumapi/guides/http/security/).
+  signature. See [Security](/siderite/guides/http/security/).
 
 ## See also
 
-- [Extractors and responses](/axumapi/guides/http/extractors/)
-- [Validation](/axumapi/guides/http/validation/)
-- [API rustdoc](/axumapi/reference/rustdoc/)
+- [Extractors and responses](/siderite/guides/http/extractors/)
+- [Validation](/siderite/guides/http/validation/)
+- [API rustdoc](/siderite/reference/rustdoc/)

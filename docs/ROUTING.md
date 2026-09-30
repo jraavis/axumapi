@@ -1,13 +1,13 @@
 # Routing
 
-axumapi routes are plain values. A path plus a `MethodRouter` makes a `Route`;
+siderite routes are plain values. A path plus a `MethodRouter` makes a `Route`;
 an `App` collects routes, mounts other apps and generates the OpenAPI 3.1
 document from the same values, so docs cannot drift from the code.
 
 ## Function API
 
 ```rust
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 let app = App::new()
     .title("Users")
@@ -58,23 +58,23 @@ visibility, the macro emits:
 ```rust
 #[doc(hidden)]
 #[allow(non_snake_case, dead_code)]
-fn __axumapi_route_create_user() -> ::axumapi::Route {
-    ::axumapi::Route::new(
+fn __siderite_route_create_user() -> ::siderite::Route {
+    ::siderite::Route::new(
         "/users",
-        ::axumapi::post(create_user)
+        ::siderite::post(create_user)
             .operation_id("create_user")
             .summary("Create a user.")
             .description("Stores the user and returns it.")
             .tag("users").tag("a").tag("b")
-            .status(::axumapi::http::StatusCode::from_u16(201)
-                .unwrap_or(::axumapi::http::StatusCode::OK))
+            .status(::siderite::http::StatusCode::from_u16(201)
+                .unwrap_or(::siderite::http::StatusCode::OK))
             .response_model::<UserOut>(),
     )
 }
 ```
 
 `deprecated` and `hidden` add `.deprecated()` / `.hidden()`. `#[ws]` uses
-`::axumapi::get`. The `unwrap_or` fallback is unreachable: the status is
+`::siderite::get`. The `unwrap_or` fallback is unreachable: the status is
 validated at compile time.
 
 ### Metadata semantics
@@ -106,7 +106,7 @@ App::new().routes(routes![create_user, users::list])
 expands to
 
 ```rust
-::std::vec![__axumapi_route_create_user(), users::__axumapi_route_list()]
+::std::vec![__siderite_route_create_user(), users::__siderite_route_list()]
 ```
 
 Only the last path segment is rewritten (a leading `::` is kept); generic
@@ -123,7 +123,7 @@ that implements `IntoResponse`. Every argument except the last implements
 consume the request body (`Json<T>`, `Form<T>`, raw bodies). Built-in
 extractors: `Path<T>`, `Query<T>`, `Json<T>`, `State<T>`, `Depends<T>`,
 `HttpBearer` and the other security schemes (see [SECURITY.md](SECURITY.md)),
-... All traits are axumapi's own; no axum types leak into the public API.
+... All traits are siderite's own; no axum types leak into the public API.
 
 Custom extractors and responses document themselves through the optional
 `describe` hook, which receives the `Operation` being built and the

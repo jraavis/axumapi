@@ -10,7 +10,7 @@ Two databases behind one API: `users` on the `default` alias, `events` on the
 ADDR=127.0.0.1:18080 cargo run -p polyglot
 
 # or analytics on PostgreSQL
-export ANALYTICS_DATABASE_URL=postgres://axumapi:axumapi@127.0.0.1:55432/axumapi
+export ANALYTICS_DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite
 export USERS_DATABASE_URL='sqlite://users.db?mode=rwc'
 ```
 

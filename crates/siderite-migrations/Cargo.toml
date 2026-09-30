@@ -1,0 +1,25 @@
+[package]
+name = "siderite-migrations"
+description = "Django-inspired schema migrations for siderite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+siderite-orm.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+siderite-backends = { workspace = true, features = ["sqlite", "mysql"] }
+chrono.workspace = true
+tokio.workspace = true

@@ -3,7 +3,7 @@ title: Cache
 description: Cache trait, in-memory LRU, Redis cache, and RouteCache middleware.
 ---
 
-`axumapi::cache` (crate `axumapi-cache`) provides a small async cache API,
+`siderite::cache` (crate `siderite-cache`) provides a small async cache API,
 two backends, and a response-caching middleware.
 
 ## The `Cache` trait
@@ -19,7 +19,7 @@ two backends, and a response-caching middleware.
 `CacheExt` is implemented for every `Cache` and adds JSON helpers:
 
 ```rust
-use axumapi::cache::{CacheExt, MemoryCache};
+use siderite::cache::{CacheExt, MemoryCache};
 use std::time::Duration;
 
 let cache = MemoryCache::new(1024);
@@ -49,7 +49,7 @@ closure; there is no stampede lock.
 `RouteCache` caches whole `GET` and `HEAD` responses:
 
 ```rust
-use axumapi::cache::{MemoryCache, RouteCache};
+use siderite::cache::{MemoryCache, RouteCache};
 use std::time::Duration;
 
 let app = App::new()
@@ -87,6 +87,6 @@ let app = App::new()
 
 ## See also
 
-- [Security](/axumapi/guides/http/security/)
-- [Middleware and lifespan](/axumapi/guides/http/middleware/)
-- [Backends](/axumapi/guides/data/backends/) — Redis client
+- [Security](/siderite/guides/http/security/)
+- [Middleware and lifespan](/siderite/guides/http/middleware/)
+- [Backends](/siderite/guides/data/backends/) — Redis client

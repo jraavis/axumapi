@@ -1,6 +1,6 @@
-//! Minimal axumapi application.
+//! Minimal siderite application.
 
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 #[derive(Deserialize, Validate, Schema)]
 struct Greeting {
@@ -15,7 +15,7 @@ struct Message {
 /// Plain-text greeting.
 #[get("/")]
 async fn index() -> PlainText<&'static str> {
-    PlainText("Hello, axumapi!")
+    PlainText("Hello, siderite!")
 }
 
 /// Greet somebody by name.

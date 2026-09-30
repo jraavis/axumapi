@@ -1,7 +1,7 @@
 //! SQLite-backed todo API: models, routes and an [`App`] factory.
 
-use axumapi::prelude::*;
-use axumapi_backends::sqlite::SqliteBackend;
+use siderite::prelude::*;
+use siderite_backends::sqlite::SqliteBackend;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS users (
@@ -177,11 +177,11 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use axumapi::Body;
-    use axumapi::http::StatusCode;
-    use axumapi_testkit::TestClient;
     use http::{Method, Request, header};
     use serde_json::{Value, json};
+    use siderite::Body;
+    use siderite::http::StatusCode;
+    use siderite_testkit::TestClient;
 
     async fn client() -> TestClient {
         let db = open_db("sqlite::memory:").await.unwrap();
@@ -193,7 +193,7 @@ mod tests {
         method: Method,
         path: &str,
         body: &Value,
-    ) -> axumapi_testkit::TestResponse {
+    ) -> siderite_testkit::TestResponse {
         let req = Request::builder()
             .method(method)
             .uri(path)

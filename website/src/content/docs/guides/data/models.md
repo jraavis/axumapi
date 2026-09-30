@@ -5,10 +5,10 @@ description: Derive Model, table metadata, field attributes, generated field con
 
 Models are structs with `#[derive(Model)]`. The derive generates typed field
 constants, static metadata, and persistence helpers. Queries are lazy
-`QuerySet`s; see [QuerySets](/axumapi/guides/data/querysets/).
+`QuerySet`s; see [QuerySets](/siderite/guides/data/querysets/).
 
 ```rust
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 #[derive(Model, Serialize, Deserialize, Schema, Debug, Clone)]
 #[model(table = "users", ordering = ["name"])]
@@ -69,7 +69,7 @@ Timestamps use `auto_now_add` / `auto_now`, Django’s names.
 - `User::name` is a typed `Field<User, String>` constant per column.
   `Book::author` is a `Field<Book, ForeignKey<Author>>` over `author_id`.
 - Lookups exist only on suitable types, so `User::age.icontains(..)` does
-  not compile. Why: [Typed field constants](/axumapi/internals/typed-fields/).
+  not compile. Why: [Typed field constants](/siderite/internals/typed-fields/).
 - Foreign keys get `book.fetch_author(&db)` returning `Arc<Author>`, or
   `Option<Arc<Author>>` for a nullable key. It is not named `author`
   because an associated constant and a method cannot share a name.
@@ -103,17 +103,17 @@ user.refresh(&db).await?;       // reload columns
 
 `QuerySet::create`, `get_or_create`, `update_or_create`, `bulk_create`, and
 `bulk_update` are on the queryset. Bulk writes send no signals. See
-[QuerySets](/axumapi/guides/data/querysets/) and [Signals](/axumapi/guides/data/signals/).
+[QuerySets](/siderite/guides/data/querysets/) and [Signals](/siderite/guides/data/signals/).
 
 ## Column types
 
 `DbType` maps a Rust type to SQL: integers and floats, `bool`, `String`,
 `Vec<u8>`, `Decimal`, `Uuid`, `NaiveDate`, `NaiveTime`, `DateTime<Utc>`,
 `TimeDelta`, `IpAddr`, JSON, and `Option<T>`. Canonical storage forms per
-backend are in [Backends](/axumapi/guides/data/backends/).
+backend are in [Backends](/siderite/guides/data/backends/).
 
 ## See also
 
-- [Relations](/axumapi/guides/data/relations/)
-- [Migrations](/axumapi/guides/data/migrations/)
-- [Field attributes](/axumapi/reference/field-attributes/)
+- [Relations](/siderite/guides/data/relations/)
+- [Migrations](/siderite/guides/data/migrations/)
+- [Field attributes](/siderite/reference/field-attributes/)

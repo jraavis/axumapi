@@ -85,7 +85,7 @@ curl -s http://127.0.0.1:8000/todos
 
 ## See also
 
-- [Models](/axumapi/guides/data/models/)
-- [Testing](/axumapi/guides/production/testing/)
-- [Migrations](/axumapi/guides/data/migrations/) — the blog example uses JSON
+- [Models](/siderite/guides/data/models/)
+- [Testing](/siderite/guides/production/testing/)
+- [Migrations](/siderite/guides/data/migrations/) — the blog example uses JSON
   migrations instead of `execute_script`

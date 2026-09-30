@@ -1,0 +1,34 @@
+[package]
+name = "siderite-cache"
+description = "Cache backends (in-memory LRU, Redis) and route caching for siderite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+redis = ["dep:siderite-backends", "siderite-backends/redis"]
+
+[dependencies]
+async-trait.workspace = true
+siderite-core.workspace = true
+http.workspace = true
+lru.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tower.workspace = true
+siderite-backends = { workspace = true, optional = true }
+
+[dev-dependencies]
+siderite-testkit.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+tokio.workspace = true

@@ -1,9 +1,9 @@
 # Validation and serialization
 
-axumapi validation is modelled on Pydantic v2, but built from Rust traits and derives rather than runtime type inspection.
+siderite validation is modelled on Pydantic v2, but built from Rust traits and derives rather than runtime type inspection.
 
 ```rust
-use axumapi::prelude::*;
+use siderite::prelude::*;
 
 #[derive(Deserialize, Validate, Schema)]
 #[serde(rename_all = "camelCase")]
@@ -153,7 +153,7 @@ Computed fields appear in the OpenAPI schema as `readOnly` properties.
 
 ## Hand-written implementations
 
-`impl Validate for T {}` opts a type in without any checks. For text input such as query strings and forms, implement `prepare` as well. Without it, values are not coerced, so `?flag=true` remains a string. `axumapi::validation::model::{prepare_object, FieldSpec, check}` provide the same building blocks the derive uses.
+`impl Validate for T {}` opts a type in without any checks. For text input such as query strings and forms, implement `prepare` as well. Without it, values are not coerced, so `?flag=true` remains a string. `siderite::validation::model::{prepare_object, FieldSpec, check}` provide the same building blocks the derive uses.
 
 ## Deferred
 

@@ -37,21 +37,21 @@ jobs:
     services:
       postgres:
         image: postgres:17-alpine
-        env: { POSTGRES_USER: axumapi, POSTGRES_PASSWORD: axumapi, POSTGRES_DB: axumapi }
+        env: { POSTGRES_USER: siderite, POSTGRES_PASSWORD: siderite, POSTGRES_DB: siderite }
         ports: ["5432:5432"]
-        options: --health-cmd "pg_isready -U axumapi" --health-interval 2s --health-retries 30
+        options: --health-cmd "pg_isready -U siderite" --health-interval 2s --health-retries 30
       mysql:
         image: mysql:8.4
-        env: { MYSQL_ROOT_PASSWORD: axumapi, MYSQL_USER: axumapi, MYSQL_PASSWORD: axumapi, MYSQL_DATABASE: axumapi }
+        env: { MYSQL_ROOT_PASSWORD: siderite, MYSQL_USER: siderite, MYSQL_PASSWORD: siderite, MYSQL_DATABASE: siderite }
         ports: ["3306:3306"]
-        options: --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -paxumapi" --health-interval 2s --health-retries 60
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -psiderite" --health-interval 2s --health-retries 60
       redis:
         image: redis:7-alpine
         ports: ["6379:6379"]
     env:
-      DATABASE_URL: postgres://axumapi:axumapi@127.0.0.1:5432/axumapi
-      MYSQL_URL: mysql://root:axumapi@127.0.0.1:3306/axumapi
-      MONGODB_URL: mongodb://127.0.0.1:27017/axumapi?directConnection=true
+      DATABASE_URL: postgres://siderite:siderite@127.0.0.1:5432/siderite
+      MYSQL_URL: mysql://root:siderite@127.0.0.1:3306/siderite
+      MONGODB_URL: mongodb://127.0.0.1:27017/siderite?directConnection=true
       REDIS_URL: redis://127.0.0.1:6379/15
     steps:
       - uses: actions/checkout@v4

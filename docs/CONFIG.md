@@ -1,6 +1,6 @@
 # Configuration
 
-`axumapi::config` (crate `axumapi-config`) loads `Settings` with
+`siderite::config` (crate `siderite-config`) loads `Settings` with
 [figment](https://docs.rs/figment).
 
 ## Sources and precedence
@@ -16,9 +16,9 @@ Overrides always win, whatever order the builder calls come in. Files and
 environment sources merge in the order they are added.
 
 ```rust
-use axumapi::config::{ConfigBuilder, load};
+use siderite::config::{ConfigBuilder, load};
 
-// axumapi.toml (optional) + AXUMAPI_* + DATABASE_URL / ADDR
+// siderite.toml (optional) + SIDERITE_* + DATABASE_URL / ADDR
 let settings = load()?;
 
 let settings = ConfigBuilder::new()
@@ -29,7 +29,7 @@ let settings = ConfigBuilder::new()
 ```
 
 Environment keys use `__` for nesting once the prefix is stripped:
-`AXUMAPI_DATABASES__ANALYTICS__URL` sets `databases.analytics.url`.
+`SIDERITE_DATABASES__ANALYTICS__URL` sets `databases.analytics.url`.
 `env_prefix` also maps two unprefixed aliases, and prefixed keys win over them:
 
 | Variable | Key |
@@ -46,7 +46,7 @@ application-specific sections can live next to the built-in ones.
 secret_key = "change-me"
 
 [app]
-name = "blog"          # default "axumapi"
+name = "blog"          # default "siderite"
 debug = false
 
 [server]

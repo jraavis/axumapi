@@ -4,9 +4,9 @@ description: Django-inspired JSON migrations, autodetector, reversibility, and S
 ---
 
 The autodetector diffs `ModelMeta` snapshots. The executor applies JSON
-files through `axumapi_orm::Db`. Call the commands from the **application
+files through `siderite_orm::Db`. Call the commands from the **application
 binary** so `makemigrations` sees compiled metadata — `AppCli` is the usual
-entry point. See [CLI](/axumapi/guides/production/cli/).
+entry point. See [CLI](/siderite/guides/production/cli/).
 
 ```bash
 cargo run -p blog_postgres -- makemigrations
@@ -23,7 +23,7 @@ cargo run -p blog_postgres -- showmigrations
 | `showmigrations` | `[X]` applied / `[ ]` pending, in graph order |
 | `squashmigrations FROM TO [--name SLUG]` | Collapse a contiguous range into one migration with `replaces` |
 
-The standalone `axumapi` binary runs `migrate`, `rollback`,
+The standalone `siderite` binary runs `migrate`, `rollback`,
 `showmigrations`, and `squashmigrations` from JSON files plus
 `--database-url`. It cannot see your models, so it cannot run
 `makemigrations`. `--dry-run` prints SQL (or operations) and executes
@@ -116,7 +116,7 @@ copied as written.
 SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add
 or drop table constraints. For `AlterField`, `RemoveField`,
 `AddConstraint`, and `DeleteConstraint` the editor rebuilds the table
-(`PRAGMA foreign_keys = OFF`, create `__axumapi_new`, copy, rename,
+(`PRAGMA foreign_keys = OFF`, create `__siderite_new`, copy, rename,
 recreate indexes).
 
 `PRAGMA foreign_keys` is a no-op inside a transaction. Atomic migrations
@@ -174,7 +174,7 @@ InnoDB rejects it. Use `SET NULL`, `CASCADE`, `RESTRICT`, or `NO ACTION`.
 ## History table
 
 ```sql
-CREATE TABLE IF NOT EXISTS "axumapi_migrations" (
+CREATE TABLE IF NOT EXISTS "siderite_migrations" (
   "id" TEXT PRIMARY KEY,
   "checksum" TEXT NOT NULL,
   "applied_at" TEXT NOT NULL
@@ -188,6 +188,6 @@ beyond `RunSQL` / `RunRust` are not implemented.
 
 ## See also
 
-- [CLI](/axumapi/guides/production/cli/)
-- [Models](/axumapi/guides/data/models/)
-- [Backends](/axumapi/guides/data/backends/)
+- [CLI](/siderite/guides/production/cli/)
+- [Models](/siderite/guides/data/models/)
+- [Backends](/siderite/guides/data/backends/)

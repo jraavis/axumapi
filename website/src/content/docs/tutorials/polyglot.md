@@ -17,7 +17,7 @@ Both aliases default to SQLite files in the current directory. Point
 analytics at PostgreSQL if you want:
 
 ```bash
-export ANALYTICS_DATABASE_URL=postgres://axumapi:axumapi@127.0.0.1:55432/axumapi
+export ANALYTICS_DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite
 export USERS_DATABASE_URL='sqlite://users.db?mode=rwc'
 ```
 
@@ -51,6 +51,6 @@ The last call is 400: querysets cannot span databases.
 
 ## See also
 
-- [Database routing](/axumapi/guides/data/database-routing/)
-- [QuerySets](/axumapi/guides/data/querysets/)
-- [Backends](/axumapi/guides/data/backends/)
+- [Database routing](/siderite/guides/data/database-routing/)
+- [QuerySets](/siderite/guides/data/querysets/)
+- [Backends](/siderite/guides/data/backends/)

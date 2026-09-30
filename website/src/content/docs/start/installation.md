@@ -1,19 +1,19 @@
 ---
 title: Installation
-description: Add axumapi to a Rust project, pick cargo features, and set the MSRV.
+description: Add siderite to a Rust project, pick cargo features, and set the MSRV.
 ---
 
-axumapi is a Cargo workspace. Until the first crates.io release, depend on the
+siderite is a Cargo workspace. Until the first crates.io release, depend on the
 git repository (or a path checkout).
 
 ```toml
 [dependencies]
-axumapi = { git = "https://github.com/jraavis/axumapi" }
+siderite = { git = "https://github.com/jraavis/siderite" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-The `axumapi` crate is the public facade. Most applications depend only on it
-and `use axumapi::prelude::*;`.
+The `siderite` crate is the public facade. Most applications depend only on it
+and `use siderite::prelude::*;`.
 
 ## Toolchain
 
@@ -29,9 +29,9 @@ rustup toolchain install 1.92
 
 ## Cargo features
 
-SQLite is always available. Other backends are opt-in on `axumapi-backends`
+SQLite is always available. Other backends are opt-in on `siderite-backends`
 (re-exported through the workspace). Enable them on the crate that opens the
-connection — typically your binary, an example, or `axumapi-cli`.
+connection — typically your binary, an example, or `siderite-cli`.
 
 | Feature | What it unlocks | Live-test variable |
 |---|---|---|
@@ -45,32 +45,32 @@ A URL for a backend that was not compiled in is an error. Unsupported QuerySet
 features fail with a `BackendCapabilityError` before any I/O. Redis is a typed
 client, not a QuerySet backend.
 
-See [Backends](/axumapi/guides/data/backends/) for the feature matrix.
+See [Backends](/siderite/guides/data/backends/) for the feature matrix.
 
 ## Workspace crates
 
 | Crate | Role |
 |---|---|
-| `axumapi` | Facade and prelude |
-| `axumapi-core` | App, routing, extractors, RFC 7807 errors |
-| `axumapi-validation` | `Validate`, rules, constrained types, `Schema` |
-| `axumapi-orm` | `Model`, `QuerySet`, relations, transactions |
-| `axumapi-backends` | SQLite, PostgreSQL, MySQL, MongoDB, Redis |
-| `axumapi-macros` | Route attributes, `routes![]`, derives |
-| `axumapi-openapi` | OpenAPI 3.1 document and UIs |
-| `axumapi-migrations` | Autodetector, JSON migrations, schema editor |
-| `axumapi-config` | Layered settings, `Secret`, tracing |
-| `axumapi-cache` | Memory/Redis cache, `RouteCache` |
-| `axumapi-cli` | `AppCli` and the standalone `axumapi` binary |
-| `axumapi-testkit` | In-process `TestClient` and `TestDatabase` |
+| `siderite` | Facade and prelude |
+| `siderite-core` | App, routing, extractors, RFC 7807 errors |
+| `siderite-validation` | `Validate`, rules, constrained types, `Schema` |
+| `siderite-orm` | `Model`, `QuerySet`, relations, transactions |
+| `siderite-backends` | SQLite, PostgreSQL, MySQL, MongoDB, Redis |
+| `siderite-macros` | Route attributes, `routes![]`, derives |
+| `siderite-openapi` | OpenAPI 3.1 document and UIs |
+| `siderite-migrations` | Autodetector, JSON migrations, schema editor |
+| `siderite-config` | Layered settings, `Secret`, tracing |
+| `siderite-cache` | Memory/Redis cache, `RouteCache` |
+| `siderite-cli` | `AppCli` and the standalone `siderite` binary |
+| `siderite-testkit` | In-process `TestClient` and `TestDatabase` |
 
-The full map and dependency rules live in [Crate map](/axumapi/reference/crates/).
+The full map and dependency rules live in [Crate map](/siderite/reference/crates/).
 
 ## Clone and run the examples
 
 ```bash
-git clone https://github.com/jraavis/axumapi
-cd axumapi
+git clone https://github.com/jraavis/siderite
+cd siderite
 cargo run -p hello_world
 ```
 
@@ -85,9 +85,9 @@ docker compose up -d --wait
 ```
 
 The compose header lists host ports and credentials. Details are in
-[Testing](/axumapi/guides/production/testing/).
+[Testing](/siderite/guides/production/testing/).
 
 ## Next
 
-- [First application](/axumapi/start/first-app/) — walk the Hello World app
-- [Core concepts](/axumapi/start/concepts/) — `App`, prelude, `Db`, `Schema` vs `Model`
+- [First application](/siderite/start/first-app/) — walk the Hello World app
+- [Core concepts](/siderite/start/concepts/) — `App`, prelude, `Db`, `Schema` vs `Model`

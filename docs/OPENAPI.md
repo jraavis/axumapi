@@ -1,6 +1,6 @@
 # OpenAPI 3.1
 
-axumapi generates an **OpenAPI 3.1.0** document from your routes. You do not need to write any annotations; the document is built from the types in your handler signatures.
+siderite generates an **OpenAPI 3.1.0** document from your routes. You do not need to write any annotations; the document is built from the types in your handler signatures.
 
 | Endpoint | Default | Serves |
 |---|---|---|
@@ -34,7 +34,7 @@ Route macros such as `#[post("/users", status = 201)]` expand to these same buil
 
 ## Schemas and components
 
-A type appears in the document through the `Schema` trait in `axumapi-validation`, which is also re-exported from the facade:
+A type appears in the document through the `Schema` trait in `siderite-validation`, which is also re-exported from the facade:
 
 * If `schema_name()` returns a name, the type is emitted **once**, under `components.schemas`, and every use becomes a `$ref` to it. Recursive types are supported, because a placeholder is registered before the definition is generated.
 * Two different Rust types that claim the same name are reported as a `SchemaConflict`, not silently overwritten.
@@ -53,10 +53,10 @@ These problems are detected when the app is built. `run()` and `into_router_serv
 * Schema-name conflicts
 * Paths that do not start with `/`
 
-Tests validate generated documents against the official OpenAPI 3.1 JSON Schema, stored in `crates/axumapi-openapi/tests/fixtures`.
+Tests validate generated documents against the official OpenAPI 3.1 JSON Schema, stored in `crates/siderite-openapi/tests/fixtures`.
 
 ## Differences from FastAPI
 
-* **Documentation hooks live on traits.** FastAPI inspects Python type hints at runtime. In axumapi, extractors and responses describe themselves through `describe` hooks on axumapi's own traits.
+* **Documentation hooks live on traits.** FastAPI inspects Python type hints at runtime. In siderite, extractors and responses describe themselves through `describe` hooks on siderite's own traits.
 * **No reflection.** Schemas come from `Schema` implementations, usually through `#[derive(Schema)]`.
 * **Security schemes** are extractors. Each one registers a `securitySchemes` component and a requirement on the operation, so the document matches the handler signature. See [SECURITY.md](SECURITY.md).

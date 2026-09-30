@@ -7,24 +7,24 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/jraavis/axumapi"
+repository = "https://github.com/jraavis/siderite"
 authors = ["jraavis"]
 keywords = ["web", "framework", "orm", "openapi", "validation"]
 categories = ["web-programming::http-server", "database"]
 
 [workspace.dependencies]
-axumapi = { path = "crates/axumapi", version = "0.1.0" }
-axumapi-core = { path = "crates/axumapi-core", version = "0.1.0" }
-axumapi-macros = { path = "crates/axumapi-macros", version = "0.1.0" }
-axumapi-validation = { path = "crates/axumapi-validation", version = "0.1.0" }
-axumapi-orm = { path = "crates/axumapi-orm", version = "0.1.0" }
-axumapi-backends = { path = "crates/axumapi-backends", version = "0.1.0" }
-axumapi-migrations = { path = "crates/axumapi-migrations", version = "0.1.0" }
-axumapi-openapi = { path = "crates/axumapi-openapi", version = "0.1.0" }
-axumapi-testkit = { path = "crates/axumapi-testkit", version = "0.1.0" }
-axumapi-config = { path = "crates/axumapi-config", version = "0.1.0" }
-axumapi-cache = { path = "crates/axumapi-cache", version = "0.1.0" }
-axumapi-cli = { path = "crates/axumapi-cli", version = "0.1.0" }
+siderite = { path = "crates/siderite", version = "0.1.0" }
+siderite-core = { path = "crates/siderite-core", version = "0.1.0" }
+siderite-macros = { path = "crates/siderite-macros", version = "0.1.0" }
+siderite-validation = { path = "crates/siderite-validation", version = "0.1.0" }
+siderite-orm = { path = "crates/siderite-orm", version = "0.1.0" }
+siderite-backends = { path = "crates/siderite-backends", version = "0.1.0" }
+siderite-migrations = { path = "crates/siderite-migrations", version = "0.1.0" }
+siderite-openapi = { path = "crates/siderite-openapi", version = "0.1.0" }
+siderite-testkit = { path = "crates/siderite-testkit", version = "0.1.0" }
+siderite-config = { path = "crates/siderite-config", version = "0.1.0" }
+siderite-cache = { path = "crates/siderite-cache", version = "0.1.0" }
+siderite-cli = { path = "crates/siderite-cli", version = "0.1.0" }
 
 async-trait = "0.1"
 base64 = "0.22"

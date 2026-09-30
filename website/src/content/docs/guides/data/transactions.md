@@ -52,6 +52,6 @@ savepoints).
 
 ## See also
 
-- [Signals](/axumapi/guides/data/signals/) — receivers run on the operation’s `Db`
-- [Backends](/axumapi/guides/data/backends/)
-- [Testing](/axumapi/guides/production/testing/) — `TestDatabase::isolated`
+- [Signals](/siderite/guides/data/signals/) — receivers run on the operation’s `Db`
+- [Backends](/siderite/guides/data/backends/)
+- [Testing](/siderite/guides/production/testing/) — `TestDatabase::isolated`

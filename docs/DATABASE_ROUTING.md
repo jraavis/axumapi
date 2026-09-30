@@ -1,12 +1,12 @@
 # Database routing
 
-An application can talk to several databases: a primary and a read replica, or a separate store for analytics. `Databases` is the registry, and a `DatabaseRouter` (Django's `DATABASE_ROUTERS`) picks the alias per model. Items live in `axumapi_orm` (`axumapi::orm`).
+An application can talk to several databases: a primary and a read replica, or a separate store for analytics. `Databases` is the registry, and a `DatabaseRouter` (Django's `DATABASE_ROUTERS`) picks the alias per model. Items live in `siderite_orm` (`siderite::orm`).
 
 ## Registering databases
 
 ```rust
-use axumapi::orm::{Databases, Db};
-use axumapi::prelude::*;
+use siderite::orm::{Databases, Db};
+use siderite::prelude::*;
 
 let app = App::new()
     .database("default", primary)     // registered as State<Databases>
@@ -26,8 +26,8 @@ async fn list_books(State(dbs): State<Databases>) -> Result<Json<Vec<Book>>, Api
 ## Writing a router
 
 ```rust
-use axumapi::orm::ModelMeta;
-use axumapi::orm::router::DatabaseRouter;
+use siderite::orm::ModelMeta;
+use siderite::orm::router::DatabaseRouter;
 
 struct AppRouter;
 

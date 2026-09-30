@@ -9,13 +9,13 @@ publish = false
 workspace = true
 
 [dependencies]
-axumapi.workspace = true
-axumapi-backends = { workspace = true, features = ["mongodb"] }
+siderite.workspace = true
+siderite-backends = { workspace = true, features = ["mongodb"] }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-axumapi-backends = { workspace = true, features = ["mongodb"] }
-axumapi-testkit.workspace = true
+siderite-backends = { workspace = true, features = ["mongodb"] }
+siderite-testkit.workspace = true
 http.workspace = true

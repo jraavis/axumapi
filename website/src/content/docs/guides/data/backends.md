@@ -8,7 +8,7 @@ checks `required_features()` against `BackendCapabilities` **before any
 I/O** and returns a typed `BackendCapabilityError` for anything it cannot
 run. Nothing is silently ignored.
 
-The compact matrix is in [Backend matrix](/axumapi/reference/backend-matrix/). This
+The compact matrix is in [Backend matrix](/siderite/reference/backend-matrix/). This
 page covers how to connect, dialect notes, and Redis.
 
 ## Status
@@ -24,21 +24,21 @@ page covers how to connect, dialect notes, and Redis.
 DynamoDB is a design note only; it is not planned for v1.
 
 ```rust
-use axumapi_backends::sqlite::SqliteBackend;
-use axumapi::orm::Db;
+use siderite_backends::sqlite::SqliteBackend;
+use siderite::orm::Db;
 
 let db = Db::new(SqliteBackend::connect("sqlite::memory:").await?);
 ```
 
 Live tests skip themselves when the matching URL variable is unset. Start
 the four servers from the root `docker-compose.yml`. See
-[Testing](/axumapi/guides/production/testing/).
+[Testing](/siderite/guides/production/testing/).
 
 ## Canonical storage
 
 PostgreSQL stores every `Value` natively. SQLite has fewer storage classes,
 so the adapter binds and expects the canonical forms from
-`axumapi_orm::types`. Decoding accepts both the native and the canonical
+`siderite_orm::types`. Decoding accepts both the native and the canonical
 form.
 
 | Rust type | PostgreSQL | SQLite | MySQL | MongoDB |
@@ -105,7 +105,7 @@ Bulk operations chunk rows to `max_params` (SQLite 32766, PostgreSQL/MySQL
   `UPDATE`/`DELETE`, are wrapped in derived tables. A correlated `EXISTS`
   over the target table still fails with MySQL 1093.
 - DDL commits implicitly. `TEXT` cannot be a primary key: use
-  `VARCHAR(191)`. See [Migrations](/axumapi/guides/data/migrations/).
+  `VARCHAR(191)`. See [Migrations](/siderite/guides/data/migrations/).
 
 ## MongoDB
 
@@ -114,7 +114,7 @@ Bulk operations chunk rows to `max_params` (SQLite 32766, PostgreSQL/MySQL
   capability error.
 - A table is a collection. The primary key column (default `id`) is stored
   as `_id`. Missing keys are generated as consecutive `i64` values from
-  `axumapi_counters`, **outside** the transaction, so rollbacks leave gaps.
+  `siderite_counters`, **outside** the transaction, so rollbacks leave gaps.
 - Reads compile to aggregation pipelines. Plans are checked and compiled
   entirely before any I/O.
 - Predicates follow SQL three-valued logic: `= NULL` means `IS NULL`.
@@ -145,7 +145,7 @@ Bulk operations chunk rows to `max_params` (SQLite 32766, PostgreSQL/MySQL
   Lua.
 
 `RedisCache` (feature `redis`) sits on this store. See
-[Cache](/axumapi/guides/production/cache/).
+[Cache](/siderite/guides/production/cache/).
 
 ## Raw queries
 
@@ -161,6 +161,6 @@ MongoDB rejects raw SQL (`Feature::RawSql`); use
 
 ## See also
 
-- [Backend matrix](/axumapi/reference/backend-matrix/)
-- [QueryPlan IR](/axumapi/internals/query-plan/)
-- [Transactions](/axumapi/guides/data/transactions/)
+- [Backend matrix](/siderite/reference/backend-matrix/)
+- [QueryPlan IR](/siderite/internals/query-plan/)
+- [Transactions](/siderite/guides/data/transactions/)

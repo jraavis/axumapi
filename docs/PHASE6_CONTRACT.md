@@ -26,21 +26,21 @@ must be reported back to the lead, not silently introduced.
 
 | Branch | Owns |
 |---|---|
-| `phase6/config-obs` | `crates/axumapi-config/**`, `crates/axumapi-core/src/middleware/observe.rs`, `crates/axumapi-core/src/middleware.rs` |
-| `phase6/cache` | `crates/axumapi-cache/**` |
-| `phase6/security` | `crates/axumapi-core/src/security.rs` (may become `security/`), `crates/axumapi-core/src/lib.rs` (re-export lines only), `crates/axumapi-core/tests/security*.rs` |
-| `phase6/orm-ext` | `crates/axumapi-orm/**`, `crates/axumapi-macros/src/receiver.rs`, `crates/axumapi/tests/signals*.rs`, `crates/axumapi/tests/routing_db*.rs` |
-| `phase6/cli` | `crates/axumapi-cli/**`, `crates/axumapi-migrations/**` |
+| `phase6/config-obs` | `crates/siderite-config/**`, `crates/siderite-core/src/middleware/observe.rs`, `crates/siderite-core/src/middleware.rs` |
+| `phase6/cache` | `crates/siderite-cache/**` |
+| `phase6/security` | `crates/siderite-core/src/security.rs` (may become `security/`), `crates/siderite-core/src/lib.rs` (re-export lines only), `crates/siderite-core/tests/security*.rs` |
+| `phase6/orm-ext` | `crates/siderite-orm/**`, `crates/siderite-macros/src/receiver.rs`, `crates/siderite/tests/signals*.rs`, `crates/siderite/tests/routing_db*.rs` |
+| `phase6/cli` | `crates/siderite-cli/**`, `crates/siderite-migrations/**` |
 
 Already done by the lead in the contract commit: workspace members and
 dependencies, module declarations, `SchemaRegistry::add_security_scheme`
 (wired into `components.securitySchemes`), `App::database` /
 `App::databases` / `App::database_registry` (the registry reaches handlers as
 `State<Databases>`), the `#[receiver]` entry point, and facade re-exports
-(`axumapi::config`, `axumapi::cache`, `axumapi::receiver`,
-`axumapi::security`).
+(`siderite::config`, `siderite::cache`, `siderite::receiver`,
+`siderite::security`).
 
-## 1. Configuration (`axumapi-config`)
+## 1. Configuration (`siderite-config`)
 
 Built on `figment`. Precedence, lowest to highest: defaults, TOML file,
 environment, programmatic overrides.
@@ -66,12 +66,12 @@ impl ConfigBuilder {
     pub fn new() -> Self;                                   // defaults only
     pub fn file(self, path: impl AsRef<Path>) -> Self;      // required file
     pub fn file_optional(self, path: impl AsRef<Path>) -> Self;
-    pub fn env_prefix(self, prefix: &str) -> Self;          // `AXUMAPI_DATABASES__DEFAULT__URL`
+    pub fn env_prefix(self, prefix: &str) -> Self;          // `SIDERITE_DATABASES__DEFAULT__URL`
     pub fn set(self, key: &str, value: impl Serialize) -> Self;  // always wins, any call order
     pub fn extract<T: DeserializeOwned>(&self) -> Result<T, ConfigError>;
     pub fn build(&self) -> Result<Settings, ConfigError>;
 }
-/// `axumapi.toml` (optional) + `AXUMAPI_` env; `DATABASE_URL` and `ADDR`
+/// `siderite.toml` (optional) + `SIDERITE_` env; `DATABASE_URL` and `ADDR`
 /// map to `databases.default.url` and `server.addr`.
 pub fn load() -> Result<Settings, ConfigError>;
 /// Install a `tracing-subscriber` using `LogSettings` (`RUST_LOG` wins).
@@ -79,7 +79,7 @@ pub fn init_tracing(log: &LogSettings) -> Result<(), ConfigError>;
 pub enum ConfigError { /* thiserror; messages never contain secret values */ }
 ```
 
-## 2. Observability (`axumapi-core` middleware)
+## 2. Observability (`siderite-core` middleware)
 
 Extend the existing `RequestLogging` / `RequestId` middleware in
 `middleware/observe.rs` (no parallel middleware). Each request gets an
@@ -92,7 +92,7 @@ inside an `orm.query` span (`db.system`, `db.operation`, `db.table`) and
 record the duration. SQL text is recorded only at `trace` level. Bind
 parameters are never recorded.
 
-## 3. Security (`axumapi_core::security`)
+## 3. Security (`siderite_core::security`)
 
 Every scheme is a `FromRequestParts` extractor whose `describe` calls
 `registry.add_security_scheme(name, json)` and pushes an entry onto
@@ -146,7 +146,7 @@ inside one object as all required. Extractors on one handler therefore form
 a single requirement object. `Option<Scheme>` adds an anonymous alternative
 (`[{}, {"HTTPBearer": []}]`).
 
-## 4. CLI (`axumapi-cli`)
+## 4. CLI (`siderite-cli`)
 
 App-binary entry point (these commands need the user's `App`):
 
@@ -164,7 +164,7 @@ impl AppCli {
     /// migrate, rollback, showmigrations, squashmigrations.
     pub async fn run(self) -> ExitCode;
 }
-pub struct CliSettings { /* addr, databases by alias; From<&axumapi_config::Settings> */ }
+pub struct CliSettings { /* addr, databases by alias; From<&siderite_config::Settings> */ }
 pub struct CheckIssue { pub level: CheckLevel, pub id: &'static str, pub message: String }
 pub fn check(app: &App, models: &[&'static ModelMeta], settings: &CliSettings, ...) -> Vec<CheckIssue>;
 ```
@@ -174,13 +174,13 @@ duplicate routes, OpenAPI generation, and backend capability mismatches.
 `shell` is replaced by `dbshell`, which starts the backend's native client
 (`sqlite3`, `psql`, `mysql`). Passwords never appear on the command line:
 a userinfo password and a PostgreSQL `?password=` query parameter move into
-`PGPASSWORD`; `sslpassword` is refused. The standalone `axumapi` binary gains
+`PGPASSWORD`; `sslpassword` is refused. The standalone `siderite` binary gains
 `postgres` and `mysql` features. A MySQL schema editor is added to
-`axumapi-migrations`. `configure_db` runs once per connected SQL alias
+`siderite-migrations`. `configure_db` runs once per connected SQL alias
 before registration (attach `Signals` there); `database_router` installs
 the router on the registry `runserver` builds.
 
-## 5. Signals (`axumapi_orm::signals`)
+## 5. Signals (`siderite_orm::signals`)
 
 - The `Signals` registry lives on `Db`: `Db::with_signals(Signals) -> Db`,
   `Db::signals() -> &Signals`. Clones and transaction handles share it.
@@ -204,7 +204,7 @@ the router on the registry `runserver` builds.
   - Bulk `QuerySet` update and delete do not send signals, as in Django.
 - Update the `ops.rs` module docs, which currently say there are no signals.
 
-## 6. Database routing (`axumapi_orm::router`)
+## 6. Database routing (`siderite_orm::router`)
 
 ```rust
 pub trait DatabaseRouter: Send + Sync + 'static {
@@ -230,7 +230,7 @@ queryset turned into a subquery (`QuerySet::subquery`, `exists_expr`)
 stamps a `PlanOrigin`; `Db` rejects a query or bulk write that contains a
 subquery from another database before any SQL is sent.
 
-## 7. Cache (`axumapi-cache`)
+## 7. Cache (`siderite-cache`)
 
 ```rust
 #[async_trait]
@@ -246,7 +246,7 @@ pub trait CacheExt: Cache {     // blanket impl
     async fn get_or_set<T, F, Fut>(&self, key, ttl, f: F) -> Result<T, CacheError>;
 }
 pub struct MemoryCache;   // MemoryCache::new(capacity): LRU + per-entry TTL
-pub struct RedisCache;    // feature "redis", wraps axumapi_backends::redis::RedisStore
+pub struct RedisCache;    // feature "redis", wraps siderite_backends::redis::RedisStore
 pub struct RouteCache;    // middleware: caches 200 GET/HEAD responses by
                           // method+URI+Accept+Accept-Encoding for a TTL;
                           // bypasses Authorization, Cookie, X-API-Key,

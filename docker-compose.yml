@@ -2,9 +2,9 @@
 # do not collide with locally installed servers.
 #
 #   docker compose up -d --wait
-#   DATABASE_URL=postgres://axumapi:axumapi@127.0.0.1:55432/axumapi \
-#   MYSQL_URL=mysql://root:axumapi@127.0.0.1:53306/axumapi \
-#   MONGODB_URL='mongodb://127.0.0.1:57017/axumapi?directConnection=true' \
+#   DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite \
+#   MYSQL_URL=mysql://root:siderite@127.0.0.1:53306/siderite \
+#   MONGODB_URL='mongodb://127.0.0.1:57017/siderite?directConnection=true' \
 #   REDIS_URL=redis://127.0.0.1:56379/15 \
 #   cargo test --workspace --all-features -- --include-ignored
 #
@@ -15,25 +15,25 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: axumapi
-      POSTGRES_PASSWORD: axumapi
-      POSTGRES_DB: axumapi
+      POSTGRES_USER: siderite
+      POSTGRES_PASSWORD: siderite
+      POSTGRES_DB: siderite
     ports: ["127.0.0.1:55432:5432"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U axumapi"]
+      test: ["CMD-SHELL", "pg_isready -U siderite"]
       interval: 2s
       retries: 30
 
   mysql:
     image: mysql:8.4
     environment:
-      MYSQL_ROOT_PASSWORD: axumapi
-      MYSQL_USER: axumapi
-      MYSQL_PASSWORD: axumapi
-      MYSQL_DATABASE: axumapi
+      MYSQL_ROOT_PASSWORD: siderite
+      MYSQL_USER: siderite
+      MYSQL_PASSWORD: siderite
+      MYSQL_DATABASE: siderite
     ports: ["127.0.0.1:53306:3306"]
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-paxumapi"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-psiderite"]
       interval: 2s
       retries: 60
 

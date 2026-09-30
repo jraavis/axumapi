@@ -21,11 +21,11 @@ cargo run -p todo_sqlite
 
 Walkthroughs:
 
-- [Hello World](/axumapi/tutorials/hello-world/)
-- [Todo on SQLite](/axumapi/tutorials/todo-sqlite/)
-- [Blog on PostgreSQL](/axumapi/tutorials/blog-postgres/)
-- [Two databases](/axumapi/tutorials/polyglot/)
-- [Todo on MongoDB](/axumapi/tutorials/todo-mongo/)
+- [Hello World](/siderite/tutorials/hello-world/)
+- [Todo on SQLite](/siderite/tutorials/todo-sqlite/)
+- [Blog on PostgreSQL](/siderite/tutorials/blog-postgres/)
+- [Two databases](/siderite/tutorials/polyglot/)
+- [Todo on MongoDB](/siderite/tutorials/todo-mongo/)
 
 Live databases for the PostgreSQL, MySQL, MongoDB, and Redis suites start
-from the root `docker-compose.yml`. See [Testing](/axumapi/guides/production/testing/).
+from the root `docker-compose.yml`. See [Testing](/siderite/guides/production/testing/).

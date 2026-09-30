@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "axumapi-docs",
+      "name": "siderite-docs",
       "dependencies": {
         "@astrojs/starlight": "^0.42.4",
         "@fontsource/ibm-plex-mono": "^5.2.6",

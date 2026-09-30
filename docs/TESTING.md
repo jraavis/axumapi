@@ -1,11 +1,11 @@
 # Testing
 
-`axumapi-testkit` drives an `App` in process, without sockets, and provides disposable databases. Add it as a dev-dependency.
+`siderite-testkit` drives an `App` in process, without sockets, and provides disposable databases. Add it as a dev-dependency.
 
 ## `TestClient`
 
 ```rust
-use axumapi_testkit::TestClient;
+use siderite_testkit::TestClient;
 
 let client = TestClient::new(app());
 let response = client.get("/users/1").await?;
@@ -15,7 +15,7 @@ let user: User = response.json()?;
 client.post_json("/users", &NewUser { name: "ann".into() }).await?;
 ```
 
-`TestClient::new` panics on a misconfigured app (duplicate routes, bad paths, OpenAPI failures); `try_new` returns the error so a test can assert on it. Requests: `get`, `delete`, `post_json`, `post_raw(path, content_type, body)` and `send(Request<Body>)` for anything else (`axumapi_testkit::http` is re-exported). A `TestResponse` has `status`, `headers`, `body`, `json::<T>()`, `text()` and `content_type()`.
+`TestClient::new` panics on a misconfigured app (duplicate routes, bad paths, OpenAPI failures); `try_new` returns the error so a test can assert on it. Requests: `get`, `delete`, `post_json`, `post_raw(path, content_type, body)` and `send(Request<Body>)` for anything else (`siderite_testkit::http` is re-exported). A `TestResponse` has `status`, `headers`, `body`, `json::<T>()`, `text()` and `content_type()`.
 
 `TestClient::start(app)` also runs the startup hooks, like `App::run` without a socket; call `shutdown()` to run the shutdown hooks.
 
@@ -38,7 +38,7 @@ let client = TestClient::builder(app())
 ## `TestDatabase`
 
 ```rust
-use axumapi_testkit::TestDatabase;
+use siderite_testkit::TestDatabase;
 
 let db = TestDatabase::sqlite_memory()   // one shared in-memory connection
     .await?
@@ -79,9 +79,9 @@ The suites for PostgreSQL, MySQL, MongoDB and Redis are gated: each test skips i
 
 ```bash
 docker compose up -d --wait
-DATABASE_URL=postgres://axumapi:axumapi@127.0.0.1:55432/axumapi \
-MYSQL_URL=mysql://root:axumapi@127.0.0.1:53306/axumapi \
-MONGODB_URL='mongodb://127.0.0.1:57017/axumapi?directConnection=true' \
+DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite \
+MYSQL_URL=mysql://root:siderite@127.0.0.1:53306/siderite \
+MONGODB_URL='mongodb://127.0.0.1:57017/siderite?directConnection=true' \
 REDIS_URL=redis://127.0.0.1:56379/15 \
 cargo test --workspace --all-features -- --include-ignored
 docker compose down

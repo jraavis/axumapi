@@ -1,16 +1,16 @@
 ---
-title: axumapi
+title: siderite
 description: A FastAPI-style Rust web framework with Pydantic-style validation and a Django-style ORM.
 template: splash
 hero:
   title: Typed routes. Validated bodies. A Django-style ORM.
-  tagline: axumapi is an async-first Rust web framework. Handlers look like FastAPI, models validate like Pydantic v2, and queries are lazy QuerySets built from field constants that the compiler checks.
+  tagline: siderite is an async-first Rust web framework. Handlers look like FastAPI, models validate like Pydantic v2, and queries are lazy QuerySets built from field constants that the compiler checks.
   actions:
     - text: Start with a route
-      link: /axumapi/start/first-app/
+      link: /siderite/start/first-app/
       icon: right-arrow
     - text: GitHub
-      link: https://github.com/jraavis/axumapi
+      link: https://github.com/jraavis/siderite
       icon: github
       variant: minimal
 ---
@@ -25,7 +25,7 @@ import { Code } from '@astrojs/starlight/components';
 <Code
   lang="rust"
   title="examples/hello_world"
-  code={`use axumapi::prelude::*;
+  code={`use siderite::prelude::*;
 
 #[derive(Deserialize, Validate, Schema)]
 struct Greeting { shout: Option<bool> }
