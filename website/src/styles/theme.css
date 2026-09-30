@@ -51,16 +51,29 @@
 }
 
 .site-title {
+	display: flex;
+	align-items: center;
 	font-family: var(--sl-font-mono);
 	font-weight: 500;
 	letter-spacing: -0.02em;
-	gap: 0.55rem;
+	gap: 0.5rem;
+	line-height: 1;
 }
 
 .site-title img {
-	width: 1.7rem;
-	height: 1.7rem;
-	border-radius: 0.35rem;
+	display: block;
+	width: 1.35em;
+	height: 1.35em;
+	flex: none;
+	border-radius: 0.28em;
+	object-fit: contain;
+}
+
+.site-title span {
+	display: flex;
+	align-items: center;
+	line-height: 1;
+	overflow: visible;
 }
 
 .hero {
