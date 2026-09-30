@@ -319,8 +319,15 @@ impl Transaction for SqliteSchemaTransaction {
                     drop(SqliteTransactionManager::rollback(&mut *conn).await);
                 }
                 drop(set_foreign_keys(&mut conn, self.restore_fk).await);
+                // Without a transaction the statements are already
+                // committed; say so rather than implying nothing happened.
+                let outcome = if self.in_txn {
+                    "rolled back"
+                } else {
+                    "already committed; fix the rows by hand"
+                };
                 return Err(BackendError::Constraint(format!(
-                    "SQLite foreign_key_check found {} new violation(s) after schema change: {}",
+                    "SQLite foreign_key_check found {} new violation(s) after schema change ({outcome}): {}",
                     fresh.len(),
                     violation_summary(&fresh),
                 ))

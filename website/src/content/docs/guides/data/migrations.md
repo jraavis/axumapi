@@ -141,7 +141,10 @@ created orphans and names the offending table and row. Simple `AddField` uses `A
 A `migrate` / `rollback` run on SQLite is a single transaction
 (`BEGIN IMMEDIATE` doubles as the concurrency lock), so it is
 all-or-nothing: a failing migration rolls back the earlier ones in the
-same run. The per-migration `atomic` flag has no effect on SQLite.
+same run. The per-migration `atomic` flag has no effect on SQLite, so
+statements SQLite refuses inside a transaction (`VACUUM`,
+`PRAGMA journal_mode`) cannot appear in a SQLite migration. `migrate` and
+`rollback` also refuse a SQLite `Db` that is already inside a transaction.
 
 ## MySQL
 
@@ -168,6 +171,14 @@ Every DDL statement in MySQL commits implicitly, so the executor does
   row (`DELETE FROM siderite_migration_progress WHERE migration_id = '…'`).
   Keep MySQL migrations small — ideally one schema change each.
   `--dry-run` shows the SQL first.
+- The progress row stores the migration checksum: if the file changed after
+  a partial run, `migrate` refuses to resume. Restore the original file, or
+  reconcile the schema by hand and delete the progress row.
+- Progress is written right *after* each statement commits; MySQL cannot make
+  the two atomic. If the process dies in between, the re-run replays that
+  statement and fails loudly. Confirm its effect is present, advance the row
+  by hand (`stmt_index + 1`, or `op_index + 1, stmt_index = 0` for a
+  `RunRust`) and re-run. Keep `RunRust` code idempotent on MySQL.
 - `RunSQL` statements are not rolled back either.
 
 ### Keyed `TEXT` needs `max_length`

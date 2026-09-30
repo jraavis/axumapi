@@ -5,7 +5,7 @@
 //! transaction behind the same API.
 
 use crate::capabilities::{BackendCapabilities, IsolationLevel};
-use crate::error::OrmError;
+use crate::error::{OrmError, QueryError};
 use crate::plan::QueryPlan;
 use crate::value::Value;
 use crate::write::WritePlan;
@@ -117,8 +117,18 @@ pub trait Backend: Executor {
     /// pragma is a no-op inside a transaction), runs `PRAGMA foreign_key_check`
     /// before commit, and restores the previous pragma value afterwards.
     /// Other backends ignore the SQLite-specific work.
+    ///
+    /// # Errors
+    /// The default implementation has no way to hold a connection outside a
+    /// transaction, so `transactional == false` fails with a capability error
+    /// instead of silently handing back a transaction.
     async fn begin_schema(&self, transactional: bool) -> Result<Box<dyn Transaction>, OrmError> {
-        let _ = transactional;
+        if !transactional {
+            return Err(QueryError::InvalidPlan(
+                "this backend does not support a non-transactional schema connection".into(),
+            )
+            .into());
+        }
         self.begin(None).await
     }
 }

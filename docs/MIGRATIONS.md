@@ -116,7 +116,7 @@ SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add or d
 
 Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding `UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
 
-A `migrate` / `rollback` run on SQLite is a single transaction (`BEGIN IMMEDIATE` doubles as the concurrency lock), so it is all-or-nothing: a failing migration rolls back the earlier ones in the same run. The per-migration `atomic` flag has no effect on SQLite.
+A `migrate` / `rollback` run on SQLite is a single transaction (`BEGIN IMMEDIATE` doubles as the concurrency lock), so it is all-or-nothing: a failing migration rolls back the earlier ones in the same run. The per-migration `atomic` flag has no effect on SQLite. Because the run is one transaction, statements SQLite refuses inside a transaction (`VACUUM`, `PRAGMA journal_mode`) cannot appear in a SQLite migration; run them outside `migrate`. `migrate` / `rollback` also refuse to run on a SQLite `Db` that is already inside a transaction, because `PRAGMA foreign_keys` cannot change until it commits.
 
 ## MySQL
 
@@ -128,6 +128,8 @@ Every DDL statement in MySQL commits implicitly, so the executor does **not** wr
 
 * A migration that fails half way leaves its earlier statements applied, and no row is written to the history table. The executor records progress per statement (`siderite_migration_progress`), so running `migrate` again resumes at the first statement that did not commit instead of replaying the ones that did. That includes resuming *inside* one operation: a `CreateModel` with indexes renders several statements, and a re-run does not re-issue its committed `CREATE TABLE`. The error is [`MigrationError::MysqlPartial`](../crates/siderite-migrations/src/error.rs) and names the statement that failed (`2 of 3`, …), or [`MigrationError::MysqlOpPartial`](../crates/siderite-migrations/src/error.rs) naming the operation when a `RunRust` step fails after committed statements (earlier DDL, or earlier data written by another `RunRust`).
 * Repair by hand, then re-run: fix what the failed statement left behind (for example drop a half-created table, or free a taken index name) and the resume starts at the statement that failed. To restart a migration from scratch instead, roll its applied part back by hand and delete its progress row (`DELETE FROM siderite_migration_progress WHERE migration_id = '…'`).
+* The progress row stores the migration's checksum. If the file changed after a partial run, `migrate` refuses to resume (its indices would point at different operations): restore the original file, or reconcile the schema by hand and delete the progress row.
+* Progress is saved right *after* each statement commits, and MySQL cannot make the two atomic. If the process dies in between, the re-run replays that one statement and fails loudly (`already exists`, or a duplicate key from a `RunRust`). Check that the statement's effect is present, then advance the row by hand (`UPDATE siderite_migration_progress SET stmt_index = stmt_index + 1 WHERE migration_id = '…'`, or `op_index + 1, stmt_index = 0` for a `RunRust`) and re-run. `RunRust` code on MySQL should be idempotent for the same reason.
 * Keep MySQL migrations small, ideally one schema change each, so a failure is easy to repair. Prefer several small migrations to one large one; `--dry-run` shows the SQL first.
 * `RunSQL` statements are not rolled back either.
 

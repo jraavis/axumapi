@@ -526,14 +526,25 @@ impl<'a> Migrator<'a> {
         let kind = self.kind();
         let operations = migration.operations.clone();
         let id = migration.id.clone();
+        let checksum = migration.checksum.clone();
         let start_state = state_before.clone();
         let run = |db: Db| {
             let operations = operations.clone();
             let registry = self.registry.clone();
             let id = id.clone();
+            let checksum = checksum.clone();
             let start_state = start_state.clone();
             async move {
-                unapply_ops_in_order(&db, kind, &id, &operations, &start_state, &registry).await?;
+                unapply_ops_in_order(
+                    &db,
+                    kind,
+                    &id,
+                    &checksum,
+                    &operations,
+                    &start_state,
+                    &registry,
+                )
+                .await?;
                 Ok::<_, MigrationError>(())
             }
         };
@@ -700,44 +711,14 @@ fn progress_ddl(kind: BackendKind) -> String {
         "TEXT"
     };
     format!(
-        "CREATE TABLE IF NOT EXISTS {} ({} {id_type} PRIMARY KEY, {} INTEGER NOT NULL, {} INTEGER NOT NULL DEFAULT 0, {} {dir_type} NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS {} ({} {id_type} PRIMARY KEY, {} INTEGER NOT NULL, {} INTEGER NOT NULL DEFAULT 0, {} {dir_type} NOT NULL, {} {id_type} NOT NULL)",
         quote_star(kind, PROGRESS_TABLE),
         quote_star(kind, "migration_id"),
         quote_star(kind, "op_index"),
         quote_star(kind, "stmt_index"),
         quote_star(kind, "direction"),
+        quote_star(kind, "checksum"),
     )
-}
-
-/// MySQL has no `ADD COLUMN IF NOT EXISTS`, so a progress table written by an
-/// older build (no `stmt_index`) is upgraded in place. The row it holds means
-/// a half-applied migration; losing it would replay committed statements.
-async fn ensure_progress_columns(db: &Db, kind: BackendKind) -> Result<(), MigrationError> {
-    // Keyed on the connection, not the dialect: unit tests drive the MySQL
-    // code path over SQLite, which has no `information_schema`.
-    if kind != BackendKind::MySql || db.capabilities().kind != BackendKind::MySql {
-        return Ok(());
-    }
-    let rows = db
-        .raw_sql(
-            "SELECT 1 FROM information_schema.columns \
-             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
-            vec![
-                Value::Text(PROGRESS_TABLE.to_owned()),
-                Value::Text("stmt_index".to_owned()),
-            ],
-        )
-        .await?;
-    if !rows.rows.is_empty() {
-        return Ok(());
-    }
-    db.execute_script(&format!(
-        "ALTER TABLE {} ADD COLUMN {} INTEGER NOT NULL DEFAULT 0",
-        quote_star(kind, PROGRESS_TABLE),
-        quote_star(kind, "stmt_index"),
-    ))
-    .await?;
-    Ok(())
 }
 
 /// Drop a progress row left by the other direction: a half-applied forward
@@ -749,7 +730,6 @@ async fn reset_progress_direction(
     direction: &str,
 ) -> Result<(), MigrationError> {
     db.execute_script(&progress_ddl(kind)).await?;
-    ensure_progress_columns(db, kind).await?;
     db.raw_execute(
         &format!(
             "DELETE FROM {} WHERE {} = {} AND {} <> {}",
@@ -769,18 +749,24 @@ async fn reset_progress_direction(
 }
 
 /// Completed-statement progress for `id`/`direction` (zero when no row).
+///
+/// The row records the checksum of the migration that wrote it. Indices into
+/// an edited migration point at different operations, so a mismatch refuses
+/// to resume instead of skipping statements that never ran.
 async fn load_progress(
     db: &Db,
     kind: BackendKind,
     id: &str,
+    checksum: &str,
     direction: &str,
 ) -> Result<Progress, MigrationError> {
     let rows = db
         .raw_sql(
             &format!(
-                "SELECT {}, {} FROM {} WHERE {} = {} AND {} = {}",
+                "SELECT {}, {}, {} FROM {} WHERE {} = {} AND {} = {}",
                 quote_star(kind, "op_index"),
                 quote_star(kind, "stmt_index"),
+                quote_star(kind, "checksum"),
                 quote_star(kind, PROGRESS_TABLE),
                 quote_star(kind, "migration_id"),
                 placeholder(kind, 1),
@@ -793,14 +779,25 @@ async fn load_progress(
             ],
         )
         .await?;
-    Ok(rows
-        .rows
-        .first()
-        .map(|row| Progress {
-            ops: int_at(row, "op_index"),
-            stmts: int_at(row, "stmt_index"),
-        })
-        .unwrap_or_default())
+    let Some(row) = rows.rows.first() else {
+        return Ok(Progress::default());
+    };
+    let stored = match row.get("checksum") {
+        Some(Value::Text(stored)) => stored.as_str(),
+        _ => "",
+    };
+    if stored != checksum {
+        return Err(MigrationError::state(format!(
+            "migration `{id}` changed since a partial {direction} stopped \
+             (progress checksum {stored:?}, file {checksum:?}); restore the \
+             original file, or reconcile the schema by hand and delete its \
+             row from `{PROGRESS_TABLE}`"
+        )));
+    }
+    Ok(Progress {
+        ops: int_at(row, "op_index"),
+        stmts: int_at(row, "stmt_index"),
+    })
 }
 
 fn int_at(row: &siderite_orm::Row, key: &str) -> usize {
@@ -817,6 +814,7 @@ async fn save_progress(
     db: &Db,
     kind: BackendKind,
     id: &str,
+    checksum: &str,
     direction: &str,
     progress: Progress,
 ) -> Result<(), MigrationError> {
@@ -860,22 +858,25 @@ async fn save_progress(
         };
         db.raw_execute(
             &format!(
-                "INSERT INTO {} ({}, {}, {}, {}) VALUES ({}, {}, {}, {}){upsert}",
+                "INSERT INTO {} ({}, {}, {}, {}, {}) VALUES ({}, {}, {}, {}, {}){upsert}",
                 quote_star(kind, PROGRESS_TABLE),
                 quote_star(kind, "migration_id"),
                 quote_star(kind, "op_index"),
                 quote_star(kind, "stmt_index"),
                 quote_star(kind, "direction"),
+                quote_star(kind, "checksum"),
                 placeholder(kind, 1),
                 placeholder(kind, 2),
                 placeholder(kind, 3),
                 placeholder(kind, 4),
+                placeholder(kind, 5),
             ),
             vec![
                 Value::Text(id.to_owned()),
                 Value::Int(progress.ops as i64),
                 Value::Int(progress.stmts as i64),
                 Value::Text(direction.to_owned()),
+                Value::Text(checksum.to_owned()),
             ],
         )
         .await?;
@@ -925,7 +926,8 @@ async fn apply_ops_in_order(
     let mut resume = Progress::default();
     if resumable {
         reset_progress_direction(db, kind, &migration.id, PROGRESS_APPLY).await?;
-        resume = load_progress(db, kind, &migration.id, PROGRESS_APPLY).await?;
+        resume =
+            load_progress(db, kind, &migration.id, &migration.checksum, PROGRESS_APPLY).await?;
     }
     let mut current = state.clone();
     let mut sql_index = 0usize;
@@ -988,11 +990,17 @@ async fn apply_ops_in_order(
                 .await?;
                 prior_ddl |= is_implicit_commit(&sql);
                 prior_committed = true;
+                // Not atomic with the statement: MySQL has already committed
+                // the DDL, and no transaction can span it and this write. A
+                // crash between the two replays the statement on re-run, which
+                // fails loudly ("already exists"); see docs/MIGRATIONS.md for
+                // manual recovery. That window is inherent to MySQL DDL.
                 if resumable {
                     save_progress(
                         db,
                         kind,
                         &migration.id,
+                        &migration.checksum,
                         PROGRESS_APPLY,
                         Progress {
                             ops: op_no,
@@ -1009,6 +1017,7 @@ async fn apply_ops_in_order(
                 db,
                 kind,
                 &migration.id,
+                &migration.checksum,
                 PROGRESS_APPLY,
                 Progress {
                     ops: op_no + 1,
@@ -1029,6 +1038,7 @@ async fn unapply_ops_in_order(
     db: &Db,
     kind: BackendKind,
     id: &str,
+    checksum: &str,
     operations: &[Operation],
     state_before: &ProjectState,
     registry: &crate::registry::MigrationRegistry,
@@ -1067,7 +1077,7 @@ async fn unapply_ops_in_order(
     let mut resume = Progress::default();
     if resumable {
         reset_progress_direction(db, kind, id, PROGRESS_UNAPPLY).await?;
-        resume = load_progress(db, kind, id, PROGRESS_UNAPPLY).await?;
+        resume = load_progress(db, kind, id, checksum, PROGRESS_UNAPPLY).await?;
     }
     let mut prior_ddl = false;
     // See `apply_ops_in_order`: earlier DDL or an earlier `RunRust` that
@@ -1121,6 +1131,7 @@ async fn unapply_ops_in_order(
                         db,
                         kind,
                         id,
+                        checksum,
                         PROGRESS_UNAPPLY,
                         Progress {
                             ops: op_no,
@@ -1137,6 +1148,7 @@ async fn unapply_ops_in_order(
                 db,
                 kind,
                 id,
+                checksum,
                 PROGRESS_UNAPPLY,
                 Progress {
                     ops: op_no + 1,
@@ -1409,10 +1421,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(history.rows.len(), 1);
-        let progress = load_progress(&db, BackendKind::MySql, "0001_t", PROGRESS_APPLY)
+        let progress = load_progress(
+            &db,
+            BackendKind::MySql,
+            "0001_t",
+            &migration.checksum,
+            PROGRESS_APPLY,
+        )
+        .await
+        .unwrap();
+        assert_eq!(progress, Progress::default());
+    }
+
+    /// A progress row written by a different version of the migration must
+    /// not be resumed: its indices point at other operations, so skipping
+    /// them would silently leave statements unapplied.
+    #[tokio::test]
+    async fn mysql_resume_refuses_edited_migration() {
+        let db = memory_db().await;
+        db.execute_script(&create_history_sql(BackendKind::MySql))
             .await
             .unwrap();
-        assert_eq!(progress, Progress::default());
+        let original = run_sql_migration(
+            "0005_edit",
+            &[
+                ("CREATE TABLE a (n INTEGER)", "DROP TABLE a"),
+                ("CREATE TABLE a (n INTEGER)", "DROP TABLE a"),
+            ],
+        );
+        let state = ProjectState::new();
+        let registry = crate::registry::MigrationRegistry::new();
+        apply_ops_in_order(&db, BackendKind::MySql, &original, &state, &registry)
+            .await
+            .unwrap_err();
+        let edited = run_sql_migration(
+            "0005_edit",
+            &[
+                ("CREATE TABLE b (n INTEGER)", "DROP TABLE b"),
+                ("CREATE TABLE c (n INTEGER)", "DROP TABLE c"),
+            ],
+        );
+        assert_ne!(original.checksum, edited.checksum);
+        let err = apply_ops_in_order(&db, BackendKind::MySql, &edited, &state, &registry)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("changed since a partial"), "{err}");
+        // Nothing from the edited file ran: `b` would exist otherwise.
+        assert!(db.raw_sql("SELECT n FROM b", Vec::new()).await.is_err());
     }
 
     /// Progress is per *statement*, not per operation: one operation that
@@ -1476,9 +1531,15 @@ mod tests {
             ),
             "{err:?}"
         );
-        let progress = load_progress(&db, BackendKind::MySql, "0004_multi", PROGRESS_APPLY)
-            .await
-            .unwrap();
+        let progress = load_progress(
+            &db,
+            BackendKind::MySql,
+            "0004_multi",
+            &migration.checksum,
+            PROGRESS_APPLY,
+        )
+        .await
+        .unwrap();
         assert_eq!(progress.ops, 0, "the operation is not finished");
         assert_eq!(progress.stmts, 1, "its first statement is committed");
 
@@ -1497,9 +1558,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(index.rows.len(), 1, "{index:?}");
-        let progress = load_progress(&db, BackendKind::MySql, "0004_multi", PROGRESS_APPLY)
-            .await
-            .unwrap();
+        let progress = load_progress(
+            &db,
+            BackendKind::MySql,
+            "0004_multi",
+            &migration.checksum,
+            PROGRESS_APPLY,
+        )
+        .await
+        .unwrap();
         assert_eq!(progress, Progress::default());
     }
 
@@ -1548,9 +1615,15 @@ mod tests {
             "{err:?}"
         );
         assert!(err.to_string().contains("RunRust boom"), "{err:?}");
-        let progress = load_progress(&db, BackendKind::MySql, "0002_data", PROGRESS_APPLY)
-            .await
-            .unwrap();
+        let progress = load_progress(
+            &db,
+            BackendKind::MySql,
+            "0002_data",
+            &migration.checksum,
+            PROGRESS_APPLY,
+        )
+        .await
+        .unwrap();
         assert_eq!(progress.ops, 1);
         assert_eq!(progress.stmts, 0);
 
