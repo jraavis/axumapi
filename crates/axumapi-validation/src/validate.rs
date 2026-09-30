@@ -113,6 +113,24 @@ macro_rules! int_validate {
 }
 int_validate!(i8, i16, i32, i64, u8, u16, u32, u64);
 
+// Bounds are cast because `From` is not implemented for the pointer-sized
+// integers; 128-bit values are limited to what a JSON number can carry.
+macro_rules! wide_int_validate {
+    ($($t:ty => $min:expr, $max:expr);* $(;)?) => {$(
+        impl Validate for $t {
+            fn prepare(input: &mut Value, ctx: &mut ValidationContext) {
+                prepare_int(input, ctx, $min, $max);
+            }
+        }
+    )*};
+}
+wide_int_validate! {
+    isize => isize::MIN as i128, isize::MAX as i128;
+    usize => 0, usize::MAX as i128;
+    i128 => i128::from(i64::MIN), i128::from(u64::MAX);
+    u128 => 0, i128::from(u64::MAX);
+}
+
 fn prepare_float(input: &mut Value, ctx: &mut ValidationContext) {
     match &*input {
         Value::Number(_) => {}
@@ -384,6 +402,10 @@ mod tests {
         assert_eq!(strict::<i32>(json!("42")).1, ["int_type"]);
         assert_eq!(strict::<i32>(json!(3.0)).1, ["int_from_float"]);
         assert_eq!(lax::<i32>(json!(true)).1, ["int_type"]);
+        assert_eq!(lax::<usize>(json!("5")), (json!(5), vec![]));
+        assert_eq!(lax::<usize>(json!(-1)).1, ["int_out_of_range"]);
+        assert_eq!(lax::<i128>(json!(-3)), (json!(-3), vec![]));
+        assert_eq!(lax::<u128>(json!(-3)).1, ["int_out_of_range"]);
     }
 
     #[test]

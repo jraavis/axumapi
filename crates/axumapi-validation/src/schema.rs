@@ -214,7 +214,19 @@ primitive_schema! {
     u64 => "integer", "minimum" = 0_i64;
     f32 => "number", "format" = "float";
     f64 => "number", "format" = "double";
-    serde_json::Value => "object";
+    // JSON numbers beyond the 64-bit range do not round-trip through
+    // `serde_json`, so the documented range is what is accepted.
+    i128 => "integer", "minimum" = i64::MIN, "maximum" = u64::MAX;
+    u128 => "integer", "minimum" = 0_i64, "maximum" = u64::MAX;
+    isize => "integer", "minimum" = isize::MIN as i64, "maximum" = isize::MAX as i64;
+    usize => "integer", "minimum" = 0_i64, "maximum" = usize::MAX as u64;
+}
+
+/// Any JSON value: the empty schema.
+impl Schema for serde_json::Value {
+    fn schema(_: &mut SchemaRegistry) -> SchemaObject {
+        SchemaObject::default()
+    }
 }
 
 impl<T: Schema + ?Sized + 'static> Schema for &T {
@@ -332,6 +344,12 @@ mod tests {
     fn primitive_schemas() {
         assert_eq!(inline::<String>(), json!({"type": "string"}));
         assert_eq!(inline::<bool>(), json!({"type": "boolean"}));
+        assert_eq!(inline::<serde_json::Value>(), json!({}));
+        assert_eq!(
+            inline::<usize>(),
+            json!({"type": "integer", "minimum": 0, "maximum": usize::MAX})
+        );
+        assert_eq!(inline::<u128>()["maximum"], json!(u64::MAX));
         assert_eq!(
             inline::<i32>(),
             json!({"type": "integer", "format": "int32"})
