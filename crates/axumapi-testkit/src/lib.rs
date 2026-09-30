@@ -201,7 +201,7 @@ impl TestClient {
         Ok(TestResponse {
             status: parts.status,
             headers: parts.headers,
-            body: body.into_bytes().await?,
+            body: body.into_bytes_limited(usize::MAX).await?,
         })
     }
 }

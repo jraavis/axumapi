@@ -29,7 +29,7 @@ pub mod ws;
 
 pub use app::{App, AppMeta, DocsConfig};
 pub use background::{BackgroundTasks, Task, TaskId, TaskQueue, TaskQueueError};
-pub use body::Body;
+pub use body::{Body, DEFAULT_BODY_LIMIT};
 pub use di::{Dependency, DependencyError, Depends, Provided, RequestHead, ResolveContext};
 pub use error::{ApiError, ApiResult, BodyError, ServerError};
 pub use extract::{FromRequest, FromRequestParts, Path, Query, RawRequest, Request};

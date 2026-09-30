@@ -230,8 +230,45 @@ pub enum ServerError {
 
 /// Failure to read a request or response body.
 #[derive(Debug, Clone, Error)]
-#[error("failed to read body: {0}")]
-pub struct BodyError(pub(crate) String);
+#[error("{message}")]
+pub struct BodyError {
+    message: String,
+    too_large: bool,
+}
+
+impl BodyError {
+    pub(crate) fn failed(reason: String) -> Self {
+        Self {
+            message: format!("failed to read body: {reason}"),
+            too_large: false,
+        }
+    }
+
+    pub(crate) fn too_large(max_bytes: usize) -> Self {
+        Self {
+            message: format!("body exceeds the limit of {max_bytes} bytes"),
+            too_large: true,
+        }
+    }
+
+    /// Whether the body was rejected for exceeding its size limit.
+    pub fn is_too_large(&self) -> bool {
+        self.too_large
+    }
+}
+
+impl From<BodyError> for ApiError {
+    fn from(err: BodyError) -> Self {
+        if err.too_large {
+            ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("Request {}.", err.message),
+            )
+        } else {
+            ApiError::bad_request(err.message)
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

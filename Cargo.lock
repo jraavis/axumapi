@@ -330,6 +330,7 @@ dependencies = [
  "cookie",
  "futures-util",
  "http",
+ "http-body-util",
  "jsonschema",
  "serde",
  "serde_json",

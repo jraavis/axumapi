@@ -185,6 +185,20 @@ fn io_app() -> App {
         .route("/headers", get(with_extra_headers))
         .route("/headers-bad", get(with_bad_header))
         .route("/ws", get(ws_handler))
+        .route("/raw", post(raw_len))
+}
+
+/// A custom extractor reading the raw body, as user code would.
+struct Raw(Vec<u8>);
+
+impl FromRequest for Raw {
+    async fn from_request(req: Request) -> Result<Self, ApiError> {
+        Ok(Self(req.into_body().into_bytes().await?))
+    }
+}
+
+async fn raw_len(Raw(bytes): Raw) -> String {
+    bytes.len().to_string()
 }
 
 fn client() -> TestClient {
@@ -665,3 +679,28 @@ impl axumapi_validation::Validate for FormData {
     }
 }
 impl axumapi_validation::Dump for FormData {}
+
+#[tokio::test]
+async fn raw_body_over_default_limit_is_413_problem() {
+    let ok = client()
+        .post_raw(
+            "/raw",
+            "application/octet-stream",
+            vec![b'x'; DEFAULT_BODY_LIMIT],
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.status, 200);
+    assert_eq!(ok.text(), DEFAULT_BODY_LIMIT.to_string());
+
+    let res = client()
+        .post_raw(
+            "/raw",
+            "application/octet-stream",
+            vec![b'x'; 3 * 1024 * 1024],
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status, 413);
+    assert_eq!(problem(&res)["status"], 413);
+}
