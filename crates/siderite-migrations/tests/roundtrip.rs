@@ -769,3 +769,667 @@ async fn run_rust_interleaves_with_sql() {
     assert_eq!(rows.rows.len(), 1, "seed must run before the second SQL");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// SQLite rebuild must fail closed on a lossy CAST instead of truncating.
+///
+/// `CAST('abc' AS INTEGER)` is `0`: copying it would destroy the value, so
+/// the pre-copy probe aborts with the table and column named.
+#[tokio::test]
+async fn sqlite_lossy_cast_aborts_migration() {
+    use siderite_migrations::state::ModelState;
+    fn item(val_type: SqlType) -> ModelState {
+        ModelState {
+            name: "Item".into(),
+            table: "items".into(),
+            fields: vec![
+                FieldState {
+                    nullable: false,
+                    primary_key: true,
+                    auto: true,
+                    ..FieldState::new("id", "id", SqlType::Integer)
+                },
+                FieldState::new("val", "val", val_type),
+            ],
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let first = Migration::new(
+        "0001_item",
+        Vec::new(),
+        vec![Operation::CreateModel {
+            model: item(SqlType::Text),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &first).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    db.raw_execute("INSERT INTO items (val) VALUES ('abc')", vec![])
+        .await
+        .unwrap();
+
+    let alter = Migration::new(
+        "0002_val_to_int",
+        vec![first.id.clone()],
+        vec![Operation::AlterField {
+            model: "Item".into(),
+            name: "val".into(),
+            field: FieldState::new("val", "val", SqlType::Integer),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &alter).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let err = Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("items") && msg.contains("val"),
+        "error must name table/column: {err:?}"
+    );
+    // All-or-nothing: the row survives with its original value.
+    let rows = db.raw_sql("SELECT val FROM items", vec![]).await.unwrap();
+    assert_eq!(rows.rows[0].get("val"), Some(&Value::Text("abc".into())));
+    let shown = Migrator::new(&db, &graph).show().await.unwrap();
+    assert!(
+        shown
+            .iter()
+            .any(|(id, applied)| id == "0002_val_to_int" && !applied)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Lossless widenings still copy: `int -> REAL` and `anything -> TEXT`.
+#[tokio::test]
+async fn sqlite_lossless_casts_still_copy() {
+    use siderite_migrations::state::ModelState;
+    fn item(val_type: SqlType) -> ModelState {
+        ModelState {
+            name: "Item".into(),
+            table: "items".into(),
+            fields: vec![
+                FieldState {
+                    nullable: false,
+                    primary_key: true,
+                    auto: true,
+                    ..FieldState::new("id", "id", SqlType::Integer)
+                },
+                FieldState::new("val", "val", val_type),
+            ],
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let first = Migration::new(
+        "0001_item",
+        Vec::new(),
+        vec![Operation::CreateModel {
+            model: item(SqlType::Integer),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &first).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    db.raw_execute("INSERT INTO items (val) VALUES (5)", vec![])
+        .await
+        .unwrap();
+
+    let to_real = Migration::new(
+        "0002_val_to_real",
+        vec![first.id.clone()],
+        vec![Operation::AlterField {
+            model: "Item".into(),
+            name: "val".into(),
+            field: FieldState::new("val", "val", SqlType::Real),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &to_real).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    let rows = db.raw_sql("SELECT val FROM items", vec![]).await.unwrap();
+    assert_eq!(rows.rows.len(), 1);
+
+    let to_text = Migration::new(
+        "0003_val_to_text",
+        vec![to_real.id.clone()],
+        vec![Operation::AlterField {
+            model: "Item".into(),
+            name: "val".into(),
+            field: FieldState::new("val", "val", SqlType::Text),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &to_text).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    let rows = db.raw_sql("SELECT val FROM items", vec![]).await.unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `RenameField` on SQLite must carry the column's rows into the new name.
+///
+/// Forward is a native `RENAME COLUMN`; rollback renames back. Either way
+/// the stored value must survive instead of being dropped or nulled.
+#[tokio::test]
+async fn sqlite_rename_field_preserves_rows() {
+    use siderite_migrations::state::ModelState;
+    fn item(name: &str, column: &str) -> ModelState {
+        ModelState {
+            name: "Item".into(),
+            table: "items".into(),
+            fields: vec![
+                FieldState {
+                    nullable: false,
+                    primary_key: true,
+                    auto: true,
+                    ..FieldState::new("id", "id", SqlType::Integer)
+                },
+                FieldState::new(name, column, SqlType::Text),
+            ],
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let first = Migration::new(
+        "0001_item",
+        Vec::new(),
+        vec![Operation::CreateModel {
+            model: item("val", "val"),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &first).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    db.raw_execute("INSERT INTO items (val) VALUES ('hello')", vec![])
+        .await
+        .unwrap();
+
+    let rename = Migration::new(
+        "0002_rename_val",
+        vec![first.id.clone()],
+        vec![Operation::RenameField {
+            model: "Item".into(),
+            old_name: "val".into(),
+            new_name: "label".into(),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &rename).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    let rows = db.raw_sql("SELECT label FROM items", vec![]).await.unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(
+        rows.rows[0].get("label"),
+        Some(&Value::Text("hello".into()))
+    );
+
+    Migrator::new(&db, &graph)
+        .rollback(None, Some(1), false)
+        .await
+        .unwrap();
+    let rows = db.raw_sql("SELECT val FROM items", vec![]).await.unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(rows.rows[0].get("val"), Some(&Value::Text("hello".into())));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `AlterField` that renames the db column must copy old -> new on SQLite.
+///
+/// Same field name, different column: the rebuild `INSERT .. SELECT` has to
+/// read the old column into the new one, and the rollback has to copy back.
+#[tokio::test]
+async fn sqlite_alter_field_column_rename_preserves_rows() {
+    use siderite_migrations::state::ModelState;
+    fn item(column: &str) -> ModelState {
+        ModelState {
+            name: "Item".into(),
+            table: "items".into(),
+            fields: vec![
+                FieldState {
+                    nullable: false,
+                    primary_key: true,
+                    auto: true,
+                    ..FieldState::new("id", "id", SqlType::Integer)
+                },
+                FieldState::new("val", column, SqlType::Text),
+            ],
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let first = Migration::new(
+        "0001_item",
+        Vec::new(),
+        vec![Operation::CreateModel { model: item("val") }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &first).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    db.raw_execute("INSERT INTO items (val) VALUES ('hello')", vec![])
+        .await
+        .unwrap();
+
+    let alter = Migration::new(
+        "0002_rename_column",
+        vec![first.id.clone()],
+        vec![Operation::AlterField {
+            model: "Item".into(),
+            name: "val".into(),
+            field: FieldState::new("val", "renamed", SqlType::Text),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &alter).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    let rows = db
+        .raw_sql("SELECT renamed FROM items", vec![])
+        .await
+        .unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(
+        rows.rows[0].get("renamed"),
+        Some(&Value::Text("hello".into()))
+    );
+
+    Migrator::new(&db, &graph)
+        .rollback(None, Some(1), false)
+        .await
+        .unwrap();
+    let rows = db.raw_sql("SELECT val FROM items", vec![]).await.unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(rows.rows[0].get("val"), Some(&Value::Text("hello".into())));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SQLite rebuild must preserve triggers and hand-made indexes.
+///
+/// A trigger and an index created outside the migrator live in
+/// `sqlite_master` but not in `ProjectState`; the rebuild drops them with
+/// the old table unless the executor re-creates them afterwards. The model
+/// index is recreated by the rebuild itself and must not be duplicated.
+#[tokio::test]
+async fn sqlite_rebuild_preserves_trigger_and_hand_index() {
+    use siderite_migrations::state::{IndexState, ModelState};
+    fn item() -> ModelState {
+        ModelState {
+            name: "Item".into(),
+            table: "items".into(),
+            fields: vec![
+                FieldState {
+                    nullable: false,
+                    primary_key: true,
+                    auto: true,
+                    ..FieldState::new("id", "id", SqlType::Integer)
+                },
+                FieldState::new("val", "val", SqlType::Text),
+            ],
+            indexes: vec![IndexState {
+                name: "items_val_idx".into(),
+                columns: vec!["val".into()],
+                unique: false,
+            }],
+            constraints: Vec::new(),
+        }
+    }
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let first = Migration::new(
+        "0001_item",
+        Vec::new(),
+        vec![Operation::CreateModel { model: item() }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &first).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    db.execute_script(
+        "CREATE TABLE items_audit (id INTEGER PRIMARY KEY, item_id INTEGER, val TEXT);
+         CREATE TRIGGER items_val_trigger AFTER INSERT ON items BEGIN INSERT INTO items_audit (item_id, val) VALUES (NEW.id, NEW.val); END;
+         CREATE INDEX items_val_hand_idx ON items (val);",
+    )
+    .await
+    .unwrap();
+    db.raw_execute("INSERT INTO items (val) VALUES ('hello')", vec![])
+        .await
+        .unwrap();
+
+    let mut val = item().fields.into_iter().find(|f| f.name == "val").unwrap();
+    val.max_length = Some(200);
+    let alter = Migration::new(
+        "0002_widen_val",
+        vec![first.id.clone()],
+        vec![Operation::AlterField {
+            model: "Item".into(),
+            name: "val".into(),
+            field: val,
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &alter).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+
+    let rows = db.raw_sql("SELECT val FROM items", vec![]).await.unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(rows.rows[0].get("val"), Some(&Value::Text("hello".into())));
+    for name in ["items_val_trigger", "items_val_hand_idx", "items_val_idx"] {
+        let found = db
+            .raw_sql(
+                "SELECT name FROM sqlite_master WHERE name = ?",
+                vec![Value::Text(name.into())],
+            )
+            .await
+            .unwrap();
+        assert_eq!(found.rows.len(), 1, "`{name}` must survive the rebuild");
+    }
+    // The trigger still fires.
+    db.raw_execute("INSERT INTO items (val) VALUES ('world')", vec![])
+        .await
+        .unwrap();
+    let audit = db
+        .raw_sql("SELECT val FROM items_audit ORDER BY id", vec![])
+        .await
+        .unwrap();
+    assert_eq!(
+        audit.rows.len(),
+        2,
+        "trigger must fire after the rebuild: {audit:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Removing a column a trigger reads must fail closed, not drop the trigger.
+///
+/// The rebuild would orphan `items_val_trigger` (`NEW.val` has no `val`
+/// anymore), so the executor refuses before touching the table.
+#[tokio::test]
+async fn sqlite_rebuild_refuses_when_trigger_column_removed() {
+    use siderite_migrations::state::ModelState;
+    fn item() -> ModelState {
+        ModelState {
+            name: "Item".into(),
+            table: "items".into(),
+            fields: vec![
+                FieldState {
+                    nullable: false,
+                    primary_key: true,
+                    auto: true,
+                    ..FieldState::new("id", "id", SqlType::Integer)
+                },
+                FieldState::new("val", "val", SqlType::Text),
+            ],
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let first = Migration::new(
+        "0001_item",
+        Vec::new(),
+        vec![Operation::CreateModel { model: item() }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &first).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    db.execute_script(
+        "CREATE TABLE items_audit (id INTEGER PRIMARY KEY, item_id INTEGER, val TEXT);
+         CREATE TRIGGER items_val_trigger AFTER INSERT ON items BEGIN INSERT INTO items_audit (item_id, val) VALUES (NEW.id, NEW.val); END;",
+    )
+    .await
+    .unwrap();
+    db.raw_execute("INSERT INTO items (val) VALUES ('hello')", vec![])
+        .await
+        .unwrap();
+
+    let drop = Migration::new(
+        "0002_drop_val",
+        vec![first.id.clone()],
+        vec![Operation::RemoveField {
+            model: "Item".into(),
+            name: "val".into(),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &drop).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let err = Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("items") && msg.contains("items_val_trigger"),
+        "error must name table and trigger: {err:?}"
+    );
+    // All-or-nothing: the row and the trigger survive.
+    let rows = db.raw_sql("SELECT val FROM items", vec![]).await.unwrap();
+    assert_eq!(rows.rows[0].get("val"), Some(&Value::Text("hello".into())));
+    let found = db
+        .raw_sql(
+            "SELECT name FROM sqlite_master WHERE name = 'items_val_trigger'",
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.rows.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn not_null_item() -> siderite_migrations::state::ModelState {
+    siderite_migrations::state::ModelState {
+        name: "Item".into(),
+        table: "items".into(),
+        fields: vec![
+            FieldState {
+                nullable: false,
+                primary_key: true,
+                auto: true,
+                ..FieldState::new("id", "id", SqlType::Integer)
+            },
+            FieldState {
+                nullable: true,
+                ..FieldState::new("val", "val", SqlType::Text)
+            },
+        ],
+        indexes: Vec::new(),
+        constraints: Vec::new(),
+    }
+}
+
+/// Apply `ops` as a follow-up to `0001_item` (with one row holding `val`).
+async fn not_null_followup(
+    val: Option<&str>,
+    ops: Vec<Operation>,
+) -> (Result<(), String>, siderite_orm::Db, std::path::PathBuf) {
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let first = Migration::new(
+        "0001_item",
+        Vec::new(),
+        vec![Operation::CreateModel {
+            model: not_null_item(),
+        }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &first).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    let value = val.map_or(Value::Null, |v| Value::Text(v.into()));
+    db.raw_execute("INSERT INTO items (val) VALUES (?)", vec![value])
+        .await
+        .unwrap();
+    let next = Migration::new("0002_next", vec![first.id.clone()], ops, true, Vec::new()).unwrap();
+    loader::write_migration(&dir, &next).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let res = Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string());
+    (res, db, dir)
+}
+
+#[tokio::test]
+async fn add_not_null_field_without_default_refuses_populated_table() {
+    let field = FieldState {
+        nullable: false,
+        ..FieldState::new("qty", "qty", SqlType::Integer)
+    };
+    let (res, db, dir) = not_null_followup(
+        Some("a"),
+        vec![Operation::AddField {
+            model: "Item".into(),
+            field,
+        }],
+    )
+    .await;
+    let msg = res.unwrap_err();
+    assert!(msg.contains("items.qty"), "{msg}");
+    let cols = db
+        .raw_sql("SELECT name FROM pragma_table_info('items')", vec![])
+        .await
+        .unwrap();
+    assert_eq!(cols.rows.len(), 2, "table must be unchanged");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn alter_to_not_null_refuses_existing_nulls() {
+    let field = FieldState {
+        nullable: false,
+        ..FieldState::new("val", "val", SqlType::Text)
+    };
+    let (res, db, dir) = not_null_followup(
+        None,
+        vec![Operation::AlterField {
+            model: "Item".into(),
+            name: "val".into(),
+            field,
+        }],
+    )
+    .await;
+    let msg = res.unwrap_err();
+    assert!(msg.contains("items.val"), "{msg}");
+    let rows = db.raw_sql("SELECT val FROM items", vec![]).await.unwrap();
+    assert_eq!(rows.rows.len(), 1, "row must survive");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The probe reads the in-migration state: a NOT NULL field added right
+/// after `CreateModel` in the same migration hits an empty table.
+#[tokio::test]
+async fn add_not_null_field_after_create_model_in_same_migration() {
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let mut other = not_null_item();
+    other.name = "Other".into();
+    other.table = "others".into();
+    let m = Migration::new(
+        "0001_other",
+        Vec::new(),
+        vec![
+            Operation::CreateModel { model: other },
+            Operation::AddField {
+                model: "Other".into(),
+                field: FieldState {
+                    nullable: false,
+                    ..FieldState::new("qty", "qty", SqlType::Integer)
+                },
+            },
+        ],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &m).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    Migrator::new(&db, &graph)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

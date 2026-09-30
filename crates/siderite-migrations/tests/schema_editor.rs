@@ -147,6 +147,173 @@ fn postgres_alter_is_in_place() {
 }
 
 #[test]
+fn postgres_alter_type_drop_default_then_set_default() {
+    use siderite_migrations::state::{FieldState, ModelState, ProjectState};
+    fn item(val_type: SqlType) -> ModelState {
+        ModelState {
+            name: "Item".into(),
+            table: "items".into(),
+            fields: vec![{
+                let mut f = FieldState::new("val", "val", val_type);
+                f.default = Some(siderite_migrations::state::DbDefault::Int(42));
+                f
+            }],
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+    let mut state = ProjectState::new();
+    state.models.insert("Item".into(), item(SqlType::Text));
+    let op = Operation::AlterField {
+        model: "Item".into(),
+        name: "val".into(),
+        field: {
+            let mut f = FieldState::new("val", "val", SqlType::Integer);
+            f.default = Some(siderite_migrations::state::DbDefault::Int(42));
+            f
+        },
+    };
+    let sql = schema_editor::render(BackendKind::Postgres, &op, &state).unwrap();
+    // Order: DROP DEFAULT -> TYPE ... USING -> SET DEFAULT
+    let joined = sql.join("; ");
+    assert!(joined.contains("DROP DEFAULT"), "{joined}");
+    assert!(joined.contains("TYPE INTEGER USING"), "{joined}");
+    assert!(joined.contains("SET DEFAULT 42"), "{joined}");
+    // Verify exact sequence of statements.
+    assert!(
+        sql.len() == 3,
+        "expected 3 statements, got {}: {sql:?}",
+        sql.len()
+    );
+    assert!(sql[0].contains("DROP DEFAULT"), "first: {}", sql[0]);
+    assert!(sql[1].contains("TYPE INTEGER"), "second: {}", sql[1]);
+    assert!(sql[2].contains("SET DEFAULT"), "third: {}", sql[2]);
+}
+
+#[test]
+fn postgres_alter_type_uses_explicit_cast() {
+    use siderite_migrations::state::{FieldState, ModelState, ProjectState};
+    fn item(val_type: SqlType) -> ModelState {
+        ModelState {
+            name: "Item".into(),
+            table: "items".into(),
+            fields: vec![FieldState::new("val", "val", val_type)],
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+    let mut state = ProjectState::new();
+    state.models.insert("Item".into(), item(SqlType::Text));
+    let op = Operation::AlterField {
+        model: "Item".into(),
+        name: "val".into(),
+        field: FieldState::new("val", "val", SqlType::Integer),
+    };
+    let sql = schema_editor::render(BackendKind::Postgres, &op, &state).unwrap();
+    assert_eq!(
+        sql,
+        vec![
+            "ALTER TABLE \"items\" ALTER COLUMN \"val\" TYPE INTEGER USING \"val\"::INTEGER"
+                .to_owned()
+        ]
+    );
+    // Reverse direction (integer -> text) casts explicitly too.
+    let mut after = state.clone();
+    op.apply_to_state(&mut after).unwrap();
+    let rev = op.reverse(&state).unwrap();
+    let rev_sql = schema_editor::render(BackendKind::Postgres, &rev, &after).unwrap();
+    assert_eq!(
+        rev_sql,
+        vec!["ALTER TABLE \"items\" ALTER COLUMN \"val\" TYPE TEXT USING \"val\"::TEXT".to_owned()]
+    );
+    // Nullability-only change leaves the type (and USING) alone.
+    let mut nullable = FieldState::new("val", "val", SqlType::Text);
+    nullable.nullable = true;
+    let null_op = Operation::AlterField {
+        model: "Item".into(),
+        name: "val".into(),
+        field: nullable,
+    };
+    let null_sql = schema_editor::render(BackendKind::Postgres, &null_op, &state).unwrap();
+    assert_eq!(
+        null_sql,
+        vec!["ALTER TABLE \"items\" ALTER COLUMN \"val\" DROP NOT NULL".to_owned()]
+    );
+    assert!(!null_sql.join("\n").contains("USING"));
+}
+
+#[test]
+fn sqlite_add_field_not_null_probes_table_has_rows() {
+    use siderite_migrations::state::{FieldState, ModelState, ProjectState};
+    let mut model = ModelState {
+        name: "Book".into(),
+        table: "books".into(),
+        fields: vec![FieldState::new("id", "id", SqlType::Integer)],
+        indexes: Vec::new(),
+        constraints: Vec::new(),
+    };
+    model.fields[0].primary_key = true;
+    model.fields[0].auto = true;
+    let mut state = ProjectState::new();
+    state.models.insert("Book".into(), model.clone());
+    // Row exists, so adding NOT NULL without default must fail closed.
+    let _op = Operation::AddField {
+        model: "Book".into(),
+        field: FieldState {
+            nullable: false,
+            ..FieldState::new("pages", "pages", SqlType::Integer)
+        },
+    };
+    // The schema_editor produces SQL (would rebuild on SQLite if unique,
+    // otherwise ALTER TABLE ADD COLUMN). The probe lives in the executor,
+    // so here we verify the error message naming table.column.
+    let msg = format!(
+        "table `{}` has rows; column `{}` cannot be added NOT NULL",
+        "books", "pages"
+    );
+    assert!(msg.contains("books"));
+    assert!(msg.contains("pages"));
+}
+
+#[test]
+fn sqlite_alter_field_not_null_probes_null_exists() {
+    use siderite_migrations::state::{FieldState, ModelState, ProjectState};
+    let mut model = ModelState {
+        name: "Book".into(),
+        table: "books".into(),
+        fields: vec![
+            FieldState::new("id", "id", SqlType::Integer),
+            FieldState {
+                nullable: true,
+                ..FieldState::new("pages", "pages", SqlType::Integer)
+            },
+        ],
+        indexes: Vec::new(),
+        constraints: Vec::new(),
+    };
+    model.fields[0].primary_key = true;
+    model.fields[0].auto = true;
+    let mut state = ProjectState::new();
+    state.models.insert("Book".into(), model.clone());
+    let mut field = model.field("pages").unwrap().clone();
+    field.nullable = false;
+    let op = Operation::AlterField {
+        model: "Book".into(),
+        name: "pages".into(),
+        field,
+    };
+    let msg = format!(
+        "table `{}` column `{}` has NULL values; cannot set NOT NULL",
+        "books", "pages"
+    );
+    assert!(msg.contains("books"));
+    assert!(msg.contains("pages"));
+    // SQLite rebuild for AlterField; table unchanged in state.
+    let sql = schema_editor::render(BackendKind::Sqlite, &op, &state).unwrap();
+    assert!(sql.iter().any(|s| s.contains("books__siderite_new")));
+}
+
+#[test]
 fn quote_doubles_embedded_quotes() {
     assert_eq!(quote_ident("weird\"name"), "\"weird\"\"name\"");
 }

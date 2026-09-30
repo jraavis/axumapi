@@ -413,7 +413,13 @@ fn alter_field_sql(
         if let Some(existing) = new_model.field_mut(name) {
             *existing = field.clone();
         }
-        return Ok(sqlite_rebuild(model, &new_model));
+        // Pair by field identity: `old.column -> field.column` copies rows
+        // across a column rename; the map covers a field-name change too.
+        return Ok(sqlite_rebuild_mapped(
+            model,
+            &new_model,
+            &[(name, field.name.as_str())],
+        ));
     }
     let mut stmts = Vec::new();
     let table = quote_ident(&model.table);
@@ -430,10 +436,35 @@ fn alter_field_sql(
         || old.max_digits != field.max_digits
         || old.decimal_places != field.decimal_places
     {
-        stmts.push(format!(
-            "ALTER TABLE {table} ALTER COLUMN {col} TYPE {}",
-            sql_type_name(kind, field)
-        ));
+        // Postgres: when sql_type changes and the old column has a
+        // default, `ALTER COLUMN .. TYPE .. USING` fails ("default
+        // for column cannot be cast automatically"). Drop it first.
+        if kind == BackendKind::Postgres && old.sql_type != field.sql_type && old.default.is_some()
+        {
+            stmts.push(format!(
+                "ALTER TABLE {table} ALTER COLUMN {col} DROP DEFAULT"
+            ));
+        }
+        let new_type = sql_type_name(kind, field);
+        let mut stmt = format!("ALTER TABLE {table} ALTER COLUMN {col} TYPE {new_type}");
+        // Postgres has no implicit assignment cast for e.g. text -> integer,
+        // so spell out the cast. It fails loudly on bad data (fail-closed).
+        // Length/precision-only changes keep the cast implicit.
+        if kind == BackendKind::Postgres && old.sql_type != field.sql_type {
+            stmt.push_str(&format!(" USING {col}::{new_type}"));
+        }
+        stmts.push(stmt);
+        // After the TYPE change, ensure the new default is set (even when
+        // unchanged). The DROP DEFAULT above would otherwise clear it.
+        if kind == BackendKind::Postgres
+            && old.sql_type != field.sql_type
+            && let Some(d) = &field.default
+        {
+            stmts.push(format!(
+                "ALTER TABLE {table} ALTER COLUMN {col} SET DEFAULT {}",
+                default_sql(kind, d)
+            ));
+        }
     }
     if old.nullable != field.nullable {
         if field.nullable {
@@ -446,7 +477,10 @@ fn alter_field_sql(
             ));
         }
     }
-    if old.default != field.default {
+    // Default changes when sql_type did not change (or non-Postgres).
+    // When Postgres sql_type changed, DROP/SET DEFAULT is handled above.
+    let pg_type_changed = kind == BackendKind::Postgres && old.sql_type != field.sql_type;
+    if !pg_type_changed && old.default != field.default {
         match &field.default {
             Some(d) => stmts.push(format!(
                 "ALTER TABLE {table} ALTER COLUMN {col} SET DEFAULT {}",
@@ -514,13 +548,115 @@ fn delete_constraint_sql(
     )])
 }
 
+/// One SQLite `CAST` that needs a pre-copy loss check: `sql` returns a row
+/// when some non-NULL value in `table`.`column` would change under the cast.
+pub struct SqliteCastCheck {
+    /// Table holding the old rows.
+    pub table: String,
+    /// Column whose values would change.
+    pub column: String,
+    /// `SELECT 1 ... LIMIT 1` probe; a non-empty result means lossy rows.
+    pub sql: String,
+}
+
+/// Columns of `op` whose SQLite rebuild `CAST` could lose data.
+///
+/// Only `AlterField` type changes need a probe. Same-type edits (length,
+/// nullability, defaults) copy verbatim, `anything -> TEXT/BLOB` stores every
+/// value, and `int -> REAL` compares equal (`5 IS 5.0`), so those skip.
+pub fn sqlite_lossy_cast_checks(state: &ProjectState, op: &Operation) -> Vec<SqliteCastCheck> {
+    let Operation::AlterField { model, name, field } = op else {
+        return Vec::new();
+    };
+    let Some(current) = state.model(model) else {
+        return Vec::new();
+    };
+    let Some(old) = current.field(name) else {
+        return Vec::new();
+    };
+    if !sqlite_cast_needs_check(old.sql_type, field.sql_type) {
+        return Vec::new();
+    }
+    let sql = format!(
+        "SELECT 1 AS siderite_lossy FROM {} WHERE {} IS NOT NULL AND CAST({} AS {}) IS NOT {} LIMIT 1",
+        quote_ident(&current.table),
+        quote_ident(&old.column),
+        quote_ident(&old.column),
+        sql_type_name(BackendKind::Sqlite, field),
+        quote_ident(&old.column),
+    );
+    vec![SqliteCastCheck {
+        table: current.table.clone(),
+        column: field.column.clone(),
+        sql,
+    }]
+}
+
+fn sqlite_cast_needs_check(old: SqlType, new: SqlType) -> bool {
+    if old == new {
+        return false;
+    }
+    // TEXT and BLOB hold any value; CAST there never loses data.
+    if is_sqlite_texty(new) || new == SqlType::Binary {
+        return false;
+    }
+    // Integer values compare equal as REAL (`5 IS 5.0`).
+    if is_sqlite_int(old) && is_sqlite_real(new) {
+        return false;
+    }
+    true
+}
+
+fn is_sqlite_texty(t: SqlType) -> bool {
+    matches!(
+        t,
+        SqlType::Text
+            | SqlType::Date
+            | SqlType::Time
+            | SqlType::Timestamp
+            | SqlType::Uuid
+            | SqlType::Json
+            | SqlType::IpAddr
+    )
+}
+
+fn is_sqlite_int(t: SqlType) -> bool {
+    matches!(
+        t,
+        SqlType::SmallInt | SqlType::Integer | SqlType::BigInt | SqlType::Bool | SqlType::Duration
+    )
+}
+
+fn is_sqlite_real(t: SqlType) -> bool {
+    matches!(t, SqlType::Real | SqlType::Double)
+}
+
 /// SQLite table-rebuild: create new, copy overlapping columns, drop, rename,
 /// recreate indexes.
 ///
 /// `PRAGMA foreign_keys` is a no-op inside a transaction, so the migrator
 /// disables foreign keys on the connection *before* `BEGIN` rather than
 /// emitting that pragma here.
+///
+/// The copy pairs columns by field identity (old column -> new column), not
+/// by position. Fields present in both states copy `old.column` into
+/// `new.column`, so an `AlterField` column rename preserves its rows.
+/// Fields only in `new` (`AddField`) are skipped and default-filled; fields
+/// only in `old` (`RemoveField`) are dropped with the old table. A field
+/// rename (`RenameField`) changes the field name, so pass it in
+/// `field_renames` as `(old_name, new_name)` or the renamed column is
+/// treated as added and its rows are lost.
 fn sqlite_rebuild(old: &ModelState, new: &ModelState) -> Vec<String> {
+    sqlite_rebuild_mapped(old, new, &[])
+}
+
+/// [`sqlite_rebuild`] with explicit field renames for `RenameField` (and any
+/// `AlterField` that changes the field name).
+fn sqlite_rebuild_mapped(
+    old: &ModelState,
+    new: &ModelState,
+    field_renames: &[(&str, &str)],
+) -> Vec<String> {
     let tmp = format!("{}__siderite_new", new.table);
     let mut stmts = vec![create_table_sql(BackendKind::Sqlite, new, &tmp)];
 
@@ -528,10 +664,15 @@ fn sqlite_rebuild(old: &ModelState, new: &ModelState) -> Vec<String> {
         .fields
         .iter()
         .filter_map(|nf| {
-            old.fields
+            if let Some(of) = old.field(&nf.name) {
+                return Some((of, nf));
+            }
+            // Renamed field: same logical value under a new name/column.
+            let old_name = field_renames
                 .iter()
-                .find(|of| of.name == nf.name || of.column == nf.column)
-                .map(|of| (of, nf))
+                .find(|(_, new_name)| *new_name == nf.name)
+                .map(|(old_name, _)| *old_name)?;
+            old.field(old_name).map(|of| (of, nf))
         })
         .collect();
     if !copied.is_empty() {
@@ -570,4 +711,143 @@ fn sqlite_rebuild(old: &ModelState, new: &ModelState) -> Vec<String> {
     ));
     stmts.extend(index_sqls(new));
     stmts
+}
+
+/// SQLite rebuild target for `op`: the table being dropped plus the column
+/// sets before/after and the index names the rebuild itself recreates.
+///
+/// `None` when `op` does not rebuild a table on SQLite (in-place alters,
+/// native renames, drops). The executor uses this to preserve triggers and
+/// hand-made indexes from `sqlite_master` across the drop/create cycle.
+pub struct SqliteRebuildTarget {
+    /// Table dropped and recreated by the rebuild.
+    pub table: String,
+    /// Column names before the op.
+    pub old_columns: Vec<String>,
+    /// Column names after the op.
+    pub new_columns: Vec<String>,
+    /// Index names the rebuild's own `CREATE INDEX` statements recreate.
+    pub recreated_indexes: std::collections::HashSet<String>,
+}
+
+/// Which table `op` rebuilds on SQLite, if any.
+///
+/// Mirrors the rebuild branches of `add_field_sql` / `remove_field_sql` /
+/// `alter_field_sql` / `add_constraint_sql` / `delete_constraint_sql`.
+pub fn sqlite_rebuild_target(state: &ProjectState, op: &Operation) -> Option<SqliteRebuildTarget> {
+    let (old, new) = match op {
+        Operation::AddField { model, field } if field.unique || field.primary_key => {
+            let old = state.model(model)?;
+            let mut new = old.clone();
+            new.fields.push(field.clone());
+            (old.clone(), new)
+        }
+        Operation::RemoveField { model, name } => {
+            let old = state.model(model)?;
+            let mut new = old.clone();
+            new.fields.retain(|f| f.name != *name);
+            // Mirror `remove_field_sql`: indexes on the dropped column are
+            // not recreated by the rebuild.
+            if let Some(dropped) = old.field(name).map(|f| f.column.clone()) {
+                new.indexes
+                    .retain(|i| !i.columns.iter().any(|c| c == &dropped));
+            }
+            (old.clone(), new)
+        }
+        Operation::AlterField { model, name, field } => {
+            let old = state.model(model)?;
+            let mut new = old.clone();
+            *new.field_mut(name)? = field.clone();
+            (old.clone(), new)
+        }
+        Operation::AddConstraint { model, constraint } => {
+            let old = state.model(model)?;
+            let mut new = old.clone();
+            new.constraints.push(constraint.clone());
+            (old.clone(), new)
+        }
+        Operation::DeleteConstraint { model, name } => {
+            let old = state.model(model)?;
+            let mut new = old.clone();
+            new.constraints.retain(|c| c.name() != *name);
+            (old.clone(), new)
+        }
+        _ => return None,
+    };
+    let table = old.table.clone();
+    let old_columns = old.fields.iter().map(|f| f.column.clone()).collect();
+    let new_columns = new.fields.iter().map(|f| f.column.clone()).collect();
+    Some(SqliteRebuildTarget {
+        table,
+        old_columns,
+        new_columns,
+        recreated_indexes: rebuilt_index_names(&new),
+    })
+}
+
+/// Index names `sqlite_rebuild` recreates for `new`.
+///
+/// Mirrors `index_sqls` so the executor can skip exactly those names when
+/// preserving extras (re-running one would fail with "already exists").
+fn rebuilt_index_names(new: &ModelState) -> std::collections::HashSet<String> {
+    let mut seen = std::collections::HashSet::new();
+    for field in &new.fields {
+        if field.index && !field.unique && !field.primary_key {
+            seen.insert(auto_index_name(&new.table, &field.column));
+        }
+    }
+    for index in &new.indexes {
+        seen.insert(index.name.clone());
+    }
+    seen
+}
+
+/// Whether `sql` references identifier `ident` (a column or table name).
+///
+/// Matches `"ident"`, `` `ident` `` and `[ident]` plus a bare `ident` word.
+/// Single-quoted string literals are skipped so `'val'` does not count as
+/// the column `val`. Case-insensitive, like SQLite identifiers.
+pub fn sqlite_sql_mentions_ident(sql: &str, ident: &str) -> bool {
+    if ident.is_empty() {
+        return false;
+    }
+    let lower_sql = sql.to_lowercase();
+    let lower = ident.to_lowercase();
+    for (open, close) in [("\"", "\""), ("`", "`"), ("[", "]")] {
+        if lower_sql.contains(&format!("{open}{lower}{close}")) {
+            return true;
+        }
+    }
+    let stripped = strip_single_quoted(&lower_sql);
+    stripped
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|token| token == lower)
+}
+
+/// Copy of `sql` with `'...'` string literals blanked (`''` escapes).
+fn strip_single_quoted(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\'' {
+            out.push(ch);
+            continue;
+        }
+        // Skip to the closing quote, honouring `''` escapes.
+        loop {
+            match chars.next() {
+                None => break,
+                Some('\'') => {
+                    if chars.peek() == Some(&'\'') {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        out.push(' ');
+    }
+    out
 }
