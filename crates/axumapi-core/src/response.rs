@@ -42,6 +42,12 @@ pub struct PlainText<T>(pub T);
 pub struct NoContent;
 
 /// Overrides the status code of an inner response.
+///
+/// The status is only known at runtime, so the OpenAPI document still lists
+/// the inner response under its own code (usually `200`). To document a
+/// fixed non-200 success status, set it on the route with
+/// [`MethodRouter::status`](crate::routing::MethodRouter::status) instead
+/// and return the plain body from the handler.
 #[derive(Debug, Clone, Copy)]
 pub struct WithStatus<R>(pub StatusCode, pub R);
 
@@ -183,6 +189,9 @@ impl<R: IntoResponse> IntoResponse for WithStatus<R> {
     }
 }
 
+/// Same as [`WithStatus`]: the runtime status is not documented. Use
+/// [`MethodRouter::status`](crate::routing::MethodRouter::status) for a
+/// documented non-200 success status.
 impl<R: IntoResponse> IntoResponse for (StatusCode, R) {
     fn into_response(self) -> Response {
         WithStatus(self.0, self.1).into_response()
