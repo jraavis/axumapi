@@ -17,6 +17,7 @@
 | `distinct` | `None` / `All` / `On(..)` | `On` → `Feature::DistinctOn` |
 | `lock` | `FOR UPDATE` variants | yes → `Feature::RowLocking`, `LockModifiers` |
 | `compound` | `UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT` members | no |
+| `origin` | database the plan was built against, set when a `QuerySet` becomes a subquery; never compiled | no (`Db` rejects a subquery from another database) |
 
 For a plan with `compound` members, `ordering`, `limit` and `offset` apply to the combined result. Every member must project the same columns, and a member with its own ordering or limit is wrapped in a derived table (`SELECT * FROM (..) AS "u1"`), because SQLite rejects bare parenthesised members.
 
@@ -56,5 +57,6 @@ Comparing with a `NULL` literal (`Author::age.eq(None::<i32>)`) compiles to `IS 
 * **Grouping.** When the projection contains aggregates, the other projected expressions become `GROUP BY`, and the model's default ordering is dropped. Group with `project([..]).annotate(..)`.
 * **`count`, `exists`, `aggregate`.** Ordering and row locks are removed (PostgreSQL rejects `ORDER BY` next to a bare aggregate). A plan with limit, offset, distinct, grouping or set operations is wrapped: `SELECT COUNT(*) FROM (..) AS "counted"`.
 * **`update` and `delete`.** A plain filter is used directly; a queryset with joins, a limit or distinct becomes `WHERE pk IN (SELECT pk ..)`.
+* **Subquery origin.** `QuerySet::subquery` and `exists_expr` stamp the plan with `PlanOrigin` for the `Db` they were built on. `Db::fetch` and `Db::execute` refuse a plan whose nested subquery belongs to another database (`QueryError::InvalidPlan`: `"a subquery built against another database cannot run here"`) before any SQL is sent. A transaction handle counts as its pool.
 
 Not modelled: window frames (the database default frame applies), `GROUP BY` on expressions other than the projection, and set operations whose members are themselves grouped with different names.

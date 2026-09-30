@@ -115,7 +115,7 @@ Each scheme registers itself under `components.securitySchemes` and pushes a req
 | `ApiKey<S>` | `{"type": "apiKey", "in": "header" \| "query" \| "cookie", "name": S::NAME}` |
 | `OAuth2PasswordBearer<S>` | `{"type": "oauth2", "flows": {"password": {"tokenUrl": .., "scopes": {..}}}}` |
 
-`OAuth2PasswordRequestForm` documents an `application/x-www-form-urlencoded` request body with `username` and `password` required. `Security<T, S>` re-emits the requirement its credentials add, listing `S::SCOPES` as the scopes. Identical requirements are not repeated on one operation.
+`OAuth2PasswordRequestForm` documents an `application/x-www-form-urlencoded` request body with `username` and `password` required. `Security<T, S>` re-emits the scheme its credentials add, listing `S::SCOPES` as the scopes on that same requirement object. Duplicate scheme names on one operation collapse to a single entry.
 
 ## Constant-time comparison
 

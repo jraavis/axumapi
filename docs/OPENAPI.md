@@ -22,6 +22,7 @@ Each handler is registered through the `Handler` trait, which is implemented for
 | `Json<T>` (return) | `200` response of type `application/json` |
 | `ApiError` / `ApiResult<_>` | A `default` response of type `application/problem+json` using the shared `Problem` component |
 | `NoContent` | A `204` response |
+| `HttpBearer`, `HttpBasic`, `ApiKey<S>`, `OAuth2PasswordBearer<S>`, `Security<T, S>` | A `components.securitySchemes` entry and an operation `security` requirement. Several schemes on one handler form a single requirement object (all required). `Option<Scheme>` adds an anonymous alternative. See [SECURITY.md](SECURITY.md). |
 | Custom extractor or response | Whatever its `describe` hook adds. The hook does nothing unless you implement it. |
 
 Metadata set on a route overrides or extends what the signature produced. The available methods are `.summary()`, `.description()`, `.tag()`, `.operation_id()`, `.deprecated()` and `.hidden()`.
@@ -58,4 +59,4 @@ Tests validate generated documents against the official OpenAPI 3.1 JSON Schema,
 
 * **Documentation hooks live on traits.** FastAPI inspects Python type hints at runtime. In axumapi, extractors and responses describe themselves through `describe` hooks on axumapi's own traits.
 * **No reflection.** Schemas come from `Schema` implementations, usually through `#[derive(Schema)]`.
-* **Security schemes** are wired in with the authentication phase. The `components.securitySchemes` field already exists in the model.
+* **Security schemes** are extractors. Each one registers a `securitySchemes` component and a requirement on the operation, so the document matches the handler signature. See [SECURITY.md](SECURITY.md).

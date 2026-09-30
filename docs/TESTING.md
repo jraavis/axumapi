@@ -52,7 +52,7 @@ let db = TestDatabase::sqlite_memory()   // one shared in-memory connection
 | `from_db(db)` | wraps any `Db`, for PostgreSQL or MySQL tests |
 | `with_models(&[..])` | creates tables, indexes, constraints and join tables, as `makemigrations` plus `migrate` would |
 | `with_migrations(dir)` | applies every migration file in `dir` |
-| `with_signals(signals)` | attaches a signal registry (do it before cloning the handle out) |
+| `with_signals(signals)` | attaches a signal registry (do it before cloning the handle out); the test counterpart of `AppCli::configure_db` |
 | `db()`, `into_db()` | the `Db` |
 | `isolated(f)` | runs `f(Db)` in a transaction that is **always rolled back** |
 

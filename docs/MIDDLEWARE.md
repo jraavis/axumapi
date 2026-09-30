@@ -21,7 +21,7 @@ only its own routes. Rejections from built-ins are RFC 7807 problems.
 | `TrustedHosts` | `trusted_hosts` | exact / `*.sub` / `*`; 400 problem otherwise |
 | `HttpsRedirect` | `https_redirect` | 308 to `https://host/path?query`; honours `X-Forwarded-Proto` unless disabled |
 | `RequestIdLayer` | `request_id` | propagates a valid `x-request-id` or generates UUID v4; `RequestId` extractor |
-| `RequestLogging` | `request_logging` | span + event with request_id, method, path, matched route, status, latency |
+| `RequestLogging` | `request_logging` | `http.request` span with request_id, method, matched route, status, latency_ms |
 | `Timeout` | `timeout` | 504 problem by default (`.status(..)` to change); covers response production, not body streaming |
 | `ConcurrencyLimit` | `concurrency_limit` | excess requests wait for a slot |
 | `BodyLimit` | `body_limit` | 413 problem via `Content-Length`; streamed bodies are capped while read |
@@ -29,6 +29,8 @@ only its own routes. Rejections from built-ins are RFC 7807 problems.
 
 Logging never records headers (Authorization, Cookie, API keys), query strings
 or bodies; a test asserts this. Register `request_id` before `request_logging`.
+Request spans are documented in [OBSERVABILITY.md](OBSERVABILITY.md). HTTP GET/HEAD
+response caching is `RouteCache` in `axumapi-cache`; see [CACHE.md](CACHE.md).
 
 `RateLimit` is **process-local**: with N replicas the effective limit is N times
 higher and a restart resets it. The client key is the socket peer (available

@@ -67,7 +67,7 @@ impl ConfigBuilder {
     pub fn file(self, path: impl AsRef<Path>) -> Self;      // required file
     pub fn file_optional(self, path: impl AsRef<Path>) -> Self;
     pub fn env_prefix(self, prefix: &str) -> Self;          // `AXUMAPI_DATABASES__DEFAULT__URL`
-    pub fn set(self, key: &str, value: impl Serialize) -> Self;
+    pub fn set(self, key: &str, value: impl Serialize) -> Self;  // always wins, any call order
     pub fn extract<T: DeserializeOwned>(&self) -> Result<T, ConfigError>;
     pub fn build(&self) -> Result<Settings, ConfigError>;
 }
@@ -141,6 +141,11 @@ pub struct Security<T: Authenticate, S: Scopes = NoScopes>(pub T, /* PhantomData
 `Authenticate` may need application state: it receives `&Parts`, so state
 set with `App::with_state` is reachable through `parts.extensions`.
 
+OpenAPI lists security requirement objects as alternatives and the schemes
+inside one object as all required. Extractors on one handler therefore form
+a single requirement object. `Option<Scheme>` adds an anonymous alternative
+(`[{}, {"HTTPBearer": []}]`).
+
 ## 4. CLI (`axumapi-cli`)
 
 App-binary entry point (these commands need the user's `App`):
@@ -150,28 +155,36 @@ pub struct AppCli { /* App factory, models, settings, migrations dir */ }
 impl AppCli {
     pub fn new(app: impl Fn() -> App + Send + Sync + 'static) -> Self;
     pub fn models(self, models: &[&'static ModelMeta]) -> Self;
-    pub fn settings(self, settings: Settings) -> Self;
+    pub fn settings(self, settings: CliSettings) -> Self;
     pub fn migrations_dir(self, dir: impl Into<PathBuf>) -> Self;
+    pub fn configure_db(self, f: impl Fn(&str, Db) -> Db + Send + Sync + 'static) -> Self;
+    pub fn database_router<R: DatabaseRouter + Clone>(self, router: R) -> Self;
     /// Parses `std::env::args`: runserver [--addr] (ADDR env, then
-    /// settings.server.addr), routes, check, dbshell, makemigrations,
+    /// settings addr), routes, check, dbshell, makemigrations,
     /// migrate, rollback, showmigrations, squashmigrations.
     pub async fn run(self) -> ExitCode;
 }
+pub struct CliSettings { /* addr, databases by alias; From<&axumapi_config::Settings> */ }
 pub struct CheckIssue { pub level: CheckLevel, pub id: &'static str, pub message: String }
-pub fn check(app: &App, models: &[&'static ModelMeta], settings: &Settings, ...) -> Vec<CheckIssue>;
+pub fn check(app: &App, models: &[&'static ModelMeta], settings: &CliSettings, ...) -> Vec<CheckIssue>;
 ```
 
 `check` validates: configuration, model metadata, the migration graph,
 duplicate routes, OpenAPI generation, and backend capability mismatches.
 `shell` is replaced by `dbshell`, which starts the backend's native client
-(`sqlite3`, `psql`, `mysql`). The standalone `axumapi` binary gains
+(`sqlite3`, `psql`, `mysql`). Passwords never appear on the command line:
+a userinfo password and a PostgreSQL `?password=` query parameter move into
+`PGPASSWORD`; `sslpassword` is refused. The standalone `axumapi` binary gains
 `postgres` and `mysql` features. A MySQL schema editor is added to
-`axumapi-migrations`.
+`axumapi-migrations`. `configure_db` runs once per connected SQL alias
+before registration (attach `Signals` there); `database_router` installs
+the router on the registry `runserver` builds.
 
 ## 5. Signals (`axumapi_orm::signals`)
 
 - The `Signals` registry lives on `Db`: `Db::with_signals(Signals) -> Db`,
   `Db::signals() -> &Signals`. Clones and transaction handles share it.
+  Attach it at startup with `AppCli::configure_db`.
 - Kinds: `PreSave`, `PostSave { created }`, `PreDelete`, `PostDelete`,
   `M2mChanged { action }`.
 - Registration is explicit: `signals.connect(receiver)`. `#[receiver(post_save,
@@ -212,7 +225,10 @@ impl Databases {
 `QuerySet::using(&Db)` keeps its signature. Alias-based selection goes
 through `Databases`, because a `QuerySet` holds one `Db` and not the
 registry. Querysets never span databases: combining querysets bound to
-different databases (subquery, set operation) is an `OrmError`.
+different databases (set operation) is `QueryError::InvalidPlan`. A
+queryset turned into a subquery (`QuerySet::subquery`, `exists_expr`)
+stamps a `PlanOrigin`; `Db` rejects a query or bulk write that contains a
+subquery from another database before any SQL is sent.
 
 ## 7. Cache (`axumapi-cache`)
 
@@ -231,6 +247,11 @@ pub trait CacheExt: Cache {     // blanket impl
 }
 pub struct MemoryCache;   // MemoryCache::new(capacity): LRU + per-entry TTL
 pub struct RedisCache;    // feature "redis", wraps axumapi_backends::redis::RedisStore
-pub struct RouteCache;    // middleware: caches 200 GET/HEAD responses by method+URI
-                          // for a TTL; bypasses requests with Authorization or Cookie
+pub struct RouteCache;    // middleware: caches 200 GET/HEAD responses by
+                          // method+URI+Accept+Accept-Encoding for a TTL;
+                          // bypasses Authorization, Cookie, X-API-Key,
+                          // Proxy-Authorization, and bypass_header names;
+                          // skips Vary on other headers, streaming bodies,
+                          // and bodies above max_body_bytes; cached HEAD
+                          // keeps the original Content-Length
 ```

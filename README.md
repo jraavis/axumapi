@@ -73,6 +73,18 @@ cargo run -p hello_world
 cargo run -p todo_sqlite
 ```
 
+Examples (in `examples/`):
+
+| Example | Shows |
+|---|---|
+| `hello_world` | Minimal app: routes, path/query extractors, JSON validation |
+| `todo_sqlite` | ORM models and CRUD on SQLite |
+| `blog_postgres` | PostgreSQL blog API driven by `AppCli`, with signals (needs `DATABASE_URL`) |
+| `todo_mongo` | Todo API on MongoDB (needs `MONGODB_URL`) |
+| `polyglot` | Users and analytics on two databases via database routing (`USERS_DATABASE_URL`, `ANALYTICS_DATABASE_URL`) |
+
+Guides: [docs/CONFIG.md](docs/CONFIG.md) (layered configuration) and [docs/CACHE.md](docs/CACHE.md) (caches and `RouteCache`).
+
 Backends other than SQLite are behind cargo features (`postgres`, `mysql`, `mongodb`, `redis`). Their live tests are skipped unless a server URL is set:
 
 | Backend | Feature | Live-test variable |

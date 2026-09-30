@@ -51,7 +51,9 @@ let team = user.fetch_team(&db).await?; // Option<Arc<Team>>
 * `DbType`: maps a Rust type to its `SqlType`, nullability and `Value`. It is implemented for the integer and float families, `bool`, `String`, `Vec<u8>`, `Decimal`, `Uuid`, `NaiveDate`, `NaiveTime`, `DateTime<Utc>`, `TimeDelta`, `IpAddr`, JSON and `Option<T>`. Each type has a canonical text fallback, listed in `types.rs`.
 * `ForeignKey<T>` and `OneToOne<T>`: store the primary key, optionally cache the loaded object, and serialize as the key. Validation and JSON Schema follow `T::Pk`.
 * `WritePlan`: `Insert`, `Update` or `Delete`, with optional `RETURNING`. Checked against backend capabilities.
-* `Executor`, `Backend` and `Transaction`: adapter traits. `Db` handles `transaction`, `transaction_with(isolation)`, savepoints, `on_commit`, `raw_sql` and `raw_execute`. `Databases` maps aliases to handles.
+* `Executor`, `Backend` and `Transaction`: adapter traits. `Db` handles `transaction`, `transaction_with(isolation)`, savepoints, `on_commit`, `raw_sql` and `raw_execute`. `Databases` maps aliases to handles; a `DatabaseRouter` picks the alias per model ([DATABASE_ROUTING.md](DATABASE_ROUTING.md)).
+* Subquery plans remember their database. `QuerySet::subquery` and `exists_expr` stamp a `PlanOrigin` on the plan; `Db` rejects a query or bulk write whose nested subquery was built against another database (`QueryError::InvalidPlan`) before any SQL is sent. A transaction handle counts as its pool.
+* Model signals (`pre_save`, `post_save`, `pre_delete`, `post_delete`, `m2m_changed`) attach with `Db::with_signals` ([SIGNALS.md](SIGNALS.md)).
 * `crates/axumapi-backends/tests/reference_model.rs` contains hand-written `Author`/`Book` implementations. This is exactly the shape the derive must generate.
 
 ## Transactions

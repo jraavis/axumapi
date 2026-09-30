@@ -2,7 +2,7 @@
 
 `axumapi` is an async-first Rust web framework. It takes its API ergonomics from FastAPI, its validation model from Pydantic v2 and its ORM ergonomics from the Django ORM. It favours **compilable, idiomatic Rust** over Python look-alike syntax: where a Python feature has no natural Rust mapping, we design a Rust equivalent and document how it differs.
 
-> Status: **Phase 4 (ORM, QuerySet, relations, transactions, migrations) complete**. The table in [Crate map](#crate-map) says what is real and what is deferred.
+> Status: **Phase 6 (production tooling) complete, pre-alpha**. The table in [Crate map](#crate-map) lists the crates and what each one owns.
 
 ## Crate map
 
@@ -12,31 +12,37 @@ flowchart TD
     facade --> core[axumapi-core<br/>App, routing, extractors, ApiError]
     facade --> openapi[axumapi-openapi]
     facade --> orm
+    facade --> config[axumapi-config]
+    facade --> cache[axumapi-cache]
     core --> validation[axumapi-validation<br/>Validate, ValidationError, Schema]
     core --> orm[axumapi-orm<br/>QueryPlan IR, Expr, capabilities, Backend trait]
     core -. internal .-> axum[(axum / hyper / tower)]
     openapi --> validation
-    backends[axumapi-backends<br/>SQL compiler, SQLite and PostgreSQL adapters] --> orm
+    cache --> core
+    backends[axumapi-backends<br/>SQL compiler, SQLite, PostgreSQL, MySQL, MongoDB, Redis] --> orm
     backends -. internal .-> sqlx[(SQLx)]
     migrations[axumapi-migrations] --> orm
     macros[axumapi-macros<br/>proc-macros] -. generates code for .-> core
     macros -. generates code for .-> orm
     cli[axumapi-cli] --> migrations
+    cli --> config
     testkit[axumapi-testkit] --> core
 ```
 
 | Crate | Owns | Status |
 |---|---|---|
 | `axumapi` | Public facade, `prelude` | Implemented |
-| `axumapi-core` | `App`, own `Handler`/extractor/response traits, DI, middleware, lifespan, WebSockets, forms, headers/cookies, background tasks, static files, RFC 7807 errors | Implemented |
+| `axumapi-core` | `App`, own `Handler`/extractor/response traits, DI, middleware, lifespan, WebSockets, forms, headers/cookies, background tasks, static files, RFC 7807 errors, security schemes | Implemented |
 | `axumapi-validation` | `Validate`, structured `ValidationError`, rules, constrained newtypes, `Schema` + `SchemaRegistry` | Implemented: pipeline, hooks, dump options, constrained types |
-| `axumapi-orm` | `Model`, `QuerySet`, relations, transactions, `QueryPlan` IR, `Expr`, capabilities | Implemented |
-| `axumapi-backends` | Dialect-aware SQL compiler (PostgreSQL, SQLite), SQLite and PostgreSQL executors | Implemented |
-| `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Model, Validate, Schema)]`, `#[model_hooks]` | Implemented |
+| `axumapi-orm` | `Model`, `QuerySet`, relations, transactions, signals, database routing, `QueryPlan` IR, `Expr`, capabilities | Implemented |
+| `axumapi-backends` | Dialect-aware SQL compiler and executors: SQLite, PostgreSQL, MySQL; MongoDB (supported QuerySet subset); Redis key/hash/set client | Implemented |
+| `axumapi-macros` | Route attributes, `routes![]`, `#[derive(Model, Validate, Schema)]`, `#[model_hooks]`, `#[receiver]` | Implemented |
 | `axumapi-openapi` | Typed OpenAPI 3.1 model, document builder, Swagger UI / ReDoc | Implemented |
-| `axumapi-migrations` | Migration graph, operations, autodetector, schema editor, executor | Implemented |
-| `axumapi-cli` | `axumapi` binary (`migrate`, `rollback`, `showmigrations`, `squashmigrations`) | Implemented; `makemigrations` runs from the app binary |
-| `axumapi-testkit` | `TestClient` (in-process), lifespan-aware `start`/`shutdown` | Implemented |
+| `axumapi-migrations` | Migration graph, operations, autodetector, schema editor (PostgreSQL, SQLite, MySQL), executor | Implemented |
+| `axumapi-config` | Layered configuration (defaults, TOML, environment, overrides), `Secret`, `init_tracing` | Implemented |
+| `axumapi-cache` | `Cache` trait, in-memory LRU, Redis cache, `RouteCache` middleware | Implemented |
+| `axumapi-cli` | `AppCli` (`runserver`, `routes`, `check`, `dbshell`, migrations) and the standalone `axumapi` binary | Implemented; `makemigrations` runs from the app binary |
+| `axumapi-testkit` | `TestClient` (in-process), `TestDatabase` fixtures and isolation, lifespan-aware `start`/`shutdown` | Implemented |
 
 ### Dependency rules
 
@@ -90,10 +96,10 @@ Nothing is silently ignored. Capabilities are richer than booleans where needed:
 
 ### D. Connection ownership
 
-* An application registers backends under **aliases** (`"default"`, `"analytics"`). They are stored as `Arc<dyn Backend>` in typed application state.
+* An application registers backends under **aliases** (`"default"`, `"analytics"`). They are stored as `Arc<dyn Backend>` in a `Databases` registry (`App::database` / `App::databases`); a `DatabaseRouter` picks the alias per model. See [DATABASE_ROUTING.md](DATABASE_ROUTING.md).
 * Handlers receive a `Db` handle through dependency injection. It is a cheap clone of the pool handle and never a raw SQLx pool.
-* Transactions are **scoped closures**: `db.transaction(|tx| async move { … }).await`. The closure receives a `Tx` handle that implements the same executor trait as `Db`. Commit happens on `Ok`, rollback on `Err` or panic-unwind. Nested calls become savepoints only when `TransactionSupport::Savepoints` is declared.
-* `QuerySet::using("analytics")` overrides the alias. A plan that references models with different aliases is rejected, so there are no cross-database joins.
+* Transactions are **scoped closures**: `db.transaction(|tx| async move { … }).await`. The closure receives a `Db` bound to the open transaction (the same type as the pool handle). Commit happens on `Ok`, rollback on `Err` or panic-unwind. Nested calls become savepoints only when `TransactionSupport::Savepoints` is declared.
+* `QuerySet::using(&Db)` rebinds a queryset to a handle you already hold. `Databases::using::<M>(alias)` bypasses the router. A queryset holds exactly one `Db`; combining querysets (or nesting a subquery) bound to different databases is `QueryError::InvalidPlan` before any I/O.
 
 ### E. Query result decoding
 
@@ -130,6 +136,8 @@ See [QUERY_PLAN.md](QUERY_PLAN.md) and [BACKENDS.md](BACKENDS.md).
 | `QueryError::MultipleObjectsReturned` | orm | 500 |
 | `BackendCapabilityError` | orm | 501 |
 | `BackendError::Constraint` | orm | 409 (the detail is logged, not returned) |
+| `OrmError::Signal` | orm | 500 (the text is logged, not returned) |
+| `OrmError::UnknownDatabase` | orm | 500 (a missing alias is a configuration error) |
 | other `BackendError` | orm | 500 (the detail is logged, not returned to the client) |
 | `ApiError` | core | Rendered as RFC 7807 `application/problem+json` |
 

@@ -121,8 +121,9 @@ A handler is an `async fn` with zero or more arguments returning something
 that implements `IntoResponse`. Every argument except the last implements
 `FromRequestParts`; the **last** argument may implement `FromRequest` and thus
 consume the request body (`Json<T>`, `Form<T>`, raw bodies). Built-in
-extractors: `Path<T>`, `Query<T>`, `Json<T>`, `State<T>`, ... All traits are
-axumapi's own; no axum types leak into the public API.
+extractors: `Path<T>`, `Query<T>`, `Json<T>`, `State<T>`, `Depends<T>`,
+`HttpBearer` and the other security schemes (see [SECURITY.md](SECURITY.md)),
+... All traits are axumapi's own; no axum types leak into the public API.
 
 Custom extractors and responses document themselves through the optional
 `describe` hook, which receives the `Operation` being built and the
@@ -189,10 +190,10 @@ comments become descriptions. Constraints added to a `$ref` property wrap it as
 * Routes are values; decorators only generate a sibling function, so nothing
   is registered at import time and handlers stay plain callable functions.
 * Request validation is driven by types (`Json<T>`, `Query<T>`), not by
-  default-argument markers; `#[field(..)]` constraints currently feed the
-  OpenAPI schema, and enforcement arrives with the `Validate` derive.
-* No implicit dependency injection through argument defaults; extractors and
-  `State<T>` play that role.
+  default-argument markers. `#[field(..)]` constraints feed both the OpenAPI
+  schema and `#[derive(Validate)]`.
+* Dependency injection is explicit: `Depends<T>`, `Provided<T>` and `State<T>`
+  (see [DEPENDENCY_INJECTION.md](DEPENDENCY_INJECTION.md)).
 * `status` is per operation and replaces only a `200`, so handlers can still
   return specific statuses themselves.
 * Routers are `App`s (`mount`) rather than a separate `APIRouter` type.

@@ -76,10 +76,10 @@ A router (or a caller of `using`) that names an alias which is not registered yi
 
 `QuerySet::using(&Db)` still exists and rebinds a queryset to a handle you already hold.
 
-`allow_migrate` is a query on the registry. The migration runner and the CLI do not consult it yet; they apply migrations to the database you give them (`--database ALIAS`, see [CLI.md](CLI.md)).
+`allow_migrate` is a query on the registry. The migration runner and the CLI do not consult it yet; they apply migrations to the database you give them (`--database ALIAS`, see [CLI.md](CLI.md)). `AppCli::database_router` installs the router when `runserver` builds the registry.
 
 ## Querysets never span databases
 
 A `QuerySet` holds exactly one `Db`. Combining querysets bound to different databases with `union`, `union_all`, `intersection` or `difference` fails with `QueryError::InvalidPlan("querysets bound to different databases cannot be combined")`. A transaction handle counts as the database it was opened on, so combining a transactional queryset with a pool queryset of the same database is fine.
 
-**Subqueries.** A queryset turned into a subquery (`QuerySet::subquery(..)` or `exists_expr()`) remembers its database. Running a query or a bulk update/delete that contains a subquery from another database fails with `QueryError::InvalidPlan` before any SQL is sent. A transaction handle counts as its pool's database.
+**Subqueries.** A queryset turned into a subquery (`QuerySet::subquery(..)` or `exists_expr()`) remembers its database. Running a query or a bulk update/delete that contains a subquery from another database fails with `QueryError::InvalidPlan("a subquery built against another database cannot run here")` before any SQL is sent. A transaction handle counts as its pool's database.
