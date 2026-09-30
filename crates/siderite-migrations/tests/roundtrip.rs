@@ -358,3 +358,37 @@ async fn sqlite_rebuild_of_parent_keeps_cascade_children() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Two concurrent migrators must apply each migration once.
+#[tokio::test]
+async fn concurrent_sqlite_migrate_applies_once() {
+    let dir = temp_dir();
+    let db_path = dir.join("app.db");
+    let url = format!("sqlite://{}?mode=rwc", db_path.display());
+    let db = Db::new(SqliteBackend::connect(&url).await.unwrap());
+    let models: &[&'static siderite_orm::ModelMeta] = &[author_meta()];
+    make_migrations(models, &dir, None, false).unwrap().unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let run = |db: Db, graph: MigrationGraph, barrier: std::sync::Arc<tokio::sync::Barrier>| async move {
+        barrier.wait().await;
+        Migrator::new(&db, &graph).migrate(None, false).await
+    };
+    let a = tokio::spawn(run(db.clone(), graph.clone(), barrier.clone()));
+    let b = tokio::spawn(run(db.clone(), graph.clone(), barrier));
+    let ra = a.await.unwrap().unwrap();
+    let rb = b.await.unwrap().unwrap();
+    assert_eq!(
+        ra.applied.len() + rb.applied.len(),
+        1,
+        "one replica applies, the other sees history: {ra:?} {rb:?}"
+    );
+    let shown = Migrator::new(&db, &graph).show().await.unwrap();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].1);
+    db.raw_sql("SELECT COUNT(*) AS n FROM authors", vec![])
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

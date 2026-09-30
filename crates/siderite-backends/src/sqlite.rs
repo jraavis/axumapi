@@ -167,7 +167,10 @@ impl SqliteSchemaTransaction {
             .await
             .map_err(map_error)?;
         set_foreign_keys(&mut conn, 0).await?;
-        if transactional && let Err(err) = SqliteTransactionManager::begin(&mut *conn, None).await {
+        if transactional
+            && let Err(err) =
+                SqliteTransactionManager::begin(&mut *conn, Some("BEGIN IMMEDIATE".into())).await
+        {
             drop(set_foreign_keys(&mut conn, restore_fk).await);
             return Err(map_error(err).into());
         }

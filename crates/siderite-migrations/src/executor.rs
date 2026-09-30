@@ -11,6 +11,7 @@ use chrono::Utc;
 use siderite_orm::types::TIMESTAMP_FORMAT;
 use siderite_orm::{BackendKind, Db, TransactionSupport, Value};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 
 /// History table written by the migrator.
 pub const HISTORY_TABLE: &str = "siderite_migrations";
@@ -102,24 +103,33 @@ impl<'a> Migrator<'a> {
                 dry_run: true,
             });
         }
-        if !history.table_exists {
-            self.db
-                .execute_script(&create_history_sql(self.kind()))
-                .await?;
-        }
-        let mut applied = Vec::new();
-        let mut state = replay(self.graph, &history)?;
-        for id in &plan {
-            let migration = self.require_migration(id)?.clone();
-            self.apply_one(&migration, &mut state).await?;
-            applied.push(id.clone());
-        }
-        Ok(Report {
-            planned: plan,
-            sql,
-            applied,
-            dry_run: false,
+        self.with_lock(|session| {
+            let this = self;
+            async move {
+                if !this.history_table_exists_on(&session).await? {
+                    session
+                        .execute_script(&create_history_sql(this.kind()))
+                        .await?;
+                }
+                let history = this.load_history_from(&session).await?;
+                this.verify_checksums(&history)?;
+                let plan = this.forward_plan(&history, target)?;
+                let mut state = replay(this.graph, &history)?;
+                let mut applied = Vec::new();
+                for id in &plan {
+                    let migration = this.require_migration(id)?.clone();
+                    this.apply_one(&session, &migration, &mut state).await?;
+                    applied.push(id.clone());
+                }
+                Ok(Report {
+                    planned: plan,
+                    sql,
+                    applied,
+                    dry_run: false,
+                })
+            }
         })
+        .await
     }
 
     /// Unapply migrations. `target` is the id that should remain the head
@@ -154,24 +164,34 @@ impl<'a> Migrator<'a> {
                 dry_run: true,
             });
         }
-        if !history.table_exists {
-            self.db
-                .execute_script(&create_history_sql(self.kind()))
-                .await?;
-        }
-        let mut unapplied = Vec::new();
-        for id in &plan {
-            let migration = self.require_migration(id)?.clone();
-            let state_before = state_before_migration(self.graph, &history, id)?;
-            self.unapply_one(&migration, &state_before).await?;
-            unapplied.push(id.clone());
-        }
-        Ok(Report {
-            planned: plan,
-            sql,
-            applied: unapplied,
-            dry_run: false,
+        self.with_lock(|session| {
+            let this = self;
+            async move {
+                if !this.history_table_exists_on(&session).await? {
+                    session
+                        .execute_script(&create_history_sql(this.kind()))
+                        .await?;
+                }
+                let history = this.load_history_from(&session).await?;
+                this.verify_checksums(&history)?;
+                let plan = this.rollback_plan(&history, target, steps)?;
+                let mut unapplied = Vec::new();
+                for id in &plan {
+                    let migration = this.require_migration(id)?.clone();
+                    let state_before = state_before_migration(this.graph, &history, id)?;
+                    this.unapply_one(&session, &migration, &state_before)
+                        .await?;
+                    unapplied.push(id.clone());
+                }
+                Ok(Report {
+                    planned: plan,
+                    sql,
+                    applied: unapplied,
+                    dry_run: false,
+                })
+            }
         })
+        .await
     }
 
     /// Every loaded migration with its applied flag (including replaced ids).
@@ -204,6 +224,26 @@ impl<'a> Migrator<'a> {
 
     fn kind(&self) -> BackendKind {
         self.db.capabilities().kind
+    }
+
+    async fn with_lock<F, Fut>(&self, f: F) -> Result<Report, MigrationError>
+    where
+        F: FnOnce(Db) -> Fut,
+        Fut: Future<Output = Result<Report, MigrationError>>,
+    {
+        let transactional = self.kind() == BackendKind::Sqlite;
+        self.db
+            .schema_change(transactional, |session| async move {
+                acquire_migrate_lock(&session).await?;
+                let result = f(session.clone()).await;
+                let unlocked = release_migrate_lock(&session).await;
+                match (result, unlocked) {
+                    (Ok(v), Ok(())) => Ok(v),
+                    (Err(e), _) => Err(e),
+                    (Ok(_), Err(e)) => Err(e),
+                }
+            })
+            .await
     }
 
     fn require_backend(&self) -> Result<(), MigrationError> {
@@ -328,7 +368,11 @@ impl<'a> Migrator<'a> {
     }
 
     async fn load_history(&self) -> Result<History, MigrationError> {
-        if !self.history_table_exists().await? {
+        self.load_history_from(self.db).await
+    }
+
+    async fn load_history_from(&self, db: &Db) -> Result<History, MigrationError> {
+        if !self.history_table_exists_on(db).await? {
             return Ok(History {
                 ids: HashSet::new(),
                 checksums: HashMap::new(),
@@ -338,8 +382,7 @@ impl<'a> Migrator<'a> {
         // Any failure past this point (permissions, a dropped connection, a
         // damaged table) must surface: treating it as an empty history would
         // replay every migration against a live database.
-        let result = self
-            .db
+        let result = db
             .raw_sql(
                 &format!(
                     "SELECT {} as id, {} as checksum FROM {}",
@@ -374,7 +417,7 @@ impl<'a> Migrator<'a> {
 
     /// Ask the catalog whether the history table exists, so a failing read
     /// of the table itself is never mistaken for a fresh database.
-    async fn history_table_exists(&self) -> Result<bool, MigrationError> {
+    async fn history_table_exists_on(&self, db: &Db) -> Result<bool, MigrationError> {
         let sql = match self.kind() {
             BackendKind::Sqlite => format!(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{HISTORY_TABLE}'"
@@ -389,11 +432,12 @@ impl<'a> Migrator<'a> {
             ),
             other => return Err(MigrationError::UnsupportedBackend(other)),
         };
-        Ok(!self.db.raw_sql(&sql, Vec::new()).await?.rows.is_empty())
+        Ok(!db.raw_sql(&sql, Vec::new()).await?.rows.is_empty())
     }
 
     async fn apply_one(
         &self,
+        db: &Db,
         migration: &Migration,
         state: &mut ProjectState,
     ) -> Result<(), MigrationError> {
@@ -421,14 +465,15 @@ impl<'a> Migrator<'a> {
                 Ok::<_, MigrationError>(())
             }
         };
-        if self.kind() == BackendKind::Sqlite {
-            self.db
-                .schema_change(runs_in_transaction(self.db, migration), run)
+        if db.in_transaction() {
+            run(db.clone()).await?;
+        } else if self.kind() == BackendKind::Sqlite {
+            db.schema_change(runs_in_transaction(db, migration), run)
                 .await?;
-        } else if runs_in_transaction(self.db, migration) {
-            self.db.transaction(run).await?;
+        } else if runs_in_transaction(db, migration) {
+            db.transaction(run).await?;
         } else {
-            run(self.db.clone()).await?;
+            run(db.clone()).await?;
         }
         for op in &migration.operations {
             op.apply_to_state(state)?;
@@ -438,6 +483,7 @@ impl<'a> Migrator<'a> {
 
     async fn unapply_one(
         &self,
+        db: &Db,
         migration: &Migration,
         state_before: &ProjectState,
     ) -> Result<(), MigrationError> {
@@ -460,14 +506,15 @@ impl<'a> Migrator<'a> {
                 Ok::<_, MigrationError>(())
             }
         };
-        if self.kind() == BackendKind::Sqlite {
-            self.db
-                .schema_change(runs_in_transaction(self.db, migration), run)
+        if db.in_transaction() {
+            run(db.clone()).await?;
+        } else if self.kind() == BackendKind::Sqlite {
+            db.schema_change(runs_in_transaction(db, migration), run)
                 .await?;
-        } else if runs_in_transaction(self.db, migration) {
-            self.db.transaction(run).await?;
+        } else if runs_in_transaction(db, migration) {
+            db.transaction(run).await?;
         } else {
-            run(self.db.clone()).await?;
+            run(db.clone()).await?;
         }
         Ok(())
     }
@@ -481,6 +528,69 @@ struct History {
 
 fn quote_star(kind: BackendKind, ident: &str) -> String {
     schema_editor::quote_identifier(kind, ident)
+}
+
+/// PostgreSQL `pg_advisory_lock` key (`SIDE` in ASCII).
+const PG_MIGRATE_LOCK: i64 = 0x5349_4445;
+const MYSQL_LOCK_NAME: &str = "siderite_migrate";
+const MYSQL_LOCK_TIMEOUT_SECS: i64 = 30;
+
+async fn acquire_migrate_lock(db: &Db) -> Result<(), MigrationError> {
+    match db.capabilities().kind {
+        BackendKind::Sqlite => Ok(()),
+        BackendKind::Postgres => {
+            db.raw_sql(
+                "SELECT pg_advisory_lock($1)",
+                vec![Value::Int(PG_MIGRATE_LOCK)],
+            )
+            .await?;
+            Ok(())
+        }
+        BackendKind::MySql => {
+            let result = db
+                .raw_sql(
+                    "SELECT GET_LOCK(?, ?) AS acquired",
+                    vec![
+                        Value::Text(MYSQL_LOCK_NAME.into()),
+                        Value::Int(MYSQL_LOCK_TIMEOUT_SECS),
+                    ],
+                )
+                .await?;
+            match result.rows.first().and_then(|row| row.get("acquired")) {
+                Some(Value::Int(1)) => Ok(()),
+                Some(Value::Int(0)) => Err(MigrationError::state(
+                    "timed out waiting for the migration lock",
+                )),
+                other => Err(MigrationError::state(format!(
+                    "GET_LOCK returned {other:?}"
+                ))),
+            }
+        }
+        other => Err(MigrationError::UnsupportedBackend(other)),
+    }
+}
+
+async fn release_migrate_lock(db: &Db) -> Result<(), MigrationError> {
+    match db.capabilities().kind {
+        BackendKind::Sqlite => Ok(()),
+        BackendKind::Postgres => {
+            db.raw_sql(
+                "SELECT pg_advisory_unlock($1)",
+                vec![Value::Int(PG_MIGRATE_LOCK)],
+            )
+            .await?;
+            Ok(())
+        }
+        BackendKind::MySql => {
+            db.raw_sql(
+                "SELECT RELEASE_LOCK(?)",
+                vec![Value::Text(MYSQL_LOCK_NAME.into())],
+            )
+            .await?;
+            Ok(())
+        }
+        other => Err(MigrationError::UnsupportedBackend(other)),
+    }
 }
 
 /// Whether one migration can be wrapped in a transaction that also undoes

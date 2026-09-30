@@ -83,3 +83,46 @@ macro_rules! with_tx {
     }};
 }
 pub(crate) use with_tx;
+
+/// A pooled connection held without an SQL transaction (migration lock).
+/// Dropping it without [`take`](Self::take) closes the connection so session
+/// locks (`pg_advisory_lock`, `GET_LOCK`) are not returned to the pool.
+pub(crate) struct ConnSlot<DB: sqlx::Database> {
+    pub(crate) conn: Mutex<Option<sqlx::pool::PoolConnection<DB>>>,
+}
+
+impl<DB: sqlx::Database> ConnSlot<DB> {
+    pub(crate) fn new(conn: sqlx::pool::PoolConnection<DB>) -> Self {
+        Self {
+            conn: Mutex::new(Some(conn)),
+        }
+    }
+
+    pub(crate) async fn take(&self) -> Result<sqlx::pool::PoolConnection<DB>, QueryError> {
+        self.conn
+            .lock()
+            .await
+            .take()
+            .ok_or(QueryError::TransactionClosed)
+    }
+}
+
+impl<DB: sqlx::Database> Drop for ConnSlot<DB> {
+    fn drop(&mut self) {
+        if let Some(mut conn) = self.conn.get_mut().take() {
+            conn.close_on_drop();
+        }
+    }
+}
+
+macro_rules! with_conn {
+    ($slot:expr, $conn:ident => $body:expr) => {{
+        let mut guard = $slot.conn.lock().await;
+        let conn = guard
+            .as_mut()
+            .ok_or(::siderite_orm::QueryError::TransactionClosed)?;
+        let $conn = &mut **conn;
+        $body
+    }};
+}
+pub(crate) use with_conn;

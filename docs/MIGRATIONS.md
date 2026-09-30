@@ -28,6 +28,8 @@ The `siderite` CLI binary runs `migrate`, `rollback`, `showmigrations` and `squa
 
 `--dry-run` prints SQL (or operations) and executes nothing.
 
+`migrate` and `rollback` take a backend lock before re-reading history, so two replicas cannot apply the same migration: PostgreSQL `pg_advisory_lock`, MySQL `GET_LOCK`, SQLite `BEGIN IMMEDIATE` on the dedicated connection.
+
 ## File format
 
 Pretty-printed JSON, one file per migration, named `{id}.json`:

@@ -27,7 +27,9 @@ The standalone `siderite` binary runs `migrate`, `rollback`,
 `showmigrations`, and `squashmigrations` from JSON files plus
 `--database-url`. It cannot see your models, so it cannot run
 `makemigrations`. `--dry-run` prints SQL (or operations) and executes
-nothing.
+nothing. `migrate` and `rollback` take a backend lock before re-reading
+history (PostgreSQL `pg_advisory_lock`, MySQL `GET_LOCK`, SQLite
+`BEGIN IMMEDIATE`) so concurrent replicas cannot double-apply.
 
 MongoDB and Redis return `MigrationError::UnsupportedBackend` before I/O.
 
