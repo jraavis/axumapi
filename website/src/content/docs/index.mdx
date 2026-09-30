@@ -1,0 +1,69 @@
+---
+title: axumapi
+description: A FastAPI-style Rust web framework with Pydantic-style validation and a Django-style ORM.
+template: splash
+hero:
+  title: Typed routes. Validated bodies. A Django-style ORM.
+  tagline: axumapi is an async-first Rust web framework. Handlers look like FastAPI, models validate like Pydantic v2, and queries are lazy QuerySets built from field constants that the compiler checks.
+  actions:
+    - text: Start with a route
+      link: /axumapi/start/first-app/
+      icon: right-arrow
+    - text: GitHub
+      link: https://github.com/jraavis/axumapi
+      icon: github
+      variant: minimal
+---
+
+import { Code } from '@astrojs/starlight/components';
+
+<p class="status-banner">
+  Pre-alpha. Phase 6 (production tooling) is complete. Public APIs will change.
+  MSRV 1.92, edition 2024.
+</p>
+
+<Code
+  lang="rust"
+  title="examples/hello_world"
+  code={`use axumapi::prelude::*;
+
+#[derive(Deserialize, Validate, Schema)]
+struct Greeting { shout: Option<bool> }
+
+/// Greet somebody by name.
+#[get("/hello/{name}", tag = "greetings")]
+async fn hello(Path(name): Path<String>, Query(q): Query<Greeting>) -> PlainText<String> {
+    let msg = format!("hello, {name}");
+    PlainText(if q.shout.unwrap_or(false) { msg.to_uppercase() } else { msg })
+}
+
+#[tokio::main]
+async fn main() -> Result<(), ServerError> {
+    App::new().title("Hello").routes(routes![hello]).run("127.0.0.1:8000").await
+}`}
+/>
+
+<dl class="feature-list">
+  <dt>HTTP</dt>
+  <dd>
+    Route macros, extractors, middleware, lifespan, WebSockets, and RFC 7807
+    errors. OpenAPI 3.1 is generated from handler signatures and served at
+    <code>/docs</code>.
+  </dd>
+  <dt>Validation</dt>
+  <dd>
+    A Pydantic-style pipeline on <code>#[derive(Validate, Schema)]</code>.
+    Invalid input is a 422 that lists every error with its location.
+  </dd>
+  <dt>ORM</dt>
+  <dd>
+    <code>#[derive(Model)]</code> and lazy <code>QuerySet</code>s.
+    <code>User::age.icontains(..)</code> does not compile. Unsupported backend
+    features fail with a capability error before any I/O.
+  </dd>
+  <dt>Production</dt>
+  <dd>
+    Layered configuration, signals, database routing, cache, CLI, testkit, and
+    migrations for SQLite, PostgreSQL, and MySQL.
+  </dd>
+</dl>

@@ -1,0 +1,165 @@
+---
+title: CLI
+description: AppCli versus the standalone axumapi binary, commands, flags, check, and dbshell.
+---
+
+Two entry points share the same flags and the migration commands.
+
+| | Standalone `axumapi` binary | `AppCli` in your application binary |
+|---|---|---|
+| Needs your `App` and models | no | yes |
+| Commands | `migrate`, `rollback`, `showmigrations`, `squashmigrations` | all of those, plus `makemigrations`, `runserver`, `routes`, `check`, `dbshell` |
+| Database | `--database-url` or `DATABASE_URL` | `--database-url`, settings, or `DATABASE_URL` |
+
+The standalone binary only sees JSON migration files, so it cannot diff
+your models. Run `makemigrations`, `runserver`, `routes`, `check`, and
+`dbshell` from the application binary; the standalone binary answers them
+with a usage hint and exit code 2.
+
+Exit codes: `0` success, `1` failure (or `check` found an error), `2` usage
+error.
+
+## Standalone binary
+
+```bash
+cargo install --path crates/axumapi-cli --features postgres,mysql
+axumapi migrate --database-url postgres://app@localhost/app
+axumapi showmigrations --migrations-dir db/migrations
+```
+
+SQLite is always compiled in. PostgreSQL and MySQL are opt-in cargo
+features of `axumapi-cli`: `postgres` and `mysql`. The backend is picked by
+URL scheme (`sqlite:`, `postgres://`, `mysql://`); a URL for a backend that
+was not compiled in is an error. Error messages never contain the URL.
+`squashmigrations` only reads and writes files, so it works without a
+database URL.
+
+## `AppCli`
+
+```rust
+use axumapi_cli::{AppCli, CliSettings};
+use axumapi::prelude::*;
+
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    AppCli::new(build_app)
+        .models(&[User::META, Post::META])
+        .settings(
+            CliSettings::new()
+                .addr("0.0.0.0:8000")
+                .database("default", "postgres://app@localhost/app"),
+        )
+        .migrations_dir("migrations")
+        .run()
+        .await
+}
+```
+
+`AppCli::new` takes a factory: `check` builds the app more than once.
+`CliSettings` holds the listen address and database URLs by alias. Build it
+from loaded configuration with `CliSettings::from(&axumapi::config::load()?)`,
+which takes `server.addr` and every `databases.<alias>.url`. Its `Debug`
+output lists aliases only. `AppCli::run_from(args)` takes explicit
+arguments, which is handy in tests.
+
+`runserver` connects every SQL alias and registers them as the app’s
+`Databases`. Two hooks shape that registry:
+
+```rust
+AppCli::new(build_app)
+    .configure_db(|_alias, db| db.with_signals(receivers::signals()))
+    .database_router(AppRouter)
+```
+
+`configure_db` runs once per connected alias, before registration.
+`database_router` installs a [DatabaseRouter](/axumapi/guides/data/database-routing/).
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `runserver [--addr ADDR]` | Connects every configured SQL database, registers each under its alias, and serves the app. Redis and MongoDB aliases are skipped: register those yourself in the factory |
+| `routes` | Prints `METHOD PATH operation_id` for every route, mounts included |
+| `check` | Validates configuration, models, migrations, routes, and the backend. Exits `1` when an error is found |
+| `dbshell` | Starts the database’s native client |
+| `makemigrations [--name SLUG] [--empty] [--dry-run]` | Diffs compiled models against the graph and writes a JSON migration. Never connects to a database |
+| `migrate [TARGET] [--dry-run]` | Applies migrations |
+| `rollback [--steps N \| TARGET] [--dry-run]` | Unapplies migrations |
+| `showmigrations` | `[X]` applied / `[ ]` pending |
+| `squashmigrations FROM TO [--name SLUG]` | Collapses a range. Never connects to a database |
+
+See [Migrations](/axumapi/guides/data/migrations/) for the file format and
+reversibility.
+
+### Global flags
+
+| Flag | Meaning |
+|---|---|
+| `--database ALIAS` | Alias used by `migrate`, `rollback`, `showmigrations`, and `dbshell` (default `default`) |
+| `--database-url URL` | Database URL, overriding the settings |
+| `--migrations-dir DIR` | Directory of JSON migrations (default `migrations`) |
+| `--addr ADDR` | Listen address for `runserver` |
+| `--help`, `-h` | Help |
+
+Flags may appear anywhere and take `--flag value` or `--flag=value`.
+
+### Precedence
+
+**Listen address** (`runserver`): `--addr`, then the `ADDR` environment
+variable, then `CliSettings::addr`, then `127.0.0.1:8000`. Empty values
+count as unset.
+
+**Database** (`migrate`, `rollback`, `showmigrations`, `dbshell`):
+`--database-url`, then the URL configured for the selected alias, then,
+for the `default` alias only, `DATABASE_URL`. With none of those, the
+command fails with a “no database” error naming the alias.
+
+## `check`
+
+`check` runs without starting a server or opening a database. Each issue
+prints as `error: [models.E003] message` or `warning: [id] message`.
+Messages never contain database URLs.
+
+| Id | Level | Meaning |
+|---|---|---|
+| `config.E001` | error | models are registered but no `default` database is configured |
+| `config.E002` | error | a database URL has no scheme or does not parse |
+| `config.E003` | error | a database URL uses an unsupported scheme |
+| `models.E001` | error | two models use the same table |
+| `models.E002` | error | a model name is registered more than once |
+| `models.E003` | error | a model has no primary key |
+| `models.E004` | error | a foreign key points to a model that is not registered |
+| `models.E005` | error | a many-to-many relation (or its through model) targets an unregistered model |
+| `models.E006` | error | two fields map to the same column |
+| `models.E007` | error | a model has more than one primary-key field |
+| `migrations.E001` | error | the migration files cannot be loaded |
+| `migrations.E002` | error | the migration dependency graph is invalid |
+| `migrations.E003` | error | the migrations do not replay cleanly |
+| `migrations.W001` | warning | model changes are not recorded in any migration; run `makemigrations` |
+| `openapi.E001` | error | the OpenAPI document cannot be generated |
+| `routes.E001` | error | the app cannot be built into a router |
+| `backend.E001` | error | the `default` database is Redis, which cannot hold models |
+| `backend.E002` | error | a model needs joins the `default` backend does not support |
+| `backend.E003` | error | the schema cannot be created on the `default` backend |
+| `backend.W001` | warning | the backend has no schema migrations; `migrate` will refuse to run |
+
+Migration checks are skipped when no migrations directory is passed to
+`axumapi_cli::check`; `AppCli` always passes its own.
+
+## `dbshell`
+
+`dbshell` starts `sqlite3`, `psql`, or `mysql` on the selected database and
+returns the client’s exit code. Passwords never appear on the command line
+or in output: `psql` receives `PGPASSWORD` and `mysql` receives `MYSQL_PWD`
+in its environment. A userinfo password and a PostgreSQL `?password=` query
+parameter both move into `PGPASSWORD` and are stripped from the URL passed
+to `psql`. A URL that carries `sslpassword` is refused. For MySQL only
+host, port, user, and database are forwarded. An in-memory SQLite URL, an
+unknown scheme, or a client that is not on `PATH` is an error. MongoDB and
+Redis are not supported.
+
+## See also
+
+- [Migrations](/axumapi/guides/data/migrations/)
+- [Configuration](/axumapi/guides/production/config/)
+- [Signals](/axumapi/guides/data/signals/)
