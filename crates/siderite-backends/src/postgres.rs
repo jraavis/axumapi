@@ -8,7 +8,9 @@
 //! Connections are pinned to the `UTC` time zone so that `timestamptz`
 //! date-part lookups (`EXTRACT`) agree with the values the ORM writes.
 
-use crate::shared::{TxSlot, affected_result, map_error, returning_result, with_tx};
+use crate::shared::{
+    ConnSlot, TxSlot, affected_result, map_error, returning_result, with_conn, with_tx,
+};
 use crate::sql::{CompiledQuery, Postgres, compile, compile_write};
 use async_trait::async_trait;
 use siderite_orm::{
@@ -118,6 +120,14 @@ impl Backend for PgBackend {
         }
         Ok(Box::new(PgTransaction(TxSlot::new(tx))))
     }
+
+    async fn begin_schema(&self, transactional: bool) -> Result<Box<dyn Transaction>, OrmError> {
+        if transactional {
+            return self.begin(None).await;
+        }
+        let conn = self.pool.acquire().await.map_err(map_error)?;
+        Ok(Box::new(PgHeld(ConnSlot::new(conn))))
+    }
 }
 
 fn isolation_sql(level: IsolationLevel) -> &'static str {
@@ -169,6 +179,61 @@ impl Transaction for PgTransaction {
 
     async fn rollback(&self) -> Result<(), OrmError> {
         self.0.rollback().await
+    }
+}
+
+/// Pooled connection held for a migration lock (no SQL transaction).
+///
+/// Commit and rollback close the connection instead of returning it to the
+/// pool: a session lock (`pg_advisory_lock`) that was not released must never
+/// be handed to another caller. Releasing the lock and then closing costs one
+/// reconnect per migrate, which is negligible for a deploy-time operation.
+struct PgHeld(ConnSlot<sqlx::Postgres>);
+
+#[async_trait]
+impl Executor for PgHeld {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::postgres()
+    }
+
+    async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
+        let compiled = compile(plan, &Postgres)?;
+        with_conn!(self.0, conn => fetch_rows(conn, &compiled.sql, compiled.params).await)
+    }
+
+    async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
+        let compiled = compile_write(plan, &Postgres)?;
+        let returning = !plan.returning().is_empty();
+        with_conn!(self.0, conn => run_write(conn, compiled, returning).await)
+    }
+
+    async fn fetch_raw(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError> {
+        with_conn!(self.0, conn => fetch_rows(conn, sql, params).await)
+    }
+
+    async fn execute_raw(&self, sql: &str, params: Vec<Value>) -> Result<u64, OrmError> {
+        with_conn!(self.0, conn => execute_rows(conn, sql, params).await)
+    }
+
+    async fn execute_script(&self, sql: &str) -> Result<(), OrmError> {
+        with_conn!(self.0, conn => script_result(sqlx::Executor::execute(conn, sql).await))
+    }
+}
+
+#[async_trait]
+impl Transaction for PgHeld {
+    async fn commit(&self) -> Result<(), OrmError> {
+        let mut conn = self.0.take().await?;
+        conn.close_on_drop();
+        drop(conn);
+        Ok(())
+    }
+
+    async fn rollback(&self) -> Result<(), OrmError> {
+        let mut conn = self.0.take().await?;
+        conn.close_on_drop();
+        drop(conn);
+        Ok(())
     }
 }
 

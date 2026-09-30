@@ -12,8 +12,12 @@ use siderite_orm::{
     Backend, BackendCapabilities, BackendError, ExecResult, Executor, IsolationLevel, OrmError,
     QueryError, QueryPlan, QueryResult, Row, Transaction, Value, WritePlan,
 };
-use sqlx::sqlite::{SqliteArguments, SqlitePool, SqlitePoolOptions, SqliteRow};
-use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::pool::PoolConnection;
+use sqlx::sqlite::{
+    SqliteArguments, SqlitePool, SqlitePoolOptions, SqliteRow, SqliteTransactionManager,
+};
+use sqlx::{Column as _, Row as _, TransactionManager, TypeInfo as _, ValueRef as _};
+use std::collections::HashSet;
 
 /// SQLite adapter executing compiled plans on a connection pool.
 #[derive(Debug, Clone)]
@@ -83,6 +87,12 @@ impl Backend for SqliteBackend {
         let tx = self.pool.begin().await.map_err(map_error)?;
         Ok(Box::new(SqliteTransaction(TxSlot::new(tx))))
     }
+
+    async fn begin_schema(&self, transactional: bool) -> Result<Box<dyn Transaction>, OrmError> {
+        Ok(Box::new(
+            SqliteSchemaTransaction::open(&self.pool, transactional).await?,
+        ))
+    }
 }
 
 /// An open SQLite transaction. Dropped without commit, it rolls back.
@@ -127,6 +137,254 @@ impl Transaction for SqliteTransaction {
     async fn rollback(&self) -> Result<(), OrmError> {
         self.0.rollback().await
     }
+}
+
+macro_rules! with_schema_conn {
+    ($this:expr, $conn:ident => $body:expr) => {{
+        let mut guard = $this.conn.lock().await;
+        let conn = guard
+            .as_mut()
+            .ok_or(::siderite_orm::QueryError::TransactionClosed)?;
+        let $conn = &mut **conn;
+        $body
+    }};
+}
+
+/// Dedicated connection with `PRAGMA foreign_keys` off around a schema change.
+///
+/// SQLite ignores `PRAGMA foreign_keys` inside a transaction, so the pragma
+/// is applied *before* `BEGIN` and restored after commit or rollback.
+///
+/// The pre-commit `foreign_key_check` is scoped to violations this schema
+/// change introduced: the rows at open are the baseline, and commit fails
+/// only on rows that are not in it. Pre-existing violations in unrelated
+/// tables must not block every future migration, and comparing rows (not
+/// counts) means a change that fixes one violation while adding another
+/// still fails. When foreign keys were already off (`restore_fk == 0`) the
+/// check is skipped entirely.
+struct SqliteSchemaTransaction {
+    conn: tokio::sync::Mutex<Option<PoolConnection<sqlx::Sqlite>>>,
+    restore_fk: i64,
+    in_txn: bool,
+    fk_baseline: Option<HashSet<FkViolation>>,
+}
+
+/// One `PRAGMA foreign_key_check` row: the offending child row and the parent
+/// it points at. Identifies a violation independently of when it appeared.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FkViolation {
+    table: String,
+    rowid: i64,
+    parent: String,
+}
+
+impl FkViolation {
+    /// A missing or wrong-typed column becomes a placeholder, so an unreadable
+    /// row still counts as a violation instead of being silently dropped.
+    fn from_row(row: &SqliteRow) -> Self {
+        let text = |key: &str| {
+            row.try_get::<String, _>(key)
+                .unwrap_or_else(|_| format!("<unreadable {key}>"))
+        };
+        let rowid = row.try_get("rowid").unwrap_or(-1);
+        Self {
+            table: text("table"),
+            rowid,
+            parent: text("parent"),
+        }
+    }
+
+    fn location(&self) -> String {
+        format!(
+            "{} row {} (missing parent {})",
+            self.table, self.rowid, self.parent
+        )
+    }
+}
+
+async fn fk_violations(
+    conn: &mut PoolConnection<sqlx::Sqlite>,
+) -> Result<Vec<SqliteRow>, OrmError> {
+    Ok(sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&mut **conn)
+        .await
+        .map_err(map_error)?)
+}
+
+impl SqliteSchemaTransaction {
+    async fn open(pool: &SqlitePool, transactional: bool) -> Result<Self, OrmError> {
+        let mut conn = pool.acquire().await.map_err(map_error)?;
+        let restore_fk: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(map_error)?;
+        // Baseline for the pre-commit check: only *new* violations fail the
+        // migration. Skipped when FKs were already off (nothing to enforce).
+        let fk_baseline: Option<HashSet<FkViolation>> = if restore_fk == 0 {
+            None
+        } else {
+            Some(
+                fk_violations(&mut conn)
+                    .await?
+                    .iter()
+                    .map(FkViolation::from_row)
+                    .collect(),
+            )
+        };
+        set_foreign_keys(&mut conn, 0).await?;
+        if transactional
+            && let Err(err) =
+                SqliteTransactionManager::begin(&mut *conn, Some("BEGIN IMMEDIATE".into())).await
+        {
+            drop(set_foreign_keys(&mut conn, restore_fk).await);
+            return Err(map_error(err).into());
+        }
+        Ok(Self {
+            conn: tokio::sync::Mutex::new(Some(conn)),
+            restore_fk,
+            in_txn: transactional,
+            fk_baseline,
+        })
+    }
+
+    async fn take(&self) -> Result<PoolConnection<sqlx::Sqlite>, OrmError> {
+        self.conn
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| QueryError::TransactionClosed.into())
+    }
+}
+
+impl Drop for SqliteSchemaTransaction {
+    fn drop(&mut self) {
+        if let Some(mut conn) = self.conn.get_mut().take() {
+            if self.in_txn {
+                SqliteTransactionManager::start_rollback(&mut *conn);
+            }
+            // Do not return a connection whose foreign_keys pragma we changed.
+            conn.close_on_drop();
+        }
+    }
+}
+
+#[async_trait]
+impl Executor for SqliteSchemaTransaction {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::sqlite()
+    }
+
+    async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
+        let compiled = compile(plan, &Sqlite)?;
+        with_schema_conn!(self, conn => fetch_rows(conn, &compiled.sql, compiled.params).await)
+    }
+
+    async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
+        let compiled = compile_write(plan, &Sqlite)?;
+        let returning = !plan.returning().is_empty();
+        with_schema_conn!(self, conn => run_write(conn, compiled, returning).await)
+    }
+
+    async fn fetch_raw(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError> {
+        with_schema_conn!(self, conn => fetch_rows(conn, sql, params).await)
+    }
+
+    async fn execute_raw(&self, sql: &str, params: Vec<Value>) -> Result<u64, OrmError> {
+        with_schema_conn!(self, conn => execute_rows(conn, sql, params).await)
+    }
+
+    async fn execute_script(&self, sql: &str) -> Result<(), OrmError> {
+        with_schema_conn!(self, conn => script_result(sqlx::Executor::execute(conn, sql).await))
+    }
+}
+
+#[async_trait]
+impl Transaction for SqliteSchemaTransaction {
+    async fn commit(&self) -> Result<(), OrmError> {
+        let mut conn = self.take().await?;
+        if let Some(baseline) = &self.fk_baseline {
+            // Row-level diff, not a count: a change that repairs one old
+            // violation while adding another keeps the count equal, and would
+            // wrongly pass.
+            let mut seen = HashSet::new();
+            let mut fresh = Vec::new();
+            for row in fk_violations(&mut conn).await? {
+                let violation = FkViolation::from_row(&row);
+                if !baseline.contains(&violation) && seen.insert(violation.clone()) {
+                    fresh.push(violation);
+                }
+            }
+            if !fresh.is_empty() {
+                if self.in_txn {
+                    drop(SqliteTransactionManager::rollback(&mut *conn).await);
+                }
+                drop(set_foreign_keys(&mut conn, self.restore_fk).await);
+                // Without a transaction the statements are already
+                // committed; say so rather than implying nothing happened.
+                let outcome = if self.in_txn {
+                    "rolled back"
+                } else {
+                    "already committed; fix the rows by hand"
+                };
+                return Err(BackendError::Constraint(format!(
+                    "SQLite foreign_key_check found {} new violation(s) after schema change ({outcome}): {}",
+                    fresh.len(),
+                    violation_summary(&fresh),
+                ))
+                .into());
+            }
+        }
+        if self.in_txn
+            && let Err(err) = SqliteTransactionManager::commit(&mut *conn).await
+        {
+            drop(set_foreign_keys(&mut conn, self.restore_fk).await);
+            return Err(map_error(err).into());
+        }
+        set_foreign_keys(&mut conn, self.restore_fk).await?;
+        Ok(())
+    }
+
+    async fn rollback(&self) -> Result<(), OrmError> {
+        let mut conn = self.take().await?;
+        let rollback = if self.in_txn {
+            SqliteTransactionManager::rollback(&mut *conn)
+                .await
+                .map_err(map_error)
+        } else {
+            Ok(())
+        };
+        let restore = set_foreign_keys(&mut conn, self.restore_fk).await;
+        rollback?;
+        restore
+    }
+}
+
+/// One-line summary of new `PRAGMA foreign_key_check` violations.
+fn violation_summary(violations: &[FkViolation]) -> String {
+    let mut locations: Vec<String> = violations.iter().map(FkViolation::location).collect();
+    locations.sort();
+    locations.truncate(5);
+    if locations.is_empty() {
+        "see PRAGMA foreign_key_check".to_owned()
+    } else {
+        locations.join(", ")
+    }
+}
+
+async fn set_foreign_keys(
+    conn: &mut PoolConnection<sqlx::Sqlite>,
+    on: i64,
+) -> Result<(), OrmError> {
+    let sql = if on == 0 {
+        "PRAGMA foreign_keys = OFF"
+    } else {
+        "PRAGMA foreign_keys = ON"
+    };
+    sqlx::query(sql)
+        .execute(&mut **conn)
+        .await
+        .map(|_| ())
+        .map_err(|e| map_error(e).into())
 }
 
 fn bind_all(

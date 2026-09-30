@@ -2,7 +2,8 @@
 //!
 //! PostgreSQL and SQLite identifiers are double-quoted (embedded `"`
 //! doubled). SQLite `AlterField` / `RemoveField` / constraint changes rebuild
-//! the table (create new, copy, drop, rename). MySQL has its own dialect
+//! the table (create new, copy, drop, rename); the migrator disables
+//! foreign keys on the connection before `BEGIN`. MySQL has its own dialect
 //! (backticks, `AUTO_INCREMENT`, `MODIFY COLUMN`, no transactional DDL); see
 //! the [`mysql`] module. Other backends return
 //! [`MigrationError::UnsupportedBackend`] before any I/O.
@@ -93,6 +94,20 @@ pub fn render(
         Operation::DeleteModel { name } => {
             let model = state.require(name)?;
             Ok(vec![format!("DROP TABLE {}", quote_ident(&model.table))])
+        }
+        Operation::RenameModel {
+            old_name, table, ..
+        } => {
+            let model = state.require(old_name)?;
+            if model.table == *table {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![format!(
+                    "ALTER TABLE {} RENAME TO {}",
+                    quote_ident(&model.table),
+                    quote_ident(table)
+                )])
+            }
         }
         Operation::AddField { model, field } => add_field_sql(kind, state.require(model)?, field),
         Operation::RemoveField { model, name } => {
@@ -501,10 +516,13 @@ fn delete_constraint_sql(
 
 /// SQLite table-rebuild: create new, copy overlapping columns, drop, rename,
 /// recreate indexes.
+///
+/// `PRAGMA foreign_keys` is a no-op inside a transaction, so the migrator
+/// disables foreign keys on the connection *before* `BEGIN` rather than
+/// emitting that pragma here.
 fn sqlite_rebuild(old: &ModelState, new: &ModelState) -> Vec<String> {
     let tmp = format!("{}__siderite_new", new.table);
-    let mut stmts = vec!["PRAGMA foreign_keys = OFF".to_owned()];
-    stmts.push(create_table_sql(BackendKind::Sqlite, new, &tmp));
+    let mut stmts = vec![create_table_sql(BackendKind::Sqlite, new, &tmp)];
 
     let copied: Vec<(&FieldState, &FieldState)> = new
         .fields
@@ -551,6 +569,5 @@ fn sqlite_rebuild(old: &ModelState, new: &ModelState) -> Vec<String> {
         quote_ident(&new.table)
     ));
     stmts.extend(index_sqls(new));
-    stmts.push("PRAGMA foreign_keys = ON".to_owned());
     stmts
 }

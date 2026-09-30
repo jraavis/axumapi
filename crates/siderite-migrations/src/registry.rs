@@ -44,6 +44,10 @@ impl MigrationRegistry {
 
     /// Run the function named `name`.
     ///
+    /// On SQLite the function runs on the schema-change connection with
+    /// `PRAGMA foreign_keys` off (see the migrations guide), so data code
+    /// must stay FK-clean by hand; orphans fail the migration at commit.
+    ///
     /// # Errors
     /// [`MigrationError::UnregisteredRust`] or the function's own error.
     pub async fn run(&self, name: &str, db: &Db) -> Result<(), MigrationError> {

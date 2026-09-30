@@ -20,6 +20,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-siderite-backends = { workspace = true, features = ["sqlite", "mysql"] }
+siderite-backends = { workspace = true, features = ["sqlite", "mysql", "postgres"] }
 chrono.workspace = true
+sqlx = { workspace = true, features = ["mysql", "postgres"] }
 tokio.workspace = true
+uuid.workspace = true

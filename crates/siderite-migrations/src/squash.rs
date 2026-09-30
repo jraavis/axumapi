@@ -149,6 +149,9 @@ fn targets_model(op: &Operation, name: &str) -> bool {
     match op {
         Operation::CreateModel { model } => model.name == name,
         Operation::DeleteModel { name: n } => n == name,
+        Operation::RenameModel {
+            old_name, new_name, ..
+        } => old_name == name || new_name == name,
         Operation::AddField { model, .. }
         | Operation::RemoveField { model, .. }
         | Operation::AlterField { model, .. }

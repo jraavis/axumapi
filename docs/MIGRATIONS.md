@@ -28,6 +28,8 @@ The `siderite` CLI binary runs `migrate`, `rollback`, `showmigrations` and `squa
 
 `--dry-run` prints SQL (or operations) and executes nothing.
 
+`migrate` and `rollback` take a backend lock before re-reading history, so two replicas cannot apply the same migration: PostgreSQL `pg_advisory_lock`, MySQL `GET_LOCK`, SQLite `BEGIN IMMEDIATE` on the dedicated connection.
+
 ## File format
 
 Pretty-printed JSON, one file per migration, named `{id}.json`:
@@ -61,7 +63,8 @@ Pretty-printed JSON, one file per migration, named `{id}.json`:
 | `AddField` | `RemoveField` | |
 | `RemoveField` | `AddField` from the before-state | |
 | `AlterField` | `AlterField` with the old snapshot | |
-| `RenameField` | swapped names | **Only when hinted** (`RenameHints`). Otherwise the autodetector emits remove+add and data is not preserved. |
+| `RenameField` | swapped names | **Only when hinted** (`RenameHints::rename_field`). An unhinted same-shape remove+add is refused; `RenameHints::allow_drop_field` approves an intentional drop. |
+| `RenameModel` | swapped names | **Only when hinted** (`RenameHints::rename_model`). An unhinted same-shape delete+create is refused; `RenameHints::allow_drop_model` approves an intentional drop. The table is renamed when the new model's table name differs. |
 | `CreateIndex` / `DeleteIndex` | each other | `DeleteIndex` recreates from the before-state. |
 | `AddConstraint` / `DeleteConstraint` | each other | |
 | `RunSQL` | `RunSQL` of `reverse_sql` | **Irreversible** if `reverse_sql` is omitted. |
@@ -102,16 +105,18 @@ MySQL DDL is described in [MySQL](#mysql). Other backends (MongoDB, Redis) retur
 
 SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add or drop table constraints. For `AlterField`, `RemoveField`, `AddConstraint` and `DeleteConstraint` the editor:
 
-1. `PRAGMA foreign_keys = OFF`
-2. `CREATE TABLE "<table>__siderite_new" (...)`
-3. `INSERT INTO ... SELECT` overlapping columns (with `CAST` when the type changes)
-4. `DROP TABLE` / `ALTER TABLE ... RENAME TO`
-5. Recreate indexes
-6. `PRAGMA foreign_keys = ON`
+1. `CREATE TABLE "<table>__siderite_new" (...)`
+2. `INSERT INTO ... SELECT` overlapping columns (with `CAST` when the type changes)
+3. `DROP TABLE` / `ALTER TABLE ... RENAME TO`
+4. Recreate indexes
 
-`PRAGMA foreign_keys` is a no-op inside a transaction. Atomic migrations that rebuild a table referenced by other tables may therefore fail the `DROP`; rebuild unreferenced tables, or set `atomic: false`.
+`PRAGMA foreign_keys` is a no-op inside a transaction, so the migrator turns it off on the dedicated connection *before* `BEGIN`, runs `PRAGMA foreign_key_check` before commit, and restores the previous value afterwards. Child rows with `ON DELETE CASCADE` survive a rebuild of the parent table. The check fails only on violations the migration introduced (diffed row by row against a baseline taken at open, so a migration that repairs one violation and adds another still fails), so pre-existing violations in unrelated tables do not block it; when foreign keys were already off the check is skipped.
+
+`RunRust` data code on SQLite runs on that same connection with foreign keys **off**: `ON DELETE CASCADE` does nothing there, and orphan rows can be written. Keep data migrations FK-clean by hand (delete children before parents, insert parents first) — the pre-commit check rejects newly created orphans and names the offending table and row.
 
 Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding `UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
+
+A `migrate` / `rollback` run on SQLite is a single transaction (`BEGIN IMMEDIATE` doubles as the concurrency lock), so it is all-or-nothing: a failing migration rolls back the earlier ones in the same run. The per-migration `atomic` flag has no effect on SQLite. Because the run is one transaction, statements SQLite refuses inside a transaction (`VACUUM`, `PRAGMA journal_mode`) cannot appear in a SQLite migration; run them outside `migrate`. `migrate` / `rollback` also refuse to run on a SQLite `Db` that is already inside a transaction, because `PRAGMA foreign_keys` cannot change until it commits.
 
 ## MySQL
 
@@ -121,8 +126,10 @@ The MySQL schema editor (`crates/siderite-migrations/src/schema_editor/mysql.rs`
 
 Every DDL statement in MySQL commits implicitly, so the executor does **not** wrap MySQL migrations in a transaction, whatever the migration's `atomic` flag says. Consequences:
 
-* A migration that fails half way leaves its earlier statements applied, and no row is written to the history table. Running `migrate` again then fails on the statements that already ran (for example a table that exists).
-* Repair by hand (or by rolling the applied part back with SQL), then re-run.
+* A migration that fails half way leaves its earlier statements applied, and no row is written to the history table. The executor records progress per statement (`siderite_migration_progress`), so running `migrate` again resumes at the first statement that did not commit instead of replaying the ones that did. That includes resuming *inside* one operation: a `CreateModel` with indexes renders several statements, and a re-run does not re-issue its committed `CREATE TABLE`. The error is [`MigrationError::MysqlPartial`](../crates/siderite-migrations/src/error.rs) and names the statement that failed (`2 of 3`, …), or [`MigrationError::MysqlOpPartial`](../crates/siderite-migrations/src/error.rs) naming the operation when a `RunRust` step fails after committed statements (earlier DDL, or earlier data written by another `RunRust`).
+* Repair by hand, then re-run: fix what the failed statement left behind (for example drop a half-created table, or free a taken index name) and the resume starts at the statement that failed. To restart a migration from scratch instead, roll its applied part back by hand and delete its progress row (`DELETE FROM siderite_migration_progress WHERE migration_id = '…'`).
+* The progress row stores the migration's checksum. If the file changed after a partial run, `migrate` refuses to resume (its indices would point at different operations): restore the original file, or reconcile the schema by hand and delete the progress row.
+* Progress is saved right *after* each statement commits, and MySQL cannot make the two atomic. If the process dies in between, the re-run replays that one statement and fails loudly (`already exists`, or a duplicate key from a `RunRust`). Check that the statement's effect is present, then advance the row by hand (`UPDATE siderite_migration_progress SET stmt_index = stmt_index + 1 WHERE migration_id = '…'`, or `op_index + 1, stmt_index = 0` for a `RunRust`) and re-run. `RunRust` code on MySQL should be idempotent for the same reason.
 * Keep MySQL migrations small, ideally one schema change each, so a failure is easy to repair. Prefer several small migrations to one large one; `--dry-run` shows the SQL first.
 * `RunSQL` statements are not rolled back either.
 
