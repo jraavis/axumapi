@@ -1,0 +1,132 @@
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/400-italic.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/400-italic.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+:root {
+	--ax-ink: #0e1116;
+	--ax-paper: #f4f0e6;
+	--ax-oxide: #b5472a;
+	--ax-oxide-deep: #8c351e;
+	--ax-steel: #5c6b7a;
+	--ax-code: #161b22;
+	--sl-font: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+	--sl-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+	--sl-color-accent-low: #f3d5cb;
+	--sl-color-accent: var(--ax-oxide);
+	--sl-color-accent-high: var(--ax-oxide-deep);
+	--sl-color-white: var(--ax-ink);
+	--sl-color-gray-1: #1c2128;
+	--sl-color-gray-2: #2d3640;
+	--sl-color-gray-3: var(--ax-steel);
+	--sl-color-gray-4: #9aa6b2;
+	--sl-color-gray-5: #c9c0b0;
+	--sl-color-gray-6: #e6dfd1;
+	--sl-color-gray-7: var(--ax-paper);
+	--sl-color-black: #faf7f0;
+	--sl-color-bg-nav: var(--ax-paper);
+	--sl-color-bg-sidebar: #efe9db;
+	--sl-color-hairline-light: #d9d0bf;
+}
+
+:root[data-theme='dark'] {
+	--sl-color-accent-low: #3a1c14;
+	--sl-color-accent: #d46548;
+	--sl-color-accent-high: #f0b9a8;
+	--sl-color-white: #f4f0e6;
+	--sl-color-gray-1: #e6dfd1;
+	--sl-color-gray-2: #c9c0b0;
+	--sl-color-gray-3: #9aa6b2;
+	--sl-color-gray-4: #5c6b7a;
+	--sl-color-gray-5: #3a4450;
+	--sl-color-gray-6: #1c242d;
+	--sl-color-gray-7: #12171d;
+	--sl-color-black: var(--ax-ink);
+	--sl-color-bg-nav: #12171d;
+	--sl-color-bg-sidebar: #0e1318;
+	--sl-color-hairline-light: #2a333d;
+}
+
+.site-title {
+	font-family: var(--sl-font-mono);
+	font-weight: 500;
+	letter-spacing: -0.02em;
+}
+
+.hero {
+	padding-block: 3rem;
+}
+
+.hero .copy {
+	max-width: 40rem;
+	align-items: flex-start;
+	text-align: left;
+}
+
+.hero .tagline {
+	color: var(--sl-color-gray-3);
+	font-size: 1.1rem;
+	line-height: 1.5;
+	text-wrap: pretty;
+}
+
+.hero h1 {
+	font-family: var(--sl-font-mono);
+	font-weight: 500;
+	letter-spacing: -0.03em;
+	font-size: clamp(2.1rem, 5vw, 3.1rem);
+}
+
+.status-banner {
+	margin: 0 0 1.5rem;
+	padding: 0.55rem 0.85rem;
+	border-inline-start: 3px solid var(--sl-color-accent);
+	background: var(--sl-color-accent-low);
+	color: var(--sl-color-white);
+	font-size: 0.95rem;
+	max-width: 46rem;
+}
+
+.feature-list {
+	display: grid;
+	gap: 1.25rem 2.5rem;
+	margin: 2rem 0 0;
+	padding: 0;
+	max-width: 52rem;
+}
+
+@media (min-width: 50rem) {
+	.feature-list {
+		grid-template-columns: 1fr 1fr;
+	}
+}
+
+.feature-list dt {
+	font-family: var(--sl-font-mono);
+	font-weight: 500;
+	font-size: 0.95rem;
+	color: var(--sl-color-accent-high);
+	margin: 0;
+}
+
+.feature-list dd {
+	margin: 0.25rem 0 0;
+	color: var(--sl-color-gray-2);
+	max-width: 36rem;
+}
+
+pre,
+code {
+	font-variant-ligatures: none;
+}
+
+.sl-markdown-content table {
+	font-size: 0.92rem;
+}
+
+.sl-markdown-content h2 {
+	font-weight: 600;
+}
