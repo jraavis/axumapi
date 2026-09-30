@@ -470,6 +470,65 @@ async fn sqlite_rebuild_skips_check_when_fks_were_off() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `RunRust` on SQLite runs with foreign keys off, and the pre-commit
+/// check rejects orphans created mid-migration.
+///
+/// The data-migration closure gets the rebuild connection, where `PRAGMA
+/// foreign_keys` is off, so the orphan insert below succeeds. Commit then
+/// fails with the offending table in the message instead of silently
+/// cementing the orphan.
+#[tokio::test]
+async fn run_rust_sees_no_fk_enforcement_on_sqlite() {
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let create = Migration::new(
+        "0001_t",
+        Vec::new(),
+        vec![
+            Operation::RunSQL {
+                sql: "CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+                    .into(),
+                reverse_sql: Some("DROP TABLE authors".into()),
+            },
+            Operation::RunSQL {
+                sql: "CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT NOT NULL, author_id BIGINT NOT NULL REFERENCES authors (id) ON DELETE CASCADE)"
+                    .into(),
+                reverse_sql: Some("DROP TABLE books".into()),
+            },
+            Operation::RunRust {
+                name: "orphan".into(),
+                backwards: None,
+            },
+        ],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &create).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let mut registry = MigrationRegistry::new();
+    registry.register("orphan", |db| {
+        Box::pin(async move {
+            db.raw_execute(
+                "INSERT INTO books (title, author_id) VALUES ('Ghost', 999)",
+                vec![],
+            )
+            .await?;
+            Ok(())
+        })
+    });
+    let err = Migrator::new(&db, &graph)
+        .with_registry(registry)
+        .migrate(None, false)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("books"),
+        "commit must name the offending table: {err:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Two concurrent migrators must apply each migration once.
 #[tokio::test]
 async fn concurrent_sqlite_migrate_applies_once() {

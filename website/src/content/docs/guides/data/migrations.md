@@ -125,7 +125,16 @@ or drop table constraints. For `AlterField`, `RemoveField`,
 turns it off on the dedicated connection *before* `BEGIN`, runs
 `PRAGMA foreign_key_check` before commit, and restores the previous value
 afterwards. Child rows with `ON DELETE CASCADE` survive a rebuild of the
-parent table. Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding
+parent table. The check fails only on violations the migration introduced
+(counted against a baseline taken at open), so pre-existing violations in
+unrelated tables do not block it; when foreign keys were already off the
+check is skipped.
+
+`RunRust` data code on SQLite runs on that same connection with foreign
+keys **off**: `ON DELETE CASCADE` does nothing there, and orphan rows can
+be written. Keep data migrations FK-clean by hand (delete children before
+parents, insert parents first) — the pre-commit check rejects newly
+created orphans and names the offending table and row. Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding
 `UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
 
 ## MySQL
