@@ -159,7 +159,7 @@ impl AppCli {
     pub fn migrations_dir(self, dir: impl Into<PathBuf>) -> Self;
     pub fn configure_db(self, f: impl Fn(&str, Db) -> Db + Send + Sync + 'static) -> Self;
     pub fn database_router<R: DatabaseRouter + Clone>(self, router: R) -> Self;
-    /// Parses `std::env::args`: runserver [--addr] (ADDR env, then
+    /// Parses `std::env::args`: run [--addr] (ADDR env, then
     /// settings addr), routes, check, dbshell, makemigrations,
     /// migrate, rollback, showmigrations, squashmigrations.
     pub async fn run(self) -> ExitCode;
@@ -178,7 +178,7 @@ a userinfo password and a PostgreSQL `?password=` query parameter move into
 `postgres` and `mysql` features. A MySQL schema editor is added to
 `siderite-migrations`. `configure_db` runs once per connected SQL alias
 before registration (attach `Signals` there); `database_router` installs
-the router on the registry `runserver` builds.
+the router on the registry `run` builds.
 
 ## 5. Signals (`siderite_orm::signals`)
 

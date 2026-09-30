@@ -10,7 +10,8 @@ run.
 ## Run
 
 ```bash
-cargo run -p hello_world
+cd examples/hello_world
+siderite run
 ```
 
 The binary listens on `127.0.0.1:8000` unless `ADDR` is set.

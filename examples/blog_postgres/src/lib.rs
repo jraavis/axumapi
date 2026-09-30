@@ -13,7 +13,7 @@
 //! | [`pagination`] | `?page=&per_page=` and the page envelope |
 //!
 //! The binary (`src/main.rs`) drives everything through `AppCli`:
-//! `makemigrations`, `migrate`, `check`, `routes` and `runserver`.
+//! `makemigrations`, `migrate`, `check`, `routes` and `run`.
 
 pub mod auth;
 pub mod comments;

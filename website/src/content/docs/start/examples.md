@@ -15,8 +15,8 @@ docs. Each package is a workspace member.
 | `todo_mongo` | Same handlers as the SQLite todo on MongoDB | `MONGODB_URL` |
 
 ```bash
-cargo run -p hello_world
-cargo run -p todo_sqlite
+cd examples/hello_world && siderite run
+cd examples/todo_sqlite && siderite run
 ```
 
 Walkthroughs:

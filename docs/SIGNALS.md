@@ -56,7 +56,7 @@ The registry is a value: `Db::with_signals(Signals)` attaches it, and `Db::signa
 
 There is deliberately **no static registration**. Crates such as `inventory` and `linkme` collect items through link-section tricks that need `unsafe` in the user's crate, which conflicts with `#![forbid(unsafe_code)]`. The cost is one `connect` call per receiver at startup.
 
-`TestDatabase::with_signals` attaches a registry to a test database (see [TESTING.md](TESTING.md)). On `runserver`, attach it once with `AppCli::configure_db(|_alias, db| db.with_signals(signals()))` (see [CLI.md](CLI.md)); the `blog_postgres` example does this in the application binary.
+`TestDatabase::with_signals` attaches a registry to a test database (see [TESTING.md](TESTING.md)). On `run`, attach it once with `AppCli::configure_db(|_alias, db| db.with_signals(signals()))` (see [CLI.md](CLI.md)); the `blog_postgres` example does this in the application binary.
 
 ## Semantics
 

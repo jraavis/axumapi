@@ -1,15 +1,23 @@
 //! MongoDB-backed todo API.
 
-use todo_mongo::{app, open_db};
+use siderite::prelude::*;
+use siderite_cli::AppCli;
+use todo_mongo::{Todo, app, open_db};
 
 #[tokio::main]
-async fn main() -> Result<(), siderite::ServerError> {
+async fn main() -> std::process::ExitCode {
     let url = std::env::var("MONGODB_URL")
         .unwrap_or_else(|_| "mongodb://127.0.0.1:27017/todos?directConnection=true".into());
     let database = std::env::var("MONGODB_DATABASE").unwrap_or_else(|_| "todos".into());
-    let db = open_db(&url, &database)
+    let db = match open_db(&url, &database).await {
+        Ok(db) => db,
+        Err(err) => {
+            eprintln!("{err}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+    AppCli::new(move || app(db.clone()))
+        .models(&[Todo::META])
+        .run()
         .await
-        .map_err(|err| siderite::ServerError::Configuration(err.to_string()))?;
-    let addr = std::env::var("ADDR").unwrap_or_else(|_| "127.0.0.1:8000".to_owned());
-    app(db).run(&addr).await
 }

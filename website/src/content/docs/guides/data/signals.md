@@ -72,7 +72,7 @@ conflicts with `#![forbid(unsafe_code)]`. The cost is one `connect` call
 per receiver at startup.
 
 `TestDatabase::with_signals` attaches a registry to a test database. On
-`runserver`, attach it once with
+`run`, attach it once with
 `AppCli::configure_db(|_alias, db| db.with_signals(signals()))`. The
 `blog_postgres` example does this.
 

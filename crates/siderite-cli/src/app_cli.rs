@@ -19,7 +19,7 @@ use std::sync::Arc;
 ///
 /// | Command | Does |
 /// |---|---|
-/// | `runserver [--addr ADDR]` | connects the configured databases and serves the app |
+/// | `run [--addr ADDR]` | connects the configured databases and serves the app |
 /// | `routes` | prints `METHOD PATH operation_id` for every route |
 /// | `check` | runs [`check`](crate::check()); exits `1` if any error is found |
 /// | `dbshell` | starts `sqlite3`, `psql` or `mysql` on the database |
@@ -92,7 +92,7 @@ impl AppCli {
         }
     }
 
-    /// Adjust every database handle `runserver` connects, before it is
+    /// Adjust every database handle `run` connects, before it is
     /// registered with the app: attach [`Signals`](siderite_orm::signals::Signals)
     /// with `db.with_signals(..)`, for example. Receives the alias.
     #[must_use]
@@ -101,7 +101,7 @@ impl AppCli {
         self
     }
 
-    /// Route models to databases with `router` when `runserver` builds the
+    /// Route models to databases with `router` when `run` builds the
     /// app's [`Databases`] registry.
     #[must_use]
     pub fn database_router<R: DatabaseRouter + Clone>(mut self, router: R) -> Self {
@@ -161,7 +161,7 @@ impl AppCli {
             return Ok(0);
         }
         match command {
-            "runserver" | "routes" | "check" | "dbshell" => {
+            "run" | "routes" | "check" | "dbshell" => {
                 if rest.iter().any(|a| a == "--help" || a == "-h") {
                     print_help();
                     return Ok(0);
@@ -172,7 +172,7 @@ impl AppCli {
                     )));
                 }
                 match command {
-                    "runserver" => self.runserver(&global, env).await,
+                    "run" => self.serve(&global, env).await,
                     "routes" => self.routes(),
                     "check" => Ok(self.check()),
                     _ => self.dbshell(&global, env),
@@ -261,7 +261,7 @@ impl AppCli {
         Ok(app.databases(databases))
     }
 
-    async fn runserver(&self, global: &GlobalArgs, env: &Env) -> Result<u8, CliError> {
+    async fn serve(&self, global: &GlobalArgs, env: &Env) -> Result<u8, CliError> {
         let addr = self
             .settings
             .resolve_addr(global.addr.as_deref(), env.addr.as_deref());
@@ -310,7 +310,7 @@ fn print_help() {
     println!(
         "\
 Commands:
-  runserver [--addr ADDR]      Connect the databases and serve the app
+  run [--addr ADDR]            Connect the databases and serve the app
   routes                       List METHOD PATH operation_id
   check                        Validate config, models, migrations and routes
   dbshell                      Open the database's native client
@@ -583,15 +583,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runserver_with_a_bad_database_fails_before_binding() {
+    async fn run_with_a_bad_database_fails_before_binding() {
         let cli = cli().settings(CliSettings::new().database("default", "ftp://h/db"));
-        let err = run(
-            &cli,
-            &["runserver", "--addr", "127.0.0.1:0"],
-            &Env::default(),
-        )
-        .await
-        .unwrap_err();
+        let err = run(&cli, &["run", "--addr", "127.0.0.1:0"], &Env::default())
+            .await
+            .unwrap_err();
         assert!(matches!(err, CliError::Connect { .. }));
     }
 }

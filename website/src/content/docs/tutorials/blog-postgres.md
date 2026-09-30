@@ -12,7 +12,7 @@ tags, and an audit trail written by model signal receivers.
 ```bash
 export DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite
 cargo run -p blog_postgres -- migrate
-ADDR=127.0.0.1:18080 cargo run -p blog_postgres -- runserver
+ADDR=127.0.0.1:18080 cargo run -p blog_postgres -- run
 ```
 
 Start PostgreSQL from the root `docker-compose.yml` if you do not already

@@ -48,6 +48,9 @@ pub enum CliError {
         /// Why it could not run.
         reason: String,
     },
+    /// Creating a project or invoking cargo failed.
+    #[error("{0}")]
+    Io(String),
 }
 
 impl CliError {

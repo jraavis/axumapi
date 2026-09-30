@@ -76,7 +76,7 @@ A router (or a caller of `using`) that names an alias which is not registered yi
 
 `QuerySet::using(&Db)` still exists and rebinds a queryset to a handle you already hold.
 
-`allow_migrate` is a query on the registry. The migration runner and the CLI do not consult it yet; they apply migrations to the database you give them (`--database ALIAS`, see [CLI.md](CLI.md)). `AppCli::database_router` installs the router when `runserver` builds the registry.
+`allow_migrate` is a query on the registry. The migration runner and the CLI do not consult it yet; they apply migrations to the database you give them (`--database ALIAS`, see [CLI.md](CLI.md)). `AppCli::database_router` installs the router when `run` builds the registry.
 
 ## Querysets never span databases
 

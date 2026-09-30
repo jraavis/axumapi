@@ -5,19 +5,13 @@ use crate::connect::{connect_url, scratch_db};
 use crate::error::CliError;
 use siderite_migrations::MigrationError;
 use siderite_migrations::cli::{self, ExitCode};
-use std::env;
 use std::path::PathBuf;
 
-/// Entry point of the `siderite` binary.
+/// JSON-file migrations when there is no application package.
 ///
 /// # Errors
 /// Returns a migration or usage error to print on stderr.
-pub async fn run() -> Result<ExitCode, MigrationError> {
-    let raw: Vec<String> = env::args().skip(1).collect();
-    run_with(&raw, env::var("DATABASE_URL").ok()).await
-}
-
-async fn run_with(
+pub(crate) async fn run_with(
     raw: &[String],
     env_database_url: Option<String>,
 ) -> Result<ExitCode, MigrationError> {
@@ -67,10 +61,9 @@ fn into_migration_error(err: CliError) -> MigrationError {
 fn print_help() {
     println!(
         "\
-siderite {} — schema migrations
+siderite {} — schema migrations (no application package)
 
 Commands:
-  makemigrations              (must be run from the app binary; see below)
   migrate [TARGET]            Apply migrations
   rollback [--steps N|TARGET] Unapply migrations
   showmigrations              List migrations and applied status
@@ -96,8 +89,8 @@ PostgreSQL and MySQL URLs need a binary built with `--features postgres` /
 fn print_makemigrations_hint() {
     println!(
         "\
-makemigrations, runserver, routes, check and dbshell need your application.
-Call them from your application binary with `siderite_cli::AppCli`:
+makemigrations, run, routes, check and dbshell need your application.
+`cd` into a `siderite new` project (or an example) or wire `AppCli`:
 
     #[tokio::main]
     async fn main() -> std::process::ExitCode {{
@@ -131,7 +124,7 @@ mod tests {
 
     #[tokio::test]
     async fn app_only_and_unknown_commands_are_usage_errors() {
-        for command in ["makemigrations", "runserver", "nope"] {
+        for command in ["makemigrations", "nope"] {
             assert_eq!(
                 run_with(&args(&[command]), None).await.unwrap(),
                 ExitCode::USAGE,

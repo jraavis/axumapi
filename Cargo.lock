@@ -1315,6 +1315,7 @@ dependencies = [
  "serde",
  "serde_json",
  "siderite",
+ "siderite-cli",
  "tokio",
 ]
 
@@ -3795,6 +3796,7 @@ dependencies = [
  "serde_json",
  "siderite",
  "siderite-backends",
+ "siderite-cli",
  "siderite-testkit",
  "tokio",
 ]
@@ -3808,6 +3810,7 @@ dependencies = [
  "serde_json",
  "siderite",
  "siderite-backends",
+ "siderite-cli",
  "siderite-testkit",
  "tokio",
 ]

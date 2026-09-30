@@ -88,7 +88,7 @@ already hold.
 `allow_migrate` is a query on the registry. The migration runner and the
 CLI do not consult it yet; they apply migrations to the database you give
 them (`--database ALIAS`). `AppCli::database_router` installs the router
-when `runserver` builds the registry.
+when `run` builds the registry.
 
 ## Querysets never span databases
 

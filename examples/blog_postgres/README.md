@@ -9,7 +9,7 @@ written by model signal receivers.
 ```bash
 export DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite
 cargo run -p blog_postgres -- migrate          # apply examples/blog_postgres/migrations
-ADDR=127.0.0.1:18080 cargo run -p blog_postgres -- runserver
+ADDR=127.0.0.1:18080 cargo run -p blog_postgres -- run
 ```
 
 Other commands: `check`, `routes`, `showmigrations`, `rollback`, `dbshell`, and

@@ -71,8 +71,12 @@ The full map and dependency rules live in [Crate map](/siderite/reference/crates
 ```bash
 git clone https://github.com/jraavis/siderite
 cd siderite
-cargo run -p hello_world
+cargo install --path crates/siderite-cli
+cd examples/hello_world
+siderite run
 ```
+
+`cargo run -p hello_world -- run` is the same thing without installing the CLI.
 
 Open [http://127.0.0.1:8000/hello/ann](http://127.0.0.1:8000/hello/ann) and
 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) (Swagger UI).

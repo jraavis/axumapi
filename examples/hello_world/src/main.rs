@@ -35,13 +35,14 @@ async fn echo(Json(message): Json<Message>) -> Json<Message> {
     Json(message)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), ServerError> {
-    let addr = std::env::var("ADDR").unwrap_or_else(|_| "127.0.0.1:8000".to_owned());
+fn app() -> App {
     App::new()
         .title("Hello World")
         .version("1.0.0")
         .routes(routes![index, hello, echo])
-        .run(&addr)
-        .await
+}
+
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    siderite_cli::AppCli::new(app).run().await
 }

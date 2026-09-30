@@ -62,7 +62,7 @@ let adults = User::objects(&db)
 | `siderite-macros` | Route attributes, `routes![]`, `#[derive(Model, Validate, Schema)]` |
 | `siderite-openapi` | OpenAPI 3.1 model, builder, docs UIs |
 | `siderite-migrations` | Autodetector, JSON migrations, schema editor |
-| `siderite-cli` | `AppCli` (`runserver`, `routes`, `check`, `dbshell`, migrations) and the `siderite` migration binary |
+| `siderite-cli` | `siderite` binary (`new`, `run`, migrations) and `AppCli` |
 | `siderite-bench` | Criterion benchmarks (not published) |
 
 ## Development
@@ -71,8 +71,8 @@ let adults = User::objects(&db)
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo run -p hello_world
-cargo run -p todo_sqlite
+cargo install --path crates/siderite-cli
+cd examples/hello_world && siderite run
 ```
 
 Examples (in `examples/`):

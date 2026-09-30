@@ -4,6 +4,7 @@
 
 ### Changed
 - Renamed the project from `axumapi` to `siderite` (crates, rust paths, CLI binary, config file `siderite.toml`, env prefix `SIDERITE_`, migration history table `siderite_migrations`, docs site). Axum remains the HTTP engine.
+- CLI serve command is `run` (was `runserver`). The `siderite` binary wraps `cargo run` in an application package and adds `siderite new`.
 
 ### Added
 - GitHub Pages documentation site (`website/`, Astro Starlight) covering getting started, tutorials, HTTP/data/production guides, reference, internals, and contributing. Deployed from `.github/workflows/pages.yml` with rustdoc at `/api/`.
@@ -32,7 +33,7 @@
   - **Signals:** `pre_save`, `post_save`, `pre_delete`, `post_delete` and `m2m_changed`, with explicit registration and `#[receiver]`.
   - **Database routing:** the `DatabaseRouter` trait, `Databases::{for_read, for_write, objects, using}` and `App::database`. Querysets bound to different databases cannot be combined.
   - **Cache:** the `siderite-cache` crate with an in-memory LRU cache (with TTL), a Redis cache and `RouteCache` middleware.
-  - **CLI:** `AppCli` provides `runserver`, `routes`, `check`, `dbshell` and the migration commands. `CliSettings` can be built from `Settings`. The standalone binary connects to PostgreSQL and MySQL, and there is a MySQL schema editor.
+  - **CLI:** `AppCli` provides `run`, `routes`, `check`, `dbshell` and the migration commands. `CliSettings` can be built from `Settings`. The standalone binary connects to PostgreSQL and MySQL, and there is a MySQL schema editor.
   - **Testkit:** `TestDatabase` provides in-memory SQLite with models or migrations and rolled-back isolation. `TestClient::builder` adds DI overrides.
   - **Benchmarks:** Criterion benchmarks, with measured medians in `crates/siderite-bench/README.md`.
   - **Release tooling:** a CI workflow (lint, test, live databases, MSRV 1.92, cargo-deny), `docker-compose.yml` and the release guide.

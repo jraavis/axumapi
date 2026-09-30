@@ -16,7 +16,7 @@ pub struct GlobalArgs {
     pub database: Option<String>,
     /// `--migrations-dir DIR`.
     pub migrations_dir: Option<PathBuf>,
-    /// `--addr ADDR` (`runserver`).
+    /// `--addr ADDR` (`run`).
     pub addr: Option<String>,
     /// `--help` / `-h` before any command.
     pub help: bool,
