@@ -111,7 +111,8 @@ pub async fn provision(databases: &Databases) -> Result<(), ApiError> {
                 missing.push(model);
             }
         }
-        let operations = diff(&ProjectState::new(), &ProjectState::from_metas(&missing));
+        let operations = diff(&ProjectState::new(), &ProjectState::from_metas(&missing))
+            .map_err(ApiError::internal)?;
         let statements =
             schema_editor::statements(db.capabilities().kind, &ProjectState::new(), &operations)
                 .map_err(ApiError::internal)?;

@@ -17,7 +17,9 @@
 //! as `sqlite::memory:`.
 
 use crate::backend::{Backend, ExecResult, Executor, QueryResult, Transaction};
-use crate::capabilities::{BackendCapabilities, Feature, IsolationLevel, TransactionSupport};
+use crate::capabilities::{
+    BackendCapabilities, BackendKind, Feature, IsolationLevel, TransactionSupport,
+};
 use crate::error::{BackendCapabilityError, OrmError, QueryError};
 use crate::model::{Model, ModelMeta};
 use crate::plan::{PlanOrigin, QueryPlan};
@@ -63,10 +65,17 @@ struct TxState {
     savepoints: Arc<AtomicU32>,
 }
 
+/// Dedicated connection that is not inside an SQL transaction (migration lock).
+struct ConnState {
+    conn: Arc<dyn Transaction>,
+    pool: Arc<dyn Backend>,
+}
+
 #[derive(Clone)]
 enum Target {
     Pool(Arc<dyn Backend>),
     Tx(Arc<TxState>),
+    Conn(Arc<ConnState>),
 }
 
 /// Handle to a database: a pool, or an open transaction.
@@ -141,6 +150,7 @@ impl Db {
         match &self.target {
             Target::Pool(pool) => pool,
             Target::Tx(state) => &state.pool,
+            Target::Conn(state) => &state.pool,
         }
     }
 
@@ -148,6 +158,7 @@ impl Db {
         match &self.target {
             Target::Pool(pool) => pool.as_ref(),
             Target::Tx(state) => state.tx.as_ref(),
+            Target::Conn(state) => state.conn.as_ref(),
         }
     }
 
@@ -298,6 +309,85 @@ impl Db {
         self.run_transaction(Some(isolation), f).await
     }
 
+    /// Run `f` on a dedicated connection prepared for schema changes.
+    ///
+    /// SQLite disables foreign-key enforcement on that connection before any
+    /// `BEGIN` (and restores it afterwards) so a table rebuild does not
+    /// CASCADE-delete child rows. `transactional` wraps `f` in `BEGIN` /
+    /// `COMMIT` when the backend supports it.
+    ///
+    /// # Errors
+    /// `f`'s error, or an [`OrmError`] from begin/commit/rollback. SQLite
+    /// rejects this when `self` is already in a transaction, because
+    /// `PRAGMA foreign_keys` cannot be changed until that transaction ends.
+    pub async fn schema_change<F, Fut, T, E>(&self, transactional: bool, f: F) -> Result<T, E>
+    where
+        F: FnOnce(Db) -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+        E: From<OrmError>,
+    {
+        match &self.target {
+            Target::Pool(pool) => {
+                let handle: Arc<dyn Transaction> =
+                    Arc::from(pool.begin_schema(transactional).await?);
+                if transactional {
+                    let state = Arc::new(TxState {
+                        tx: Arc::clone(&handle),
+                        pool: Arc::clone(pool),
+                        hooks: Arc::default(),
+                        savepoints: Arc::default(),
+                    });
+                    let hooks = Arc::clone(&state.hooks);
+                    let result = f(Db {
+                        target: Target::Tx(state),
+                        signals: self.signals.clone(),
+                    })
+                    .await;
+                    match result {
+                        Ok(value) => {
+                            handle.commit().await?;
+                            hooks.take().into_iter().for_each(|hook| hook());
+                            Ok(value)
+                        }
+                        Err(err) => {
+                            drop(handle.rollback().await);
+                            Err(err)
+                        }
+                    }
+                } else {
+                    let state = Arc::new(ConnState {
+                        conn: Arc::clone(&handle),
+                        pool: Arc::clone(pool),
+                    });
+                    let result = f(Db {
+                        target: Target::Conn(state),
+                        signals: self.signals.clone(),
+                    })
+                    .await;
+                    match result {
+                        Ok(value) => {
+                            handle.commit().await?;
+                            Ok(value)
+                        }
+                        Err(err) => {
+                            drop(handle.rollback().await);
+                            Err(err)
+                        }
+                    }
+                }
+            }
+            Target::Tx(_) | Target::Conn(_) if self.capabilities().kind == BackendKind::Sqlite => {
+                Err(OrmError::from(QueryError::InvalidPlan(
+                    "SQLite schema migrations cannot run inside an open transaction \
+                     because PRAGMA foreign_keys cannot be changed until it commits"
+                        .into(),
+                ))
+                .into())
+            }
+            Target::Tx(_) | Target::Conn(_) => self.run_transaction(None, f).await,
+        }
+    }
+
     async fn run_transaction<F, Fut, T, E>(
         &self,
         isolation: Option<IsolationLevel>,
@@ -338,6 +428,38 @@ impl Db {
                         // Keep the caller's error: a failed rollback means the
                         // connection is broken, and dropping `tx` discards it.
                         drop(tx.rollback().await);
+                        Err(err)
+                    }
+                }
+            }
+            Target::Conn(state) => {
+                if isolation.is_some() {
+                    return Err(OrmError::from(QueryError::InvalidPlan(
+                        "isolation level cannot be set on a nested transaction".into(),
+                    ))
+                    .into());
+                }
+                state.conn.execute_script("BEGIN").await?;
+                let tx_state = Arc::new(TxState {
+                    tx: Arc::clone(&state.conn),
+                    pool: Arc::clone(&state.pool),
+                    hooks: Arc::default(),
+                    savepoints: Arc::default(),
+                });
+                let hooks = Arc::clone(&tx_state.hooks);
+                let result = f(Db {
+                    target: Target::Tx(tx_state),
+                    signals: self.signals.clone(),
+                })
+                .await;
+                match result {
+                    Ok(value) => {
+                        state.conn.execute_script("COMMIT").await?;
+                        hooks.take().into_iter().for_each(|hook| hook());
+                        Ok(value)
+                    }
+                    Err(err) => {
+                        drop(state.conn.execute_script("ROLLBACK").await);
                         Err(err)
                     }
                 }
@@ -401,7 +523,7 @@ impl Db {
     /// Hooks of a rolled-back savepoint or transaction are discarded.
     pub fn on_commit(&self, hook: impl FnOnce() + Send + 'static) {
         match &self.target {
-            Target::Pool(_) => hook(),
+            Target::Pool(_) | Target::Conn(_) => hook(),
             Target::Tx(state) => state.hooks.push(Box::new(hook)),
         }
     }

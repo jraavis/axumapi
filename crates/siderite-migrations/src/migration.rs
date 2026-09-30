@@ -23,6 +23,10 @@ pub struct Migration {
     /// Ordered operations.
     pub operations: Vec<Operation>,
     /// Wrap execution in a transaction when the backend supports it.
+    ///
+    /// No effect on SQLite: the whole `migrate`/`rollback` run is already
+    /// one transaction there (the lock), so a run is all-or-nothing. MySQL
+    /// never wraps DDL regardless of this flag.
     #[serde(default = "default_true")]
     pub atomic: bool,
     /// Ids this squash replaces. The loader treats this migration as applied
@@ -168,6 +172,7 @@ pub fn slug_from_operations(operations: &[Operation], is_first: bool) -> String 
     match &operations[0] {
         Operation::CreateModel { model } => format!("create_{}", snake(&model.name)),
         Operation::DeleteModel { name } => format!("delete_{}", snake(name)),
+        Operation::RenameModel { new_name, .. } => format!("rename_{}", snake(new_name)),
         Operation::AddField { model, field } => {
             format!("add_{}_{}", snake(model), snake(&field.name))
         }

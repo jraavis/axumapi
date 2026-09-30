@@ -16,7 +16,7 @@ fn names(ops: &[Operation]) -> Vec<String> {
 #[test]
 fn initial_creates_author_before_book() {
     let to = ProjectState::from_metas(&[author_meta(), book_meta()]);
-    let ops = diff(&ProjectState::new(), &to);
+    let ops = diff(&ProjectState::new(), &to).unwrap();
     let summaries = names(&ops);
     let author = summaries
         .iter()
@@ -37,7 +37,7 @@ fn add_and_remove_field() {
         .unwrap()
         .fields
         .push(FieldState::new("isbn", "isbn", SqlType::Text));
-    let ops = diff(&from, &to);
+    let ops = diff(&from, &to).unwrap();
     assert!(
         ops.iter().any(|op| matches!(
             op,
@@ -46,7 +46,7 @@ fn add_and_remove_field() {
         "{ops:?}"
     );
 
-    let ops = diff(&to, &from);
+    let ops = diff(&to, &from).unwrap();
     assert!(
         ops.iter().any(|op| matches!(
             op,
@@ -65,7 +65,7 @@ fn alter_field_nullability() {
         .field_mut("pages")
         .unwrap()
         .nullable = false;
-    let ops = diff(&from, &to);
+    let ops = diff(&from, &to).unwrap();
     assert!(
         ops.iter().any(|op| matches!(
             op,
@@ -76,7 +76,7 @@ fn alter_field_nullability() {
 }
 
 #[test]
-fn rename_without_hint_is_remove_and_add() {
+fn rename_without_hint_is_refused() {
     let from = ProjectState::from_metas(&[author_meta()]);
     let mut to = from.clone();
     to.model_mut("Author")
@@ -89,19 +89,10 @@ fn rename_without_hint_is_remove_and_add() {
         .field_mut("full_name")
         .unwrap()
         .column = "full_name".into();
-    let ops = diff(&from, &to);
-    assert!(
-        ops.iter()
-            .any(|op| matches!(op, Operation::RemoveField { name, .. } if name == "name"))
-    );
-    assert!(
-        ops.iter()
-            .any(|op| matches!(op, Operation::AddField { field, .. } if field.name == "full_name"))
-    );
-    assert!(
-        !ops.iter()
-            .any(|op| matches!(op, Operation::RenameField { .. }))
-    );
+    let err = diff(&from, &to).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("rename_field"), "{msg}");
+    assert!(msg.contains("full_name"), "{msg}");
 }
 
 #[test]
@@ -119,7 +110,7 @@ fn rename_hint_emits_rename_field() {
         .unwrap()
         .column = "full_name".into();
     let hints = RenameHints::new().rename_field("Author", "name", "full_name");
-    let ops = diff_with(&from, &to, &hints);
+    let ops = diff_with(&from, &to, &hints).unwrap();
     assert!(
         ops.iter().any(|op| matches!(
             op,
@@ -149,7 +140,7 @@ fn index_and_constraint_add_remove() {
             name: "name_present".into(),
             sql: "length(name) > 0".into(),
         });
-    let ops = diff(&from, &to);
+    let ops = diff(&from, &to).unwrap();
     assert!(ops.iter().any(
         |op| matches!(op, Operation::CreateIndex { index, .. } if index.name == "author_name_idx")
     ));
@@ -158,7 +149,7 @@ fn index_and_constraint_add_remove() {
         Operation::AddConstraint { constraint, .. } if constraint.name() == "name_present"
     )));
 
-    let ops = diff(&to, &from);
+    let ops = diff(&to, &from).unwrap();
     assert!(
         ops.iter().any(
             |op| matches!(op, Operation::DeleteIndex { name, .. } if name == "author_name_idx")
@@ -173,7 +164,7 @@ fn index_and_constraint_add_remove() {
 #[test]
 fn m2m_creates_join_table_after_both_sides() {
     let to = ProjectState::from_metas(&[post_meta(), tag_meta()]);
-    let ops = diff(&ProjectState::new(), &to);
+    let ops = diff(&ProjectState::new(), &to).unwrap();
     let summaries = names(&ops);
     let post = summaries
         .iter()
@@ -193,7 +184,7 @@ fn m2m_creates_join_table_after_both_sides() {
 #[test]
 fn delete_book_before_author() {
     let from = ProjectState::from_metas(&[author_meta(), book_meta()]);
-    let ops = diff(&from, &ProjectState::new());
+    let ops = diff(&from, &ProjectState::new()).unwrap();
     let summaries = names(&ops);
     let book = summaries
         .iter()
@@ -204,4 +195,101 @@ fn delete_book_before_author() {
         .position(|s| s == "DeleteModel Author")
         .unwrap();
     assert!(book < author, "{summaries:?}");
+}
+
+#[test]
+fn unhinted_model_rename_is_refused() {
+    let from = ProjectState::from_metas(&[author_meta()]);
+    let mut to = from.clone();
+    let mut writer = to.models.remove("Author").unwrap();
+    writer.name = "Writer".into();
+    writer.table = "writers".into();
+    to.models.insert("Writer".into(), writer);
+    let err = diff(&from, &to).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("rename_model"), "{msg}");
+    assert!(msg.contains("Writer"), "{msg}");
+}
+
+#[test]
+fn rename_model_hint_emits_rename_model() {
+    let from = ProjectState::from_metas(&[author_meta()]);
+    let mut to = from.clone();
+    let mut writer = to.models.remove("Author").unwrap();
+    writer.name = "Writer".into();
+    writer.table = "writers".into();
+    to.models.insert("Writer".into(), writer);
+    let hints = RenameHints::new().rename_model("Author", "Writer");
+    let ops = diff_with(&from, &to, &hints).unwrap();
+    assert!(
+        ops.iter().any(|op| matches!(
+            op,
+            Operation::RenameModel {
+                old_name,
+                new_name,
+                table,
+            } if old_name == "Author" && new_name == "Writer" && table == "writers"
+        )),
+        "{ops:?}"
+    );
+    assert!(!ops.iter().any(|op| matches!(
+        op,
+        Operation::DeleteModel { .. } | Operation::CreateModel { .. }
+    )));
+}
+
+#[test]
+fn allow_drop_model_passes_intentional_drop() {
+    let from = ProjectState::from_metas(&[author_meta()]);
+    let mut to = from.clone();
+    let mut writer = to.models.remove("Author").unwrap();
+    writer.name = "Writer".into();
+    writer.table = "writers".into();
+    to.models.insert("Writer".into(), writer);
+    // Still refused without the approval.
+    let err = diff_with(&from, &to, &RenameHints::new()).unwrap_err();
+    assert!(err.to_string().contains("allow_drop_model"), "{err:?}");
+    let hints = RenameHints::new().allow_drop_model("Author");
+    let ops = diff_with(&from, &to, &hints).unwrap();
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, Operation::DeleteModel { name } if name == "Author")),
+        "{ops:?}"
+    );
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, Operation::CreateModel { model } if model.name == "Writer")),
+        "{ops:?}"
+    );
+}
+
+#[test]
+fn allow_drop_field_passes_intentional_drop() {
+    let from = ProjectState::from_metas(&[author_meta()]);
+    let mut to = from.clone();
+    let field = to
+        .model_mut("Author")
+        .unwrap()
+        .fields
+        .iter_mut()
+        .find(|f| f.name == "name")
+        .unwrap();
+    field.name = "nickname".into();
+    field.column = "nickname".into();
+    let err = diff_with(&from, &to, &RenameHints::new()).unwrap_err();
+    assert!(err.to_string().contains("allow_drop_field"), "{err:?}");
+    let hints = RenameHints::new().allow_drop_field("Author", "name");
+    let ops = diff_with(&from, &to, &hints).unwrap();
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, Operation::RemoveField { model, name } if model == "Author" && name == "name")),
+        "{ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| matches!(
+            op,
+            Operation::AddField { model, field } if model == "Author" && field.name == "nickname"
+        )),
+        "{ops:?}"
+    );
 }

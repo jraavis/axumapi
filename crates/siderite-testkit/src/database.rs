@@ -102,7 +102,7 @@ impl TestDatabase {
     /// backend, or [`TestDatabaseError::Orm`] if a statement fails.
     pub async fn with_models(self, models: &[&ModelMeta]) -> Result<Self, TestDatabaseError> {
         let target = ProjectState::from_metas(models);
-        let operations = diff(&ProjectState::new(), &target);
+        let operations = diff(&ProjectState::new(), &target)?;
         let kind = self.db.capabilities().kind;
         for sql in schema_editor::statements(kind, &ProjectState::new(), &operations)? {
             self.db.execute_script(&sql).await?;

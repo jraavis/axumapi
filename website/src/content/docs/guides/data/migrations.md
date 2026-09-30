@@ -27,7 +27,9 @@ The standalone `siderite` binary runs `migrate`, `rollback`,
 `showmigrations`, and `squashmigrations` from JSON files plus
 `--database-url`. It cannot see your models, so it cannot run
 `makemigrations`. `--dry-run` prints SQL (or operations) and executes
-nothing.
+nothing. `migrate` and `rollback` take a backend lock before re-reading
+history (PostgreSQL `pg_advisory_lock`, MySQL `GET_LOCK`, SQLite
+`BEGIN IMMEDIATE`) so concurrent replicas cannot double-apply.
 
 MongoDB and Redis return `MigrationError::UnsupportedBackend` before I/O.
 
@@ -72,7 +74,8 @@ implementations at runtime with `MigrationRegistry` before
 | `AddField` | `RemoveField` | |
 | `RemoveField` | `AddField` from the before-state | |
 | `AlterField` | `AlterField` with the old snapshot | |
-| `RenameField` | swapped names | **Only when hinted** (`RenameHints`). Otherwise the autodetector emits remove+add and data is not preserved |
+| `RenameField` | swapped names | **Only when hinted** (`RenameHints::rename_field`). An unhinted same-shape remove+add is refused; `RenameHints::allow_drop_field` approves an intentional drop |
+| `RenameModel` | swapped names | **Only when hinted** (`RenameHints::rename_model`). An unhinted same-shape delete+create is refused; `RenameHints::allow_drop_model` approves an intentional drop |
 | `CreateIndex` / `DeleteIndex` | each other | |
 | `AddConstraint` / `DeleteConstraint` | each other | |
 | `RunSQL` | `RunSQL` of `reverse_sql` | **Irreversible** if `reverse_sql` is omitted |
@@ -116,14 +119,32 @@ copied as written.
 SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add
 or drop table constraints. For `AlterField`, `RemoveField`,
 `AddConstraint`, and `DeleteConstraint` the editor rebuilds the table
-(`PRAGMA foreign_keys = OFF`, create `__siderite_new`, copy, rename,
-recreate indexes).
+(create `__siderite_new`, copy, drop, rename, recreate indexes).
 
-`PRAGMA foreign_keys` is a no-op inside a transaction. Atomic migrations
-that rebuild a table referenced by other tables may fail the `DROP`;
-rebuild unreferenced tables, or set `atomic: false`. Simple `AddField` uses
-`ALTER TABLE ... ADD COLUMN`. Adding `UNIQUE` / `PRIMARY KEY` on SQLite
-also rebuilds.
+`PRAGMA foreign_keys` is a no-op inside a transaction, so the migrator
+turns it off on the dedicated connection *before* `BEGIN`, runs
+`PRAGMA foreign_key_check` before commit, and restores the previous value
+afterwards. Child rows with `ON DELETE CASCADE` survive a rebuild of the
+parent table. The check fails only on violations the migration introduced
+(diffed row by row against a baseline taken at open, so repairing one
+violation while adding another still fails), so pre-existing violations in
+unrelated tables do not block it; when foreign keys were already off the
+check is skipped.
+
+`RunRust` data code on SQLite runs on that same connection with foreign
+keys **off**: `ON DELETE CASCADE` does nothing there, and orphan rows can
+be written. Keep data migrations FK-clean by hand (delete children before
+parents, insert parents first) — the pre-commit check rejects newly
+created orphans and names the offending table and row. Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding
+`UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
+
+A `migrate` / `rollback` run on SQLite is a single transaction
+(`BEGIN IMMEDIATE` doubles as the concurrency lock), so it is
+all-or-nothing: a failing migration rolls back the earlier ones in the
+same run. The per-migration `atomic` flag has no effect on SQLite, so
+statements SQLite refuses inside a transaction (`VACUUM`,
+`PRAGMA journal_mode`) cannot appear in a SQLite migration. `migrate` and
+`rollback` also refuse a SQLite `Db` that is already inside a transaction.
 
 ## MySQL
 
@@ -135,10 +156,29 @@ Every DDL statement in MySQL commits implicitly, so the executor does
 **not** wrap MySQL migrations in a transaction, whatever `atomic` says.
 
 - A migration that fails half way leaves its earlier statements applied,
-  and no row is written to the history table. Running `migrate` again then
-  fails on the statements that already ran.
-- Repair by hand, then re-run. Keep MySQL migrations small — ideally one
-  schema change each. `--dry-run` shows the SQL first.
+  and no row is written to the history table. The executor records progress
+  per statement (`siderite_migration_progress`), so running `migrate` again
+  resumes at the first statement that did not commit instead of replaying the
+  ones that did — including *inside* one operation, since a `CreateModel`
+  with indexes renders several statements. The error names the statement that
+  failed (`2 of 3`, …), or the operation when a `RunRust` step fails after
+  committed statements (earlier DDL, or earlier data written by another
+  `RunRust`).
+- Repair by hand, then re-run: fix what the failed statement left behind
+  (for example drop a half-created table, or free a taken index name) and
+  the resume starts at the statement that failed. To restart a migration from
+  scratch instead, roll its applied part back by hand and delete its progress
+  row (`DELETE FROM siderite_migration_progress WHERE migration_id = '…'`).
+  Keep MySQL migrations small — ideally one schema change each.
+  `--dry-run` shows the SQL first.
+- The progress row stores the migration checksum: if the file changed after
+  a partial run, `migrate` refuses to resume. Restore the original file, or
+  reconcile the schema by hand and delete the progress row.
+- Progress is written right *after* each statement commits; MySQL cannot make
+  the two atomic. If the process dies in between, the re-run replays that
+  statement and fails loudly. Confirm its effect is present, advance the row
+  by hand (`stmt_index + 1`, or `op_index + 1, stmt_index = 0` for a
+  `RunRust`) and re-run. Keep `RunRust` code idempotent on MySQL.
 - `RunSQL` statements are not rolled back either.
 
 ### Keyed `TEXT` needs `max_length`

@@ -49,7 +49,7 @@
 //! Pools built elsewhere and passed to [`MySqlBackend::from_pool`] should do
 //! the same.
 
-use crate::shared::{TxSlot, affected_result, map_error, with_tx};
+use crate::shared::{ConnSlot, TxSlot, affected_result, map_error, with_conn, with_tx};
 use crate::sql::{CompiledQuery, MySql, compile, compile_write};
 use async_trait::async_trait;
 use siderite_orm::types::canonical_text;
@@ -193,6 +193,17 @@ impl Backend for MySqlBackend {
             tables: Arc::clone(&self.tables),
         }))
     }
+
+    async fn begin_schema(&self, transactional: bool) -> Result<Box<dyn Transaction>, OrmError> {
+        if transactional {
+            return self.begin(None).await;
+        }
+        let conn = self.pool.acquire().await.map_err(db_error)?;
+        Ok(Box::new(MySqlHeld {
+            slot: ConnSlot::new(conn),
+            tables: Arc::clone(&self.tables),
+        }))
+    }
 }
 
 fn isolation_sql(level: IsolationLevel) -> &'static str {
@@ -257,6 +268,73 @@ impl Transaction for MySqlTransaction {
 
     async fn rollback(&self) -> Result<(), OrmError> {
         self.slot.rollback().await
+    }
+}
+
+/// Pooled connection held for a migration lock (no SQL transaction).
+///
+/// Like the Postgres held connection, commit and rollback close the
+/// connection instead of returning it to the pool so an unreleased
+/// `GET_LOCK` is never handed to another caller.
+struct MySqlHeld {
+    slot: ConnSlot<sqlx::MySql>,
+    tables: Arc<TableCache>,
+}
+
+#[async_trait]
+impl Executor for MySqlHeld {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::mysql()
+    }
+
+    async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
+        let compiled = compile(plan, &MySql)?;
+        with_conn!(self.slot, conn => fetch_rows(conn, &compiled.sql, compiled.params).await)
+    }
+
+    async fn execute(&self, plan: &WritePlan) -> Result<ExecResult, OrmError> {
+        if plan.returning().is_empty() {
+            let compiled = compile_write(plan, &MySql)?;
+            let affected = with_conn!(self.slot, conn => execute_rows(conn, &compiled.sql, compiled.params).await)?;
+            return Ok(affected_result(affected));
+        }
+        let prepared = prepare(plan)?;
+        with_conn!(self.slot, conn => {
+            let info = self.tables.table(&mut *conn, table_of(plan)).await?;
+            write_returning(conn, &info, plan, prepared).await
+        })
+    }
+
+    async fn fetch_raw(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError> {
+        with_conn!(self.slot, conn => fetch_rows(conn, sql, params).await)
+    }
+
+    async fn execute_raw(&self, sql: &str, params: Vec<Value>) -> Result<u64, OrmError> {
+        with_conn!(self.slot, conn => execute_rows(conn, sql, params).await)
+    }
+
+    async fn execute_script(&self, sql: &str) -> Result<(), OrmError> {
+        let result =
+            with_conn!(self.slot, conn => script_result(sqlx::Executor::execute(conn, sql).await));
+        self.tables.clear();
+        result
+    }
+}
+
+#[async_trait]
+impl Transaction for MySqlHeld {
+    async fn commit(&self) -> Result<(), OrmError> {
+        let mut conn = self.slot.take().await?;
+        conn.close_on_drop();
+        drop(conn);
+        Ok(())
+    }
+
+    async fn rollback(&self) -> Result<(), OrmError> {
+        let mut conn = self.slot.take().await?;
+        conn.close_on_drop();
+        drop(conn);
+        Ok(())
     }
 }
 
