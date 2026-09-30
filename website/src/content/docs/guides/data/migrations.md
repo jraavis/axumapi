@@ -59,7 +59,9 @@ Pretty-printed JSON, one file per migration, named `{id}.json`:
   the squash as applied when every replaced id is in the history table.
 - **atomic** — wrap the migration in `db.transaction` when the backend
   supports transactional DDL (PostgreSQL and SQLite). MySQL does not; see
-  below.
+  below. `false` on PostgreSQL runs it without a transaction (for
+  `CREATE INDEX CONCURRENTLY`), which also makes it resumable — see
+  [PostgreSQL](#postgresql).
 
 `RunRust` stores a **registered name**, not a function. Register
 implementations at runtime with `MigrationRegistry` before
@@ -113,6 +115,41 @@ copied as written.
 
 `DbDefault::Now` → `CURRENT_TIMESTAMP` on PostgreSQL; on SQLite
 `(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`.
+
+## PostgreSQL
+
+PostgreSQL DDL is transactional, so a migration runs in `db.transaction` by
+default and a failure rolls the whole migration back.
+
+Setting `"atomic": false` opts out — which is what `CREATE INDEX CONCURRENTLY`
+needs, since PostgreSQL refuses to run it inside a transaction block. Outside a
+transaction every statement autocommits, so a failure leaves its earlier
+statements applied and no history row, exactly like MySQL:
+
+- The executor records progress per statement
+  (`siderite_migration_progress`), so `migrate` again resumes at the first
+  statement that did not commit instead of replaying the committed ones —
+  including *inside* one operation, since a `CreateModel` with indexes renders
+  several statements. The error names the statement that failed (`2 of 3`, …),
+  or the operation when a `RunRust` step fails after earlier statements
+  committed.
+- Repair by hand, then re-run: fix what the failed statement left behind (for
+  example drop a half-created table, or free a taken index name) and the
+  resume starts at the statement that failed. To restart from scratch
+  instead, roll the applied part back by hand and delete its progress row
+  (`DELETE FROM siderite_migration_progress WHERE migration_id = '…'`).
+  Prefer several small `atomic: false` migrations to one large one.
+- The progress row stores the migration checksum: if the file changed after a
+  partial run, `migrate` refuses to resume.
+- Progress is written right *after* each statement commits, and no savepoint
+  spans the two. If the process dies in between, the re-run replays that
+  statement and fails loudly. Confirm its effect is present, advance the row
+  by hand (`stmt_index + 1`, or `op_index + 1, stmt_index = 0` for a
+  `RunRust`) and re-run. Keep `RunRust` code idempotent.
+- `rollback` is the same in reverse.
+
+The flag changes nothing on SQLite (the run *is* the lock's transaction) or on
+MySQL (which never wraps DDL regardless).
 
 ## SQLite table rebuild
 

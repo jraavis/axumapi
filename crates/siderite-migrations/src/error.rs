@@ -105,6 +105,40 @@ pub enum MigrationError {
         #[source]
         source: Box<MigrationError>,
     },
+    /// A non-transactional PostgreSQL migration (`atomic: false`) failed on a
+    /// statement after earlier statements committed.
+    #[error(
+        "PostgreSQL migration `{id}` (atomic: false) failed on statement {index} of {total} after earlier statements committed; they ran outside a transaction and cannot be rolled back (repair the schema by hand, then re-run `migrate` to resume at the failed statement): {source}"
+    )]
+    PostgresPartial {
+        /// Migration id.
+        id: String,
+        /// 1-based statement that failed.
+        index: usize,
+        /// Number of SQL statements in the migration.
+        total: usize,
+        /// Driver error from the failing statement.
+        #[source]
+        source: OrmError,
+    },
+    /// A `RunRust` step of a non-transactional PostgreSQL migration
+    /// (`atomic: false`) failed after earlier statements committed.
+    #[error(
+        "PostgreSQL migration `{id}` (atomic: false) failed in operation {index} of {total} ({summary}) after earlier statements committed; they ran outside a transaction and cannot be rolled back (repair the schema by hand, then re-run `migrate` to resume at the failed operation): {source}"
+    )]
+    PostgresOpPartial {
+        /// Migration id.
+        id: String,
+        /// 1-based operation that failed.
+        index: usize,
+        /// Number of operations in the migration.
+        total: usize,
+        /// Short label of the failing operation.
+        summary: String,
+        /// The operation's own error.
+        #[source]
+        source: Box<MigrationError>,
+    },
 }
 
 impl MigrationError {
@@ -150,6 +184,38 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("operation 2 of 2 (RunRust seed)"), "{msg}");
         assert!(msg.contains("0003_data"), "{msg}");
+        assert!(msg.contains("repair the schema by hand"), "{msg}");
+    }
+
+    #[test]
+    fn postgres_partial_names_the_failed_statement() {
+        let err = MigrationError::PostgresPartial {
+            id: "0004_add".into(),
+            index: 2,
+            total: 3,
+            source: BackendError::Database("relation already exists".into()).into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("statement 2 of 3"), "{msg}");
+        assert!(msg.contains("0004_add"), "{msg}");
+        assert!(msg.contains("atomic: false"), "{msg}");
+        assert!(msg.contains("cannot be rolled back"), "{msg}");
+        assert!(msg.contains("repair the schema by hand"), "{msg}");
+    }
+
+    #[test]
+    fn postgres_op_partial_names_the_failed_operation() {
+        let err = MigrationError::PostgresOpPartial {
+            id: "0005_data".into(),
+            index: 2,
+            total: 2,
+            summary: "RunRust seed".into(),
+            source: Box::new(MigrationError::UnregisteredRust("seed".into())),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("operation 2 of 2 (RunRust seed)"), "{msg}");
+        assert!(msg.contains("0005_data"), "{msg}");
+        assert!(msg.contains("atomic: false"), "{msg}");
         assert!(msg.contains("repair the schema by hand"), "{msg}");
     }
 }

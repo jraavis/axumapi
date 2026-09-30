@@ -524,27 +524,17 @@ impl<'a> Migrator<'a> {
         state_before: &ProjectState,
     ) -> Result<(), MigrationError> {
         let kind = self.kind();
-        let operations = migration.operations.clone();
-        let id = migration.id.clone();
-        let checksum = migration.checksum.clone();
+        // See `apply_one`: the whole migration travels into the run closure
+        // because the reverse direction needs its id, checksum and `atomic`
+        // flag for the progress row alongside its operations.
+        let migration = migration.clone();
         let start_state = state_before.clone();
         let run = |db: Db| {
-            let operations = operations.clone();
+            let migration = migration.clone();
             let registry = self.registry.clone();
-            let id = id.clone();
-            let checksum = checksum.clone();
             let start_state = start_state.clone();
             async move {
-                unapply_ops_in_order(
-                    &db,
-                    kind,
-                    &id,
-                    &checksum,
-                    &operations,
-                    &start_state,
-                    &registry,
-                )
-                .await?;
+                unapply_ops_in_order(&db, kind, &migration, &start_state, &registry).await?;
                 Ok::<_, MigrationError>(())
             }
         };
@@ -552,7 +542,7 @@ impl<'a> Migrator<'a> {
         // transaction held by `with_lock`.
         if db.in_transaction() {
             run(db.clone()).await?;
-        } else if runs_in_transaction(db, migration) {
+        } else if runs_in_transaction(db, &migration) {
             db.transaction(run).await?;
         } else {
             run(db.clone()).await?;
@@ -659,6 +649,89 @@ fn runs_in_transaction(db: &Db, migration: &Migration) -> bool {
         && caps.kind != BackendKind::MySql
 }
 
+/// What a failed migration leaves behind on the server.
+///
+/// Decides both whether the executor records per-statement progress (only a
+/// run whose earlier statements survive a failure can be resumed) and what a
+/// failure reports: MySQL commits DDL implicitly but rolls DML back with the
+/// surrounding statement, while a PostgreSQL migration with `atomic: false`
+/// runs outside a transaction, where *every* statement autocommits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnFailure {
+    /// A transaction wraps the run: a failure rolls every statement back.
+    Rollback,
+    /// MySQL: only implicit-commit DDL survives a failure.
+    ImplicitCommit,
+    /// PostgreSQL with `atomic: false`: no transaction, so every statement
+    /// autocommits (DML included).
+    Autocommit,
+}
+
+impl OnFailure {
+    /// Partial-failure behaviour of one migration on `kind`.
+    ///
+    /// MySQL is always partial, whatever `atomic` says. PostgreSQL is partial
+    /// only without the transaction, i.e. when the migration opted out with
+    /// `atomic: false` (what `CREATE INDEX CONCURRENTLY` needs). SQLite never
+    /// is: the whole `migrate` run is the lock's transaction.
+    fn of(kind: BackendKind, atomic: bool) -> Self {
+        match kind {
+            BackendKind::MySql => Self::ImplicitCommit,
+            BackendKind::Postgres if !atomic => Self::Autocommit,
+            _ => Self::Rollback,
+        }
+    }
+
+    /// Whether per-statement progress is recorded for this kind of run.
+    const fn resumes(self) -> bool {
+        !matches!(self, Self::Rollback)
+    }
+
+    /// Whether an earlier statement of this run is committed for good.
+    ///
+    /// MySQL counts only implicit-commit DDL, so a failure after mere DML
+    /// still reports the plain error; a non-transactional PostgreSQL run
+    /// counts anything, because outside a transaction every statement
+    /// autocommits.
+    fn prior_committed(self, committed: bool, ddl: bool) -> bool {
+        match self {
+            Self::Rollback => false,
+            Self::ImplicitCommit => ddl,
+            Self::Autocommit => committed,
+        }
+    }
+}
+
+/// [`MigrationError`] for a `RunRust` failure after earlier statements
+/// committed. The operation's own error is kept as the source.
+fn op_partial(
+    failure: OnFailure,
+    id: &str,
+    index: usize,
+    total: usize,
+    summary: String,
+    source: MigrationError,
+) -> MigrationError {
+    let id = id.to_owned();
+    match failure {
+        OnFailure::ImplicitCommit => MigrationError::MysqlOpPartial {
+            id,
+            index,
+            total,
+            summary,
+            source: Box::new(source),
+        },
+        OnFailure::Autocommit => MigrationError::PostgresOpPartial {
+            id,
+            index,
+            total,
+            summary,
+            source: Box::new(source),
+        },
+        OnFailure::Rollback => source,
+    }
+}
+
 fn create_history_sql(kind: BackendKind) -> String {
     // MySQL cannot key a TEXT column without a prefix length.
     let key_type = if kind == BackendKind::MySql {
@@ -678,14 +751,15 @@ fn create_history_sql(kind: BackendKind) -> String {
 /// Progress of a non-transactional migration, so a re-run resumes after the
 /// last completed *statement* instead of replaying committed statements.
 ///
-/// MySQL commits every DDL statement implicitly, so a failed migration
-/// leaves earlier statements applied and no history row. The next `migrate`
-/// reads this row, skips the operations it records and, inside the operation
-/// it stopped in, skips the statements already committed — one operation can
-/// render several (a `CreateModel` with indexes, an `AlterField` changing
-/// type *and* an index), and replaying those fails with "already exists".
-/// Directions are tracked separately because forward and reverse walk
-/// different operation lists.
+/// MySQL commits every DDL statement implicitly, and a PostgreSQL migration
+/// with `atomic: false` runs outside a transaction where every statement
+/// autocommits, so a failed migration of either leaves earlier statements
+/// applied and no history row. The next `migrate` reads this row, skips the
+/// operations it records and, inside the operation it stopped in, skips the
+/// statements already committed — one operation can render several (a
+/// `CreateModel` with indexes, an `AlterField` changing type *and* an index),
+/// and replaying those fails with "already exists". Directions are tracked
+/// separately because forward and reverse walk different operation lists.
 const PROGRESS_TABLE: &str = "siderite_migration_progress";
 const PROGRESS_APPLY: &str = "apply";
 const PROGRESS_UNAPPLY: &str = "unapply";
@@ -917,12 +991,14 @@ async fn apply_ops_in_order(
 ) -> Result<(), MigrationError> {
     let total_sql = schema_editor::statements(kind, state, &migration.operations)?.len();
     // MySQL commits every DDL statement implicitly, so a failure leaves
-    // earlier statements applied. Track progress per statement and resume
-    // after it on re-run instead of replaying committed statements: an
-    // operation can render several (a `CreateModel` with indexes, an
-    // `AlterField` changing type *and* an index), and replaying the first
-    // ones fails with "already exists".
-    let resumable = kind == BackendKind::MySql;
+    // earlier statements applied; a PostgreSQL migration with `atomic: false`
+    // runs outside a transaction, where every statement autocommits. Track
+    // progress per statement and resume after it on re-run instead of
+    // replaying committed statements: an operation can render several (a
+    // `CreateModel` with indexes, an `AlterField` changing type *and* an
+    // index), and replaying the first ones fails with "already exists".
+    let failure = OnFailure::of(kind, migration.atomic);
+    let resumable = failure.resumes();
     let mut resume = Progress::default();
     if resumable {
         reset_progress_direction(db, kind, &migration.id, PROGRESS_APPLY).await?;
@@ -957,20 +1033,21 @@ async fn apply_ops_in_order(
         if let Operation::RunRust { name, .. } = op {
             if let Err(err) = registry.run(name, db).await {
                 if resumable && prior_committed {
-                    return Err(MigrationError::MysqlOpPartial {
-                        id: migration.id.clone(),
-                        index: op_no + 1,
-                        total: migration.operations.len(),
-                        summary: op.summary(),
-                        source: Box::new(err),
-                    });
+                    return Err(op_partial(
+                        failure,
+                        &migration.id,
+                        op_no + 1,
+                        migration.operations.len(),
+                        op.summary(),
+                        err,
+                    ));
                 }
                 return Err(err);
             }
             prior_committed = true;
         } else {
-            // A partially committed op (MySQL) already passed what the probe
-            // guards; re-probing would misreport the half-applied state.
+            // A partially committed op already passed what the probe guards;
+            // re-probing would misreport the half-applied state.
             if resume_stmt == 0 {
                 reject_not_null_violations(db, kind, &current, op).await?;
             }
@@ -987,21 +1064,22 @@ async fn apply_ops_in_order(
                 }
                 execute_one_sql(
                     db,
-                    kind,
+                    failure,
                     &migration.id,
                     sql_index,
                     total_sql,
-                    prior_ddl,
+                    failure.prior_committed(prior_committed, prior_ddl),
                     &sql,
                 )
                 .await?;
                 prior_ddl |= is_implicit_commit(&sql);
                 prior_committed = true;
                 // Not atomic with the statement: MySQL has already committed
-                // the DDL, and no transaction can span it and this write. A
-                // crash between the two replays the statement on re-run, which
-                // fails loudly ("already exists"); see docs/MIGRATIONS.md for
-                // manual recovery. That window is inherent to MySQL DDL.
+                // the DDL, and a PostgreSQL `atomic: false` run has no
+                // transaction, so no savepoint can span the two. A crash
+                // between them replays the statement on re-run, which fails
+                // loudly ("already exists"); see docs/MIGRATIONS.md for manual
+                // recovery. That window is inherent to those backends.
                 if resumable {
                     save_progress(
                         db,
@@ -1047,12 +1125,11 @@ async fn apply_ops_in_order(
 async fn unapply_ops_in_order(
     db: &Db,
     kind: BackendKind,
-    id: &str,
-    checksum: &str,
-    operations: &[Operation],
+    migration: &Migration,
     state_before: &ProjectState,
     registry: &crate::registry::MigrationRegistry,
 ) -> Result<(), MigrationError> {
+    let operations = &migration.operations;
     let mut snapshots = vec![state_before.clone()];
     let mut current = state_before.clone();
     for op in operations {
@@ -1067,7 +1144,7 @@ async fn unapply_ops_in_order(
     for i in (0..operations.len()).rev() {
         let Some(rev) = operations[i].reverse(&snapshots[i]) else {
             return Err(MigrationError::Irreversible {
-                id: id.to_owned(),
+                id: migration.id.clone(),
                 reason: format!("{} has no reverse", operations[i].summary()),
             });
         };
@@ -1083,11 +1160,21 @@ async fn unapply_ops_in_order(
         n
     };
     let mut sql_index = 0usize;
-    let resumable = kind == BackendKind::MySql;
+    // See `apply_ops_in_order`: reversing a MySQL migration, or a PostgreSQL
+    // one with `atomic: false`, cannot roll its earlier statements back either.
+    let failure = OnFailure::of(kind, migration.atomic);
+    let resumable = failure.resumes();
     let mut resume = Progress::default();
     if resumable {
-        reset_progress_direction(db, kind, id, PROGRESS_UNAPPLY).await?;
-        resume = load_progress(db, kind, id, checksum, PROGRESS_UNAPPLY).await?;
+        reset_progress_direction(db, kind, &migration.id, PROGRESS_UNAPPLY).await?;
+        resume = load_progress(
+            db,
+            kind,
+            &migration.id,
+            &migration.checksum,
+            PROGRESS_UNAPPLY,
+        )
+        .await?;
     }
     let mut prior_ddl = false;
     // See `apply_ops_in_order`: earlier DDL or an earlier `RunRust` that
@@ -1113,13 +1200,14 @@ async fn unapply_ops_in_order(
         if let Operation::RunRust { name, .. } = &rev {
             if let Err(err) = registry.run(name, db).await {
                 if resumable && prior_committed {
-                    return Err(MigrationError::MysqlOpPartial {
-                        id: id.to_owned(),
-                        index: op_no + 1,
-                        total: operations.len(),
-                        summary: rev.summary(),
-                        source: Box::new(err),
-                    });
+                    return Err(op_partial(
+                        failure,
+                        &migration.id,
+                        op_no + 1,
+                        operations.len(),
+                        rev.summary(),
+                        err,
+                    ));
                 }
                 return Err(err);
             }
@@ -1138,15 +1226,24 @@ async fn unapply_ops_in_order(
                     prior_committed = true;
                     continue;
                 }
-                execute_one_sql(db, kind, id, sql_index, total_sql, prior_ddl, &sql).await?;
+                execute_one_sql(
+                    db,
+                    failure,
+                    &migration.id,
+                    sql_index,
+                    total_sql,
+                    failure.prior_committed(prior_committed, prior_ddl),
+                    &sql,
+                )
+                .await?;
                 prior_ddl |= is_implicit_commit(&sql);
                 prior_committed = true;
                 if resumable {
                     save_progress(
                         db,
                         kind,
-                        id,
-                        checksum,
+                        &migration.id,
+                        &migration.checksum,
                         PROGRESS_UNAPPLY,
                         Progress {
                             ops: op_no,
@@ -1165,8 +1262,8 @@ async fn unapply_ops_in_order(
             save_progress(
                 db,
                 kind,
-                id,
-                checksum,
+                &migration.id,
+                &migration.checksum,
                 PROGRESS_UNAPPLY,
                 Progress {
                     ops: op_no + 1,
@@ -1176,9 +1273,9 @@ async fn unapply_ops_in_order(
             .await?;
         }
     }
-    delete_history(db, kind, id).await?;
+    delete_history(db, kind, &migration.id).await?;
     if resumable {
-        clear_progress(db, kind, id, PROGRESS_UNAPPLY).await?;
+        clear_progress(db, kind, &migration.id, PROGRESS_UNAPPLY).await?;
     }
     Ok(())
 }
@@ -1402,24 +1499,33 @@ async fn reject_not_null_violations(
 
 async fn execute_one_sql(
     db: &Db,
-    kind: BackendKind,
+    failure: OnFailure,
     migration_id: &str,
     index: usize,
     total: usize,
-    prior_ddl: bool,
+    prior_committed: bool,
     sql: &str,
 ) -> Result<(), MigrationError> {
     if let Err(err) = db.execute_script(sql).await {
-        // MySQL commits DDL implicitly: with earlier DDL committed, a
-        // re-run replays it and gets stuck, so name the failed statement.
-        // Without prior DDL (a first-statement failure, or only DML before
-        // it) the plain error is accurate.
-        if kind == BackendKind::MySql && prior_ddl {
-            return Err(MigrationError::MysqlPartial {
-                id: migration_id.to_owned(),
-                index,
-                total,
-                source: err,
+        // With earlier statements committed for good, a re-run replays them
+        // and gets stuck, so name the failed statement and what is left
+        // behind. Without them (a first-statement failure, or only rolled-back
+        // DML before it) the plain error is accurate.
+        if prior_committed {
+            return Err(match failure {
+                OnFailure::ImplicitCommit => MigrationError::MysqlPartial {
+                    id: migration_id.to_owned(),
+                    index,
+                    total,
+                    source: err,
+                },
+                OnFailure::Autocommit => MigrationError::PostgresPartial {
+                    id: migration_id.to_owned(),
+                    index,
+                    total,
+                    source: err,
+                },
+                OnFailure::Rollback => err.into(),
             });
         }
         return Err(err.into());
@@ -1590,6 +1696,10 @@ mod tests {
     }
 
     fn run_sql_migration(id: &str, bodies: &[(&str, &str)]) -> Migration {
+        run_sql_migration_with(id, bodies, true)
+    }
+
+    fn run_sql_migration_with(id: &str, bodies: &[(&str, &str)], atomic: bool) -> Migration {
         Migration::new(
             id,
             Vec::new(),
@@ -1600,10 +1710,25 @@ mod tests {
                     reverse_sql: Some((*reverse).to_owned()),
                 })
                 .collect(),
-            true,
+            atomic,
             Vec::new(),
         )
         .unwrap()
+    }
+
+    /// Whether the progress table exists: a resumable run creates it on the
+    /// way in, so its absence proves no progress was ever written.
+    async fn has_progress_table(db: &Db) -> bool {
+        !db.raw_sql(
+            &format!(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '{PROGRESS_TABLE}'"
+            ),
+            Vec::new(),
+        )
+        .await
+        .unwrap()
+        .rows
+        .is_empty()
     }
 
     /// A failed MySQL migration resumes after its committed operations.
@@ -1942,6 +2067,131 @@ mod tests {
         db.raw_sql("SELECT n FROM seeded", Vec::new())
             .await
             .unwrap();
+    }
+
+    /// Only a run that leaves committed statements behind can be resumed:
+    /// MySQL always, PostgreSQL only without its transaction.
+    #[test]
+    fn on_failure_follows_backend_and_atomic() {
+        assert_eq!(
+            OnFailure::of(BackendKind::MySql, true),
+            OnFailure::ImplicitCommit
+        );
+        assert_eq!(
+            OnFailure::of(BackendKind::MySql, false),
+            OnFailure::ImplicitCommit,
+            "MySQL commits DDL implicitly whatever `atomic` says"
+        );
+        assert_eq!(
+            OnFailure::of(BackendKind::Postgres, false),
+            OnFailure::Autocommit
+        );
+        assert_eq!(
+            OnFailure::of(BackendKind::Postgres, true),
+            OnFailure::Rollback,
+            "a transactional PostgreSQL migration rolls back completely"
+        );
+        for atomic in [true, false] {
+            assert_eq!(
+                OnFailure::of(BackendKind::Sqlite, atomic),
+                OnFailure::Rollback,
+                "the SQLite run is the lock's transaction, so `atomic` changes nothing"
+            );
+        }
+    }
+
+    /// What counts as "an earlier statement committed" differs per backend:
+    /// MySQL rolls DML back with the statement, a non-transactional
+    /// PostgreSQL run autocommits everything.
+    #[test]
+    fn prior_committed_depends_on_the_backend() {
+        // Nothing ran before the failure.
+        for failure in [
+            OnFailure::Rollback,
+            OnFailure::ImplicitCommit,
+            OnFailure::Autocommit,
+        ] {
+            assert!(!failure.prior_committed(false, false), "{failure:?}");
+        }
+        // Only DML ran before it.
+        assert!(!OnFailure::ImplicitCommit.prior_committed(true, false));
+        assert!(OnFailure::Autocommit.prior_committed(true, false));
+        // DDL ran before it.
+        assert!(OnFailure::ImplicitCommit.prior_committed(true, true));
+        assert!(OnFailure::Autocommit.prior_committed(true, true));
+        assert!(!OnFailure::Rollback.prior_committed(true, true));
+    }
+
+    /// An atomic PostgreSQL migration runs in a transaction, so it records no
+    /// progress: a re-run starts from scratch and a failure stays plain.
+    ///
+    /// `kind` is PostgreSQL to exercise the decision, but the `RunSQL`
+    /// statements run on SQLite. The second operation creates the first one's
+    /// table, so it fails exactly where a resumable run would write progress.
+    #[tokio::test]
+    async fn atomic_postgres_writes_no_progress_rows() {
+        let db = memory_db().await;
+        db.execute_script(&create_history_sql(BackendKind::Postgres))
+            .await
+            .unwrap();
+        let migration = run_sql_migration_with(
+            "0006_atomic_pg",
+            &[
+                ("CREATE TABLE pg_t (n INTEGER)", "DROP TABLE pg_t"),
+                ("CREATE TABLE pg_t (n INTEGER)", "DROP TABLE pg_t"),
+            ],
+            true,
+        );
+        let state = ProjectState::new();
+        let registry = crate::registry::MigrationRegistry::new();
+        let err = apply_ops_in_order(&db, BackendKind::Postgres, &migration, &state, &registry)
+            .await
+            .unwrap_err();
+        assert!(
+            !matches!(
+                err,
+                MigrationError::MysqlPartial { .. } | MigrationError::PostgresPartial { .. }
+            ),
+            "a transactional migration leaves nothing behind: {err:?}"
+        );
+        assert!(
+            !has_progress_table(&db).await,
+            "an atomic PostgreSQL migration records no progress"
+        );
+    }
+
+    /// A SQLite run is one transaction whatever the migration's `atomic` flag
+    /// says, so it records no progress either.
+    #[tokio::test]
+    async fn sqlite_writes_no_progress_rows() {
+        let db = memory_db().await;
+        db.execute_script(&create_history_sql(BackendKind::Sqlite))
+            .await
+            .unwrap();
+        let state = ProjectState::new();
+        let registry = crate::registry::MigrationRegistry::new();
+        for (id, table, atomic) in [
+            ("0007_sqlite_atomic", "sq_a", true),
+            ("0008_sqlite_plain", "sq_b", false),
+        ] {
+            let migration = run_sql_migration_with(
+                id,
+                &[(&format!("CREATE TABLE {table} (n INTEGER)"), "SELECT 1")],
+                atomic,
+            );
+            apply_ops_in_order(&db, BackendKind::Sqlite, &migration, &state, &registry)
+                .await
+                .unwrap();
+            assert!(!has_progress_table(&db).await, "{id} (atomic={atomic})");
+            db.raw_sql(&format!("SELECT n FROM {table}"), Vec::new())
+                .await
+                .unwrap();
+        }
+        let history = db
+            .raw_sql("SELECT id FROM siderite_migrations", Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(history.rows.len(), 2, "both migrations applied");
     }
 
     #[test]

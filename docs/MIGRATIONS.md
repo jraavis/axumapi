@@ -50,7 +50,7 @@ Pretty-printed JSON, one file per migration, named `{id}.json`:
 * **dependencies** — ids that must be applied first. The graph must be a single-headed DAG: missing deps, cycles, and multiple leaves are errors (create a merge or run `squashmigrations`).
 * **checksum** — 16-digit hex FNV-1a of the canonical JSON of `id`, `dependencies`, `operations`, `atomic` and `replaces`. An applied migration whose file no longer matches the history row is refused.
 * **replaces** — set by squash. The loader hides replaced ids and treats the squash as applied when every replaced id is in the history table.
-* **atomic** — wrap the migration in `db.transaction` when the backend supports transactional DDL (PostgreSQL and SQLite both do).
+* **atomic** — wrap the migration in `db.transaction` when the backend supports transactional DDL (PostgreSQL and SQLite both do). `false` runs the statements outside a transaction, which a statement like `CREATE INDEX CONCURRENTLY` needs; see [PostgreSQL](#atomic-false-is-not-transactional) for what that costs.
 
 `RunRust` stores a **registered name**, not a function. Register implementations at runtime with `MigrationRegistry` before `Migrator::migrate`.
 
@@ -100,6 +100,20 @@ Identifiers are double-quoted on PostgreSQL and SQLite (embedded quotes doubled)
 `DbDefault::Now` → `CURRENT_TIMESTAMP` on PostgreSQL; on SQLite `(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, which `DateTime::from_value` accepts as RFC3339.
 
 MySQL DDL is described in [MySQL](#mysql). Other backends (MongoDB, Redis) return `MigrationError::UnsupportedBackend` before I/O.
+
+## PostgreSQL
+
+### `atomic: false` is not transactional
+
+PostgreSQL DDL *is* transactional, so the executor wraps a migration in `db.transaction` by default and a failure rolls the whole migration back. A migration that sets `"atomic": false` opts out of that — which is what a statement like `CREATE INDEX CONCURRENTLY` needs, since PostgreSQL refuses to run it inside a transaction block. Outside a transaction every statement autocommits, so the consequences match MySQL's:
+
+* A migration that fails half way leaves its earlier statements applied, and no row is written to the history table. The executor records progress per statement in `siderite_migration_progress` (the same table MySQL uses), so running `migrate` again resumes at the first statement that did not commit instead of replaying the ones that did, including *inside* one operation. The error is [`MigrationError::PostgresPartial`](../crates/siderite-migrations/src/error.rs), naming the statement that failed (`2 of 3`, …), or [`MigrationError::PostgresOpPartial`](../crates/siderite-migrations/src/error.rs) naming the operation when a `RunRust` step fails after earlier statements committed.
+* Repair by hand, then re-run: fix what the failed statement left behind and the resume starts at the statement that failed. To restart from scratch instead, roll the applied part back by hand and delete its progress row (`DELETE FROM siderite_migration_progress WHERE migration_id = '…'`).
+* The progress row stores the migration's checksum; if the file changed after a partial run, `migrate` refuses to resume. Restore the original file, or reconcile the schema by hand and delete the progress row.
+* Progress is saved right *after* each statement commits, and no savepoint can span the two. If the process dies in between, the re-run replays that one statement and fails loudly (`already exists`). Check that the statement's effect is present, then advance the row by hand (`UPDATE siderite_migration_progress SET stmt_index = stmt_index + 1 WHERE migration_id = '…'`, or `op_index + 1, stmt_index = 0` for a `RunRust`) and re-run. Keep `RunRust` code idempotent, and prefer several small `atomic: false` migrations to one large one.
+* `rollback` behaves the same way in reverse: an `atomic: false` migration cannot be undone in one transaction, so its progress is recorded there too.
+
+The flag changes nothing on SQLite (the run *is* the lock's transaction) or on MySQL (which never wraps DDL regardless).
 
 ## SQLite table rebuild
 
