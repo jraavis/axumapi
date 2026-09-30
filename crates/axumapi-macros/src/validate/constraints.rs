@@ -42,6 +42,9 @@ pub fn checks(options: &FieldOptions, id: usize) -> Checks {
     if options.email {
         push(quote!(Email));
     }
+    if options.url {
+        push(quote!(Url));
+    }
     for (variant, bound) in [
         (quote!(Gt), &options.gt),
         (quote!(Ge), &options.ge),

@@ -1120,6 +1120,8 @@ struct Numbers {
     half: f64,
     #[field(email, max_length = 20)]
     mail: String,
+    #[field(url)]
+    site: String,
     #[field(regex = "^[a-z]+$", max_digits = 5, decimal_places = 2)]
     slug: String,
     #[field(min_length = 1, max_length = 2)]
@@ -1128,7 +1130,7 @@ struct Numbers {
 
 fn numbers() -> Value {
     json!({"open": 5, "closed": 0.5, "step": 10, "half": 1.5,
-           "mail": "a@b.co", "slug": "abc", "list": [1]})
+           "mail": "a@b.co", "site": "https://example.com/a", "slug": "abc", "list": [1]})
 }
 
 fn codes_of<T: serde::de::DeserializeOwned + Validate>(input: Value) -> Vec<(String, String)> {
@@ -1154,6 +1156,7 @@ fn numeric_string_and_collection_constraints() {
     bad["step"] = json!(7);
     bad["half"] = json!(1.2);
     bad["mail"] = json!("nope");
+    bad["site"] = json!("not a url");
     bad["slug"] = json!("ABC");
     bad["list"] = json!([1, 2, 3]);
     assert_eq!(
@@ -1164,6 +1167,7 @@ fn numeric_string_and_collection_constraints() {
             pair("step", "multiple_of"),
             pair("half", "multiple_of"),
             pair("mail", "invalid_email"),
+            pair("site", "url_parsing"),
             pair("slug", "pattern_mismatch"),
             pair("list", "too_long"),
         ]

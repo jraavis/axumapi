@@ -95,6 +95,8 @@ pub enum Constraint<'a> {
     Pattern(Option<&'a Regex>),
     /// Email format.
     Email,
+    /// Absolute URL, as accepted by [`crate::types::Url`].
+    Url,
     /// `> n`.
     Gt(&'a Number),
     /// `>= n`.
@@ -149,6 +151,7 @@ pub fn check(value: &Value, constraint: Constraint<'_>, ctx: &mut ValidationCont
             "the field pattern is not a valid regex",
         )),
         (Constraint::Email, Value::String(s)) => rules::email(s),
+        (Constraint::Url, Value::String(s)) => rules::parse_url(s).map(drop),
         (c, Value::Number(n)) => {
             let bound =
                 |limit: &Number, ok: &[std::cmp::Ordering], code: &'static str, op: &str| {
