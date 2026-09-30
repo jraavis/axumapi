@@ -82,6 +82,34 @@ async fn migrate_and_rollback_on_mysql() {
     reset(&db).await;
 }
 
+/// The migration session lock must be released *and* its connection never
+/// returned to the pool while locked: a second migrate on the same pool has
+/// to succeed immediately instead of hanging on `GET_LOCK`.
+#[tokio::test]
+#[ignore = "needs a MySQL server: set MYSQL_URL"]
+async fn second_migrate_after_first_succeeds() {
+    let Some(url) = mysql_url() else {
+        eprintln!("MYSQL_URL not set; skipping");
+        return;
+    };
+    let db = Db::new(MySqlBackend::connect(&url).await.unwrap());
+    reset(&db).await;
+
+    let dir = temp_dir();
+    let models: &[&'static siderite_orm::ModelMeta] = &[author_meta()];
+    make_migrations(models, &dir, None, false).unwrap().unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let migrator = Migrator::new(&db, &graph);
+
+    let first = migrator.migrate(None, false).await.unwrap();
+    assert_eq!(first.applied.len(), 1);
+    let second = migrator.migrate(None, false).await.unwrap();
+    assert!(second.applied.is_empty());
+    assert_eq!(second.planned, second.applied);
+    reset(&db).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn field(name: &str, ty: SqlType) -> FieldState {
     FieldState::new(name, name, ty)
 }

@@ -272,6 +272,10 @@ impl Transaction for MySqlTransaction {
 }
 
 /// Pooled connection held for a migration lock (no SQL transaction).
+///
+/// Like the Postgres held connection, commit and rollback close the
+/// connection instead of returning it to the pool so an unreleased
+/// `GET_LOCK` is never handed to another caller.
 struct MySqlHeld {
     slot: ConnSlot<sqlx::MySql>,
     tables: Arc<TableCache>,
@@ -320,12 +324,16 @@ impl Executor for MySqlHeld {
 #[async_trait]
 impl Transaction for MySqlHeld {
     async fn commit(&self) -> Result<(), OrmError> {
-        drop(self.slot.take().await?);
+        let mut conn = self.slot.take().await?;
+        conn.close_on_drop();
+        drop(conn);
         Ok(())
     }
 
     async fn rollback(&self) -> Result<(), OrmError> {
-        drop(self.slot.take().await?);
+        let mut conn = self.slot.take().await?;
+        conn.close_on_drop();
+        drop(conn);
         Ok(())
     }
 }

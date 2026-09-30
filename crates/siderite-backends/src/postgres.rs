@@ -183,6 +183,11 @@ impl Transaction for PgTransaction {
 }
 
 /// Pooled connection held for a migration lock (no SQL transaction).
+///
+/// Commit and rollback close the connection instead of returning it to the
+/// pool: a session lock (`pg_advisory_lock`) that was not released must never
+/// be handed to another caller. Releasing the lock and then closing costs one
+/// reconnect per migrate, which is negligible for a deploy-time operation.
 struct PgHeld(ConnSlot<sqlx::Postgres>);
 
 #[async_trait]
@@ -218,12 +223,16 @@ impl Executor for PgHeld {
 #[async_trait]
 impl Transaction for PgHeld {
     async fn commit(&self) -> Result<(), OrmError> {
-        drop(self.0.take().await?);
+        let mut conn = self.0.take().await?;
+        conn.close_on_drop();
+        drop(conn);
         Ok(())
     }
 
     async fn rollback(&self) -> Result<(), OrmError> {
-        drop(self.0.take().await?);
+        let mut conn = self.0.take().await?;
+        conn.close_on_drop();
+        drop(conn);
         Ok(())
     }
 }
