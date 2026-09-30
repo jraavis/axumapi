@@ -522,7 +522,11 @@ fn quote_star(kind: BackendKind, ident: &str) -> String {
 /// PostgreSQL `pg_advisory_lock` key (`SIDE` in ASCII).
 const PG_MIGRATE_LOCK: i64 = 0x5349_4445;
 const MYSQL_LOCK_NAME: &str = "siderite_migrate";
-const MYSQL_LOCK_TIMEOUT_SECS: i64 = 30;
+/// MySQL `GET_LOCK` timeout in seconds. Negative waits indefinitely, matching
+/// `pg_advisory_lock`, so a slow migration never makes other replicas fail
+/// with "timed out" and crash-loop. The lock is session-held and released on
+/// disconnect, so an indefinite wait cannot wedge forever on a dead holder.
+const MYSQL_LOCK_TIMEOUT_SECS: i64 = -1;
 
 async fn acquire_migrate_lock(db: &Db) -> Result<(), MigrationError> {
     match db.capabilities().kind {
