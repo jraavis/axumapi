@@ -63,8 +63,8 @@ Pretty-printed JSON, one file per migration, named `{id}.json`:
 | `AddField` | `RemoveField` | |
 | `RemoveField` | `AddField` from the before-state | |
 | `AlterField` | `AlterField` with the old snapshot | |
-| `RenameField` | swapped names | **Only when hinted** (`RenameHints::rename_field`). An unhinted same-shape remove+add is refused. |
-| `RenameModel` | swapped names | **Only when hinted** (`RenameHints::rename_model`). An unhinted same-shape delete+create is refused. The table is renamed when the new model's table name differs. |
+| `RenameField` | swapped names | **Only when hinted** (`RenameHints::rename_field`). An unhinted same-shape remove+add is refused; `RenameHints::allow_drop_field` approves an intentional drop. |
+| `RenameModel` | swapped names | **Only when hinted** (`RenameHints::rename_model`). An unhinted same-shape delete+create is refused; `RenameHints::allow_drop_model` approves an intentional drop. The table is renamed when the new model's table name differs. |
 | `CreateIndex` / `DeleteIndex` | each other | `DeleteIndex` recreates from the before-state. |
 | `AddConstraint` / `DeleteConstraint` | each other | |
 | `RunSQL` | `RunSQL` of `reverse_sql` | **Irreversible** if `reverse_sql` is omitted. |

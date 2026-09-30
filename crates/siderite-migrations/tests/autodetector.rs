@@ -237,3 +237,59 @@ fn rename_model_hint_emits_rename_model() {
         Operation::DeleteModel { .. } | Operation::CreateModel { .. }
     )));
 }
+
+#[test]
+fn allow_drop_model_passes_intentional_drop() {
+    let from = ProjectState::from_metas(&[author_meta()]);
+    let mut to = from.clone();
+    let mut writer = to.models.remove("Author").unwrap();
+    writer.name = "Writer".into();
+    writer.table = "writers".into();
+    to.models.insert("Writer".into(), writer);
+    // Still refused without the approval.
+    let err = diff_with(&from, &to, &RenameHints::new()).unwrap_err();
+    assert!(err.to_string().contains("allow_drop_model"), "{err:?}");
+    let hints = RenameHints::new().allow_drop_model("Author");
+    let ops = diff_with(&from, &to, &hints).unwrap();
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, Operation::DeleteModel { name } if name == "Author")),
+        "{ops:?}"
+    );
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, Operation::CreateModel { model } if model.name == "Writer")),
+        "{ops:?}"
+    );
+}
+
+#[test]
+fn allow_drop_field_passes_intentional_drop() {
+    let from = ProjectState::from_metas(&[author_meta()]);
+    let mut to = from.clone();
+    let field = to
+        .model_mut("Author")
+        .unwrap()
+        .fields
+        .iter_mut()
+        .find(|f| f.name == "name")
+        .unwrap();
+    field.name = "nickname".into();
+    field.column = "nickname".into();
+    let err = diff_with(&from, &to, &RenameHints::new()).unwrap_err();
+    assert!(err.to_string().contains("allow_drop_field"), "{err:?}");
+    let hints = RenameHints::new().allow_drop_field("Author", "name");
+    let ops = diff_with(&from, &to, &hints).unwrap();
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, Operation::RemoveField { model, name } if model == "Author" && name == "name")),
+        "{ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| matches!(
+            op,
+            Operation::AddField { model, field } if model == "Author" && field.name == "nickname"
+        )),
+        "{ops:?}"
+    );
+}

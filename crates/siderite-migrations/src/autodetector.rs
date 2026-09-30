@@ -11,15 +11,26 @@ use crate::operation::Operation;
 use crate::state::{FieldState, ModelState, ProjectState, auto_index_name};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// Explicit rename pairs. The autodetector never infers renames from
-/// similarity; a missing hint becomes remove+add (and is refused when the
-/// two sides have the same shape).
+/// Explicit rename pairs, plus explicit drop approvals.
+///
+/// The autodetector never infers renames from similarity; a missing hint
+/// becomes remove+add (and is refused when the two sides have the same
+/// shape). When the drop is intentional, approve it with
+/// [`allow_drop_model`](Self::allow_drop_model) /
+/// [`allow_drop_field`](Self::allow_drop_field) instead of splitting the
+/// change across two migrations.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RenameHints {
     /// `(model_name, old_field_name) → new_field_name`.
     pub fields: BTreeMap<(String, String), String>,
     /// `old_model_name → new_model_name`.
     pub models: BTreeMap<String, String>,
+    /// `from`-side model names that may be deleted even when a same-shaped
+    /// model is created.
+    pub allow_model_drops: BTreeSet<String>,
+    /// `(model_name, field_name)` pairs on the `from` side that may be
+    /// removed even when a same-shaped field is added.
+    pub allow_field_drops: BTreeSet<(String, String)>,
 }
 
 impl RenameHints {
@@ -49,6 +60,24 @@ impl RenameHints {
         new_name: impl Into<String>,
     ) -> Self {
         self.models.insert(old_name.into(), new_name.into());
+        self
+    }
+
+    /// Approve deleting model `name` even when a same-shaped model is
+    /// created in the same diff. Use this when the drop is intentional and
+    /// the new model is genuinely unrelated (the autodetector cannot tell
+    /// that apart from a rename, so it refuses without an explicit answer).
+    #[must_use]
+    pub fn allow_drop_model(mut self, name: impl Into<String>) -> Self {
+        self.allow_model_drops.insert(name.into());
+        self
+    }
+
+    /// Approve removing field `field` of `model` even when a same-shaped
+    /// field is added in the same diff.
+    #[must_use]
+    pub fn allow_drop_field(mut self, model: impl Into<String>, field: impl Into<String>) -> Self {
+        self.allow_field_drops.insert((model.into(), field.into()));
         self
     }
 }
@@ -102,7 +131,7 @@ pub fn diff_with(
         .collect();
     let common: Vec<&str> = from_names.intersection(&to_names).copied().collect();
 
-    refuse_unhinted_model_renames(from, to, &deleted, &created)?;
+    refuse_unhinted_model_renames(from, to, &deleted, &created, hints)?;
 
     let pairs: Vec<(&str, &str)> = common
         .iter()
@@ -115,7 +144,7 @@ pub fn diff_with(
         let old = &from.models[*old_name];
         let new = &to.models[*new_name];
         let renamed = hints_for(hints, old_name);
-        refuse_unhinted_field_renames(old, new, &renamed)?;
+        refuse_unhinted_field_renames(old, new, &renamed, hints)?;
         push_deletes(&mut ops, old, new, &renamed);
     }
     for name in reverse_topo(&deleted, from) {
@@ -201,8 +230,12 @@ fn refuse_unhinted_model_renames(
     to: &ProjectState,
     deleted: &[&str],
     created: &[&str],
+    hints: &RenameHints,
 ) -> Result<(), MigrationError> {
     for old_name in deleted {
+        if hints.allow_model_drops.contains(*old_name) {
+            continue;
+        }
         let old = &from.models[*old_name];
         for new_name in created {
             let new = &to.models[*new_name];
@@ -210,6 +243,7 @@ fn refuse_unhinted_model_renames(
                 return Err(MigrationError::state(format!(
                     "model `{old_name}` was deleted and `{new_name}` was created with the same columns; \
                      pass RenameHints::rename_model(\"{old_name}\", \"{new_name}\") to preserve data, \
+                     RenameHints::allow_drop_model(\"{old_name}\") when the drop is intentional, \
                      or split the drop and the create into two migrations"
                 )));
             }
@@ -222,6 +256,7 @@ fn refuse_unhinted_field_renames(
     old: &ModelState,
     new: &ModelState,
     renamed: &BTreeMap<String, String>,
+    hints: &RenameHints,
 ) -> Result<(), MigrationError> {
     let renamed_from: BTreeSet<&str> = renamed.keys().map(String::as_str).collect();
     let renamed_to: BTreeSet<&str> = renamed.values().map(String::as_str).collect();
@@ -236,13 +271,28 @@ fn refuse_unhinted_field_renames(
         .filter(|f| !renamed_to.contains(f.name.as_str()) && old.field(&f.name).is_none())
         .collect();
     for lost in &removed {
+        if hints
+            .allow_field_drops
+            .contains(&(old.name.clone(), lost.name.clone()))
+        {
+            continue;
+        }
         for gained in &added {
             if same_column_shape(lost, gained) {
                 return Err(MigrationError::state(format!(
                     "field `{}.{}` was removed and `{}.{}` was added with the same type; \
                      pass RenameHints::rename_field(\"{}\", \"{}\", \"{}\") to preserve data, \
+                     RenameHints::allow_drop_field(\"{}\", \"{}\") when the drop is intentional, \
                      or split the drop and the add into two migrations",
-                    old.name, lost.name, new.name, gained.name, old.name, lost.name, gained.name
+                    old.name,
+                    lost.name,
+                    new.name,
+                    gained.name,
+                    old.name,
+                    lost.name,
+                    gained.name,
+                    old.name,
+                    lost.name
                 )));
             }
         }
@@ -250,6 +300,10 @@ fn refuse_unhinted_field_renames(
     Ok(())
 }
 
+/// Conservative on purpose: an id-only model matches every other id-only
+/// model, but weakening the predicate would silently drop data on a genuine
+/// rename. Intentional drops go through
+/// [`RenameHints::allow_drop_model`].
 fn same_model_shape(a: &ModelState, b: &ModelState) -> bool {
     if a.fields.is_empty() {
         return false;
