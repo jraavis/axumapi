@@ -306,14 +306,18 @@ async fn get_or_create_recovers_from_a_lost_race() {
         .await
         .unwrap();
     // The predicate misses the existing row, so the insert hits the unique key;
-    // the follow-up lookup also misses, and the constraint error surfaces.
+    // the follow-up lookup also misses, and the constraint error surfaces
+    // carrying the lookup's error as context.
     let outcome = Tag::objects(&db)
         .get_or_create(Tag::label.eq("other"), || Tag::new("t", "other"))
         .await;
-    assert!(matches!(
-        outcome,
-        Err(OrmError::Backend(axumapi_orm::BackendError::Constraint(_)))
-    ));
+    let Err(OrmError::Backend(axumapi_orm::BackendError::Constraint(message))) = outcome else {
+        panic!("expected a constraint error, got {outcome:?}");
+    };
+    assert!(
+        message.contains("re-fetch after the conflict failed"),
+        "{message}"
+    );
 }
 
 #[tokio::test]

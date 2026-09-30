@@ -103,7 +103,9 @@ impl<M: Model> QuerySet<M> {
     /// and inserted; the flag says whether it was created.
     ///
     /// If a concurrent writer inserts the row first (unique violation), the
-    /// existing row is returned instead.
+    /// existing row is returned instead. When that re-fetch fails too, the
+    /// [`BackendError::Constraint`] is returned with the re-fetch error
+    /// appended to its message.
     ///
     /// # Errors
     /// [`QueryError::MultipleObjectsReturned`], or capability / backend errors.
@@ -130,11 +132,10 @@ impl<M: Model> QuerySet<M> {
             .await;
         match created {
             Ok(object) => Ok((object, true)),
-            Err(OrmError::Backend(BackendError::Constraint(message))) => lookup
-                .one()
-                .await
-                .map(|found| (found, false))
-                .map_err(|_| BackendError::Constraint(message).into()),
+            Err(OrmError::Backend(BackendError::Constraint(message))) => match lookup.one().await {
+                Ok(found) => Ok((found, false)),
+                Err(refetch) => Err(conflict_with_context(message, &refetch)),
+            },
             Err(other) => Err(other),
         }
     }
@@ -253,6 +254,15 @@ impl<M: Model> QuerySet<M> {
             })
             .await
     }
+}
+
+/// The constraint error of a failed insert, with the error of the follow-up
+/// lookup appended so neither is lost.
+fn conflict_with_context(message: String, refetch: &OrmError) -> OrmError {
+    BackendError::Constraint(format!(
+        "{message} (re-fetch after the conflict failed: {refetch})"
+    ))
+    .into()
 }
 
 /// A run of consecutive objects inserted with one statement.
