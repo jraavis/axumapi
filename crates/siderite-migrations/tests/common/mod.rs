@@ -26,6 +26,11 @@ pub fn unmanaged_meta() -> &'static ModelMeta {
     &UNMANAGED_META
 }
 
+/// Self-referencing tree: `parent_id` points back at the model's own table.
+pub fn node_meta() -> &'static ModelMeta {
+    &NODE_META
+}
+
 static AUTHOR_META: ModelMeta = ModelMeta {
     name: "Author",
     table: "authors",
@@ -147,6 +152,34 @@ static UNMANAGED_META: ModelMeta = ModelMeta {
     indexes: &[],
     constraints: &[],
     managed: false,
+};
+
+static NODE_META: ModelMeta = ModelMeta {
+    name: "Node",
+    table: "nodes",
+    fields: &[
+        FieldMeta {
+            primary_key: true,
+            auto: true,
+            ..FieldMeta::new("id", "id", <i64 as DbType>::SQL_TYPE)
+        },
+        FieldMeta {
+            index: true,
+            nullable: true,
+            relation: Some(RelationMeta {
+                kind: RelationKind::ForeignKey,
+                target: node_meta,
+                on_delete: OnDelete::SetNull,
+                related_name: Some("children"),
+            }),
+            ..FieldMeta::new("parent", "parent_id", SqlType::BigInt)
+        },
+    ],
+    many_to_many: &[],
+    ordering: &[],
+    indexes: &[],
+    constraints: &[],
+    managed: true,
 };
 
 pub fn temp_dir() -> std::path::PathBuf {

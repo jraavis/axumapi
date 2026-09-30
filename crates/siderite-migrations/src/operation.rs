@@ -155,13 +155,12 @@ impl Operation {
                 model.name = new_name.clone();
                 model.table = table.clone();
                 state.models.insert(new_name.clone(), model);
-                // Foreign keys point at tables: retarget every other model's
-                // FKs that referenced the old table name.
+                // Foreign keys point at tables: retarget every model's FKs
+                // that referenced the old table name, including this one's
+                // (a self-referencing `parent_id` keeps pointing at the old
+                // table otherwise).
                 if old_table != *table {
-                    for (name, other) in state.models.iter_mut() {
-                        if name == new_name {
-                            continue;
-                        }
+                    for other in state.models.values_mut() {
                         for field in &mut other.fields {
                             if let Some(fk) = field.fk.as_mut()
                                 && fk.target_table == old_table

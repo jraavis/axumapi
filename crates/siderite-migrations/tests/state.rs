@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{author_meta, book_meta, post_meta, tag_meta, unmanaged_meta};
+use common::{author_meta, book_meta, node_meta, post_meta, tag_meta, unmanaged_meta};
 use siderite_migrations::{DbDefault, OnDelete, ProjectState, SqlType};
 
 #[test]
@@ -87,5 +87,41 @@ fn rename_model_updates_referencing_fks() {
         .as_ref()
         .unwrap();
     assert_eq!(fk.target_table, "writers");
+    assert_eq!(fk.target_column, "id");
+}
+
+#[test]
+fn rename_model_updates_its_own_self_referencing_fk() {
+    let mut state = ProjectState::from_metas(&[node_meta()]);
+    assert_eq!(
+        state
+            .model("Node")
+            .unwrap()
+            .field("parent")
+            .unwrap()
+            .fk
+            .as_ref()
+            .unwrap()
+            .target_table,
+        "nodes"
+    );
+
+    siderite_migrations::Operation::RenameModel {
+        old_name: "Node".into(),
+        new_name: "Category".into(),
+        table: "categories".into(),
+    }
+    .apply_to_state(&mut state)
+    .unwrap();
+
+    let fk = state
+        .model("Category")
+        .unwrap()
+        .field("parent")
+        .unwrap()
+        .fk
+        .as_ref()
+        .unwrap();
+    assert_eq!(fk.target_table, "categories");
     assert_eq!(fk.target_column, "id");
 }
