@@ -654,16 +654,27 @@ fn create_history_sql(kind: BackendKind) -> String {
 }
 
 /// Progress of a non-transactional migration, so a re-run resumes after the
-/// last completed operation instead of replaying committed statements.
+/// last completed *statement* instead of replaying committed statements.
 ///
 /// MySQL commits every DDL statement implicitly, so a failed migration
-/// leaves earlier operations applied and no history row. The next `migrate`
-/// reads this row and skips the operations it records. Directions are
-/// tracked separately because forward and reverse walk different operation
-/// lists.
+/// leaves earlier statements applied and no history row. The next `migrate`
+/// reads this row, skips the operations it records and, inside the operation
+/// it stopped in, skips the statements already committed — one operation can
+/// render several (a `CreateModel` with indexes, an `AlterField` changing
+/// type *and* an index), and replaying those fails with "already exists".
+/// Directions are tracked separately because forward and reverse walk
+/// different operation lists.
 const PROGRESS_TABLE: &str = "siderite_migration_progress";
 const PROGRESS_APPLY: &str = "apply";
 const PROGRESS_UNAPPLY: &str = "unapply";
+
+/// How far a re-run has to skip: `ops` operations are complete and `stmts`
+/// statements of operation `ops` are already committed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Progress {
+    ops: usize,
+    stmts: usize,
+}
 
 fn progress_ddl(kind: BackendKind) -> String {
     // MySQL cannot key a TEXT column without a prefix length.
@@ -678,12 +689,44 @@ fn progress_ddl(kind: BackendKind) -> String {
         "TEXT"
     };
     format!(
-        "CREATE TABLE IF NOT EXISTS {} ({} {id_type} PRIMARY KEY, {} INTEGER NOT NULL, {} {dir_type} NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS {} ({} {id_type} PRIMARY KEY, {} INTEGER NOT NULL, {} INTEGER NOT NULL DEFAULT 0, {} {dir_type} NOT NULL)",
         quote_star(kind, PROGRESS_TABLE),
         quote_star(kind, "migration_id"),
         quote_star(kind, "op_index"),
+        quote_star(kind, "stmt_index"),
         quote_star(kind, "direction"),
     )
+}
+
+/// MySQL has no `ADD COLUMN IF NOT EXISTS`, so a progress table written by an
+/// older build (no `stmt_index`) is upgraded in place. The row it holds means
+/// a half-applied migration; losing it would replay committed statements.
+async fn ensure_progress_columns(db: &Db, kind: BackendKind) -> Result<(), MigrationError> {
+    // Keyed on the connection, not the dialect: unit tests drive the MySQL
+    // code path over SQLite, which has no `information_schema`.
+    if kind != BackendKind::MySql || db.capabilities().kind != BackendKind::MySql {
+        return Ok(());
+    }
+    let rows = db
+        .raw_sql(
+            "SELECT 1 FROM information_schema.columns \
+             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+            vec![
+                Value::Text(PROGRESS_TABLE.to_owned()),
+                Value::Text("stmt_index".to_owned()),
+            ],
+        )
+        .await?;
+    if !rows.rows.is_empty() {
+        return Ok(());
+    }
+    db.execute_script(&format!(
+        "ALTER TABLE {} ADD COLUMN {} INTEGER NOT NULL DEFAULT 0",
+        quote_star(kind, PROGRESS_TABLE),
+        quote_star(kind, "stmt_index"),
+    ))
+    .await?;
+    Ok(())
 }
 
 /// Drop a progress row left by the other direction: a half-applied forward
@@ -695,6 +738,7 @@ async fn reset_progress_direction(
     direction: &str,
 ) -> Result<(), MigrationError> {
     db.execute_script(&progress_ddl(kind)).await?;
+    ensure_progress_columns(db, kind).await?;
     db.raw_execute(
         &format!(
             "DELETE FROM {} WHERE {} = {} AND {} <> {}",
@@ -713,18 +757,19 @@ async fn reset_progress_direction(
     Ok(())
 }
 
-/// Completed-operation count for `id`/`direction` (0 when no row).
+/// Completed-statement progress for `id`/`direction` (zero when no row).
 async fn load_progress(
     db: &Db,
     kind: BackendKind,
     id: &str,
     direction: &str,
-) -> Result<usize, MigrationError> {
+) -> Result<Progress, MigrationError> {
     let rows = db
         .raw_sql(
             &format!(
-                "SELECT {} FROM {} WHERE {} = {} AND {} = {}",
+                "SELECT {}, {} FROM {} WHERE {} = {} AND {} = {}",
                 quote_star(kind, "op_index"),
+                quote_star(kind, "stmt_index"),
                 quote_star(kind, PROGRESS_TABLE),
                 quote_star(kind, "migration_id"),
                 placeholder(kind, 1),
@@ -740,37 +785,49 @@ async fn load_progress(
     Ok(rows
         .rows
         .first()
-        .and_then(|row| row.get("op_index"))
-        .and_then(|value| match value {
-            Value::Int(n) => Some((*n).max(0) as usize),
-            _ => None,
+        .map(|row| Progress {
+            ops: int_at(row, "op_index"),
+            stmts: int_at(row, "stmt_index"),
         })
-        .unwrap_or(0))
+        .unwrap_or_default())
 }
 
+fn int_at(row: &siderite_orm::Row, key: &str) -> usize {
+    match row.get(key) {
+        Some(Value::Int(n)) => (*n).max(0) as usize,
+        _ => 0,
+    }
+}
+
+/// Record `progress` for `id`/`direction`. Called after every statement, so a
+/// failure inside a multi-statement operation resumes at the next statement
+/// rather than replaying the ones MySQL already committed.
 async fn save_progress(
     db: &Db,
     kind: BackendKind,
     id: &str,
     direction: &str,
-    op_index: usize,
+    progress: Progress,
 ) -> Result<(), MigrationError> {
     // The migrator holds the backend lock, so no concurrent writer can race
     // the UPDATE-then-INSERT.
     let updated = db
         .raw_execute(
             &format!(
-                "UPDATE {} SET {} = {} WHERE {} = {} AND {} = {}",
+                "UPDATE {} SET {} = {}, {} = {} WHERE {} = {} AND {} = {}",
                 quote_star(kind, PROGRESS_TABLE),
                 quote_star(kind, "op_index"),
                 placeholder(kind, 1),
-                quote_star(kind, "migration_id"),
+                quote_star(kind, "stmt_index"),
                 placeholder(kind, 2),
-                quote_star(kind, "direction"),
+                quote_star(kind, "migration_id"),
                 placeholder(kind, 3),
+                quote_star(kind, "direction"),
+                placeholder(kind, 4),
             ),
             vec![
-                Value::Int(op_index as i64),
+                Value::Int(progress.ops as i64),
+                Value::Int(progress.stmts as i64),
                 Value::Text(id.to_owned()),
                 Value::Text(direction.to_owned()),
             ],
@@ -779,18 +836,21 @@ async fn save_progress(
     if updated == 0 {
         db.raw_execute(
             &format!(
-                "INSERT INTO {} ({}, {}, {}) VALUES ({}, {}, {})",
+                "INSERT INTO {} ({}, {}, {}, {}) VALUES ({}, {}, {}, {})",
                 quote_star(kind, PROGRESS_TABLE),
                 quote_star(kind, "migration_id"),
                 quote_star(kind, "op_index"),
+                quote_star(kind, "stmt_index"),
                 quote_star(kind, "direction"),
                 placeholder(kind, 1),
                 placeholder(kind, 2),
                 placeholder(kind, 3),
+                placeholder(kind, 4),
             ),
             vec![
                 Value::Text(id.to_owned()),
-                Value::Int(op_index as i64),
+                Value::Int(progress.ops as i64),
+                Value::Int(progress.stmts as i64),
                 Value::Text(direction.to_owned()),
             ],
         )
@@ -832,33 +892,45 @@ async fn apply_ops_in_order(
 ) -> Result<(), MigrationError> {
     let total_sql = schema_editor::statements(kind, state, &migration.operations)?.len();
     // MySQL commits every DDL statement implicitly, so a failure leaves
-    // earlier operations applied. Track per-operation progress and resume
-    // after it on re-run instead of replaying committed statements.
+    // earlier statements applied. Track progress per statement and resume
+    // after it on re-run instead of replaying committed statements: an
+    // operation can render several (a `CreateModel` with indexes, an
+    // `AlterField` changing type *and* an index), and replaying the first
+    // ones fails with "already exists".
     let resumable = kind == BackendKind::MySql;
-    let mut start_op = 0;
+    let mut resume = Progress::default();
     if resumable {
         reset_progress_direction(db, kind, &migration.id, PROGRESS_APPLY).await?;
-        start_op = load_progress(db, kind, &migration.id, PROGRESS_APPLY)
-            .await?
-            .min(migration.operations.len());
+        resume = load_progress(db, kind, &migration.id, PROGRESS_APPLY).await?;
     }
     let mut current = state.clone();
     let mut sql_index = 0usize;
     let mut prior_ddl = false;
+    // Something already committed by this or an earlier attempt, so a failure
+    // leaves partial state: earlier DDL, or earlier DML from a `RunRust` that
+    // cannot be rolled back.
+    let mut prior_committed = resume.ops > 0 || resume.stmts > 0;
     for (op_no, op) in migration.operations.iter().enumerate() {
-        if op_no < start_op {
+        if op_no < resume.ops {
             // Applied by an earlier attempt: advance state without executing.
             if !matches!(op, Operation::RunRust { .. }) {
                 let stmts = schema_editor::render(kind, op, &current)?;
                 prior_ddl |= stmts.iter().any(|sql| is_implicit_commit(sql));
                 sql_index += stmts.len();
             }
+            prior_committed = true;
             op.apply_to_state(&mut current)?;
             continue;
         }
+        // Statements of this operation an earlier attempt already committed.
+        let resume_stmt = if resumable && op_no == resume.ops {
+            resume.stmts
+        } else {
+            0
+        };
         if let Operation::RunRust { name, .. } = op {
             if let Err(err) = registry.run(name, db).await {
-                if resumable && (sql_index > 0 || start_op > 0) {
+                if resumable && prior_committed {
                     return Err(MigrationError::MysqlOpPartial {
                         id: migration.id.clone(),
                         index: op_no + 1,
@@ -869,10 +941,17 @@ async fn apply_ops_in_order(
                 }
                 return Err(err);
             }
+            prior_committed = true;
         } else {
             let stmts = schema_editor::render(kind, op, &current)?;
-            for sql in stmts {
+            for (stmt_no, sql) in stmts.into_iter().enumerate() {
                 sql_index += 1;
+                if stmt_no < resume_stmt {
+                    // Committed by an earlier attempt: count it, do not replay.
+                    prior_ddl |= is_implicit_commit(&sql);
+                    prior_committed = true;
+                    continue;
+                }
                 execute_one_sql(
                     db,
                     kind,
@@ -884,11 +963,35 @@ async fn apply_ops_in_order(
                 )
                 .await?;
                 prior_ddl |= is_implicit_commit(&sql);
+                prior_committed = true;
+                if resumable {
+                    save_progress(
+                        db,
+                        kind,
+                        &migration.id,
+                        PROGRESS_APPLY,
+                        Progress {
+                            ops: op_no,
+                            stmts: stmt_no + 1,
+                        },
+                    )
+                    .await?;
+                }
             }
             op.apply_to_state(&mut current)?;
         }
         if resumable {
-            save_progress(db, kind, &migration.id, PROGRESS_APPLY, op_no + 1).await?;
+            save_progress(
+                db,
+                kind,
+                &migration.id,
+                PROGRESS_APPLY,
+                Progress {
+                    ops: op_no + 1,
+                    stmts: 0,
+                },
+            )
+            .await?;
         }
     }
     record_history(db, kind, migration).await?;
@@ -937,27 +1040,35 @@ async fn unapply_ops_in_order(
     };
     let mut sql_index = 0usize;
     let resumable = kind == BackendKind::MySql;
-    let mut start_op = 0;
+    let mut resume = Progress::default();
     if resumable {
         reset_progress_direction(db, kind, id, PROGRESS_UNAPPLY).await?;
-        start_op = load_progress(db, kind, id, PROGRESS_UNAPPLY)
-            .await?
-            .min(rev_ops.len());
+        resume = load_progress(db, kind, id, PROGRESS_UNAPPLY).await?;
     }
     let mut prior_ddl = false;
+    // See `apply_ops_in_order`: earlier DDL or an earlier `RunRust` that
+    // committed data already left partial state behind.
+    let mut prior_committed = resume.ops > 0 || resume.stmts > 0;
     for (op_no, rev) in rev_ops.into_iter().enumerate() {
-        if op_no < start_op {
+        if op_no < resume.ops {
             if !matches!(rev, Operation::RunRust { .. }) {
                 let stmts = schema_editor::render(kind, &rev, &current)?;
                 prior_ddl |= stmts.iter().any(|sql| is_implicit_commit(sql));
                 sql_index += stmts.len();
             }
+            prior_committed = true;
             rev.apply_to_state(&mut current)?;
             continue;
         }
+        // Statements of this reverse operation an earlier attempt committed.
+        let resume_stmt = if resumable && op_no == resume.ops {
+            resume.stmts
+        } else {
+            0
+        };
         if let Operation::RunRust { name, .. } = &rev {
             if let Err(err) = registry.run(name, db).await {
-                if resumable && (sql_index > 0 || start_op > 0) {
+                if resumable && prior_committed {
                     return Err(MigrationError::MysqlOpPartial {
                         id: id.to_owned(),
                         index: op_no + 1,
@@ -968,17 +1079,47 @@ async fn unapply_ops_in_order(
                 }
                 return Err(err);
             }
+            prior_committed = true;
         } else {
             let stmts = schema_editor::render(kind, &rev, &current)?;
-            for sql in stmts {
+            for (stmt_no, sql) in stmts.into_iter().enumerate() {
                 sql_index += 1;
+                if stmt_no < resume_stmt {
+                    prior_ddl |= is_implicit_commit(&sql);
+                    prior_committed = true;
+                    continue;
+                }
                 execute_one_sql(db, kind, id, sql_index, total_sql, prior_ddl, &sql).await?;
                 prior_ddl |= is_implicit_commit(&sql);
+                prior_committed = true;
+                if resumable {
+                    save_progress(
+                        db,
+                        kind,
+                        id,
+                        PROGRESS_UNAPPLY,
+                        Progress {
+                            ops: op_no,
+                            stmts: stmt_no + 1,
+                        },
+                    )
+                    .await?;
+                }
             }
         }
         rev.apply_to_state(&mut current)?;
         if resumable {
-            save_progress(db, kind, id, PROGRESS_UNAPPLY, op_no + 1).await?;
+            save_progress(
+                db,
+                kind,
+                id,
+                PROGRESS_UNAPPLY,
+                Progress {
+                    ops: op_no + 1,
+                    stmts: 0,
+                },
+            )
+            .await?;
         }
     }
     delete_history(db, kind, id).await?;
@@ -1170,6 +1311,7 @@ fn reverse_sql(
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use crate::state::{FieldState, ModelState, SqlType};
     use siderite_backends::sqlite::SqliteBackend;
 
     async fn memory_db() -> Db {
@@ -1246,7 +1388,95 @@ mod tests {
         let progress = load_progress(&db, BackendKind::MySql, "0001_t", PROGRESS_APPLY)
             .await
             .unwrap();
-        assert_eq!(progress, 0);
+        assert_eq!(progress, Progress::default());
+    }
+
+    /// Progress is per *statement*, not per operation: one operation that
+    /// renders several statements must resume at the next statement, or the
+    /// re-run replays the ones MySQL already committed and fails with
+    /// "already exists".
+    #[tokio::test]
+    async fn mysql_resume_skips_committed_statements_of_one_operation() {
+        let db = memory_db().await;
+        db.execute_script(&create_history_sql(BackendKind::MySql))
+            .await
+            .unwrap();
+        // One `CreateModel` operation rendering two statements: the table and
+        // an auto index for `code`. `mm_code_idx` already exists on `clash`,
+        // so statement 2 fails on a live server (index names are global).
+        // MySQL-dialect SQL runs on SQLite here, so no `AUTO_INCREMENT`.
+        let pk = || FieldState {
+            primary_key: true,
+            ..FieldState::new("id", "id", SqlType::BigInt)
+        };
+        let model = ModelState {
+            name: "Multi".into(),
+            table: "mm".into(),
+            fields: vec![
+                pk(),
+                FieldState {
+                    index: true,
+                    ..FieldState::new("code", "code", SqlType::BigInt)
+                },
+            ],
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+        };
+        let migration = Migration::new(
+            "0004_multi",
+            Vec::new(),
+            vec![Operation::CreateModel { model }],
+            true,
+            Vec::new(),
+        )
+        .unwrap();
+        db.execute_script(
+            "CREATE TABLE clash (n INTEGER);\n\
+             CREATE INDEX mm_code_idx ON clash (n)",
+        )
+        .await
+        .unwrap();
+        let state = ProjectState::new();
+        let registry = crate::registry::MigrationRegistry::new();
+        let err = apply_ops_in_order(&db, BackendKind::MySql, &migration, &state, &registry)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                MigrationError::MysqlPartial {
+                    index: 2,
+                    total: 2,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let progress = load_progress(&db, BackendKind::MySql, "0004_multi", PROGRESS_APPLY)
+            .await
+            .unwrap();
+        assert_eq!(progress.ops, 0, "the operation is not finished");
+        assert_eq!(progress.stmts, 1, "its first statement is committed");
+
+        // The re-run must not replay `CREATE TABLE mm`: hand-fix statement 2
+        // only and leave the committed table in place.
+        db.raw_sql("SELECT id FROM mm", Vec::new()).await.unwrap();
+        db.execute_script("DROP INDEX mm_code_idx").await.unwrap();
+        apply_ops_in_order(&db, BackendKind::MySql, &migration, &state, &registry)
+            .await
+            .unwrap();
+        let index = db
+            .raw_sql(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'mm_code_idx'",
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(index.rows.len(), 1, "{index:?}");
+        let progress = load_progress(&db, BackendKind::MySql, "0004_multi", PROGRESS_APPLY)
+            .await
+            .unwrap();
+        assert_eq!(progress, Progress::default());
     }
 
     /// A `RunRust` failure after committed statements is a partial failure
@@ -1297,7 +1527,8 @@ mod tests {
         let progress = load_progress(&db, BackendKind::MySql, "0002_data", PROGRESS_APPLY)
             .await
             .unwrap();
-        assert_eq!(progress, 1);
+        assert_eq!(progress.ops, 1);
+        assert_eq!(progress.stmts, 0);
 
         // Nothing committed before a first-operation `RunRust`: plain error.
         let lonely = Migration::new(
@@ -1324,6 +1555,61 @@ mod tests {
             matches!(err, MigrationError::UnregisteredRust(_)),
             "{err:?}"
         );
+    }
+
+    /// An earlier `RunRust` that committed data is partial state even when no
+    /// DDL ran: a later `RunRust` failure must say so, not return a plain
+    /// error that suggests re-running from scratch.
+    #[tokio::test]
+    async fn mysql_rust_failure_after_committed_rust_is_partial() {
+        let db = memory_db().await;
+        let migration = Migration::new(
+            "0005_rust_then_boom",
+            Vec::new(),
+            vec![
+                Operation::RunRust {
+                    name: "seed".into(),
+                    backwards: None,
+                },
+                Operation::RunRust {
+                    name: "boom".into(),
+                    backwards: None,
+                },
+            ],
+            true,
+            Vec::new(),
+        )
+        .unwrap();
+        let state = ProjectState::new();
+        let mut registry = crate::registry::MigrationRegistry::new();
+        registry.register("seed", |db| {
+            Box::pin(async move {
+                db.execute_script("CREATE TABLE seeded (n INTEGER)").await?;
+                Ok::<(), MigrationError>(())
+            })
+        });
+        registry.register("boom", |_db| {
+            Box::pin(
+                async move { Err::<(), MigrationError>(MigrationError::usage("seed exploded")) },
+            )
+        });
+        let err = apply_ops_in_order(&db, BackendKind::MySql, &migration, &state, &registry)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                MigrationError::MysqlOpPartial {
+                    index: 2,
+                    total: 2,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        db.raw_sql("SELECT n FROM seeded", Vec::new())
+            .await
+            .unwrap();
     }
 
     #[test]

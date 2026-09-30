@@ -199,6 +199,115 @@ fn field(name: &str, ty: SqlType) -> FieldState {
     FieldState::new(name, name, ty)
 }
 
+/// Resume granularity is per statement, so one operation that renders several
+/// statements (`CreateModel` plus its indexes) does not replay the committed
+/// first statement on re-run.
+#[tokio::test]
+#[ignore = "needs a MySQL server: set MYSQL_URL"]
+async fn mysql_resume_continues_inside_one_operation() {
+    let Some(url) = mysql_url() else {
+        eprintln!("MYSQL_URL not set; skipping");
+        return;
+    };
+    let db = Db::new(MySqlBackend::connect(&url).await.unwrap());
+    let dir = temp_dir();
+    // Idempotent setup: a previous run may have left tables or rows behind.
+    for table in ["rs_multi", "rs_clash"] {
+        db.execute_script(&format!("DROP TABLE IF EXISTS `{table}`"))
+            .await
+            .unwrap();
+    }
+    db.raw_execute(
+        "DELETE FROM `siderite_migrations` WHERE `id` = ?",
+        vec![Value::Text("0001_rs_multi".into())],
+    )
+    .await
+    .unwrap_or(0);
+    db.execute_script("DROP TABLE IF EXISTS `siderite_migration_progress`")
+        .await
+        .unwrap();
+
+    let model = ModelState {
+        name: "RsMulti".into(),
+        table: "rs_multi".into(),
+        fields: vec![
+            FieldState {
+                primary_key: true,
+                auto: true,
+                ..field("id", SqlType::BigInt)
+            },
+            FieldState {
+                index: true,
+                ..field("code", SqlType::Integer)
+            },
+        ],
+        // The auto index for `code` would be `rs_multi_code_idx`; take that
+        // name on another table so `CREATE INDEX` fails after `CREATE TABLE`
+        // has already committed.
+        indexes: vec![IndexState {
+            name: "rs_multi_clash_idx".into(),
+            columns: vec!["code".into()],
+            unique: false,
+        }],
+        constraints: Vec::new(),
+    };
+    let migration = Migration::new(
+        "0001_rs_multi",
+        Vec::new(),
+        vec![Operation::CreateModel { model }],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &migration).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let migrator = Migrator::new(&db, &graph);
+
+    db.execute_script(
+        "CREATE TABLE `rs_clash` (`n` INTEGER);\n\
+         CREATE INDEX `rs_multi_clash_idx` ON `rs_clash` (`n`)",
+    )
+    .await
+    .unwrap();
+
+    // Statement 2 fails: the table exists, the index name is taken.
+    let err = migrator.migrate(None, false).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            MigrationError::MysqlPartial {
+                index: 2,
+                total: 2,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    db.raw_sql("SELECT `id` FROM `rs_multi`", Vec::new())
+        .await
+        .unwrap();
+
+    // Repair only the failing statement. The re-run must skip `CREATE TABLE`
+    // (already committed) and finish the index.
+    db.execute_script("DROP TABLE `rs_clash`").await.unwrap();
+    let report = migrator.migrate(None, false).await.unwrap();
+    assert_eq!(report.applied, vec![migration.id.clone()]);
+    let index = db
+        .raw_sql(
+            "SELECT 1 FROM information_schema.statistics \
+             WHERE table_schema = DATABASE() AND index_name = 'rs_multi_clash_idx'",
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(index.rows.len(), 1, "{index:?}");
+
+    db.execute_script("DROP TABLE IF EXISTS `rs_multi`")
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Every operation kind, rendered by the editor and executed on the server.
 #[tokio::test]
 #[ignore = "needs a MySQL server: set MYSQL_URL"]
