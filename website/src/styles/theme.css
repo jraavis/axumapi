@@ -61,12 +61,19 @@
 }
 
 .site-title img {
-	display: block;
 	width: 1.35em;
 	height: 1.35em;
 	flex: none;
 	border-radius: 0.28em;
 	object-fit: contain;
+}
+
+:root[data-theme='light'] .site-title img.light\:sl-hidden {
+	display: none;
+}
+
+:root[data-theme='dark'] .site-title img.dark\:sl-hidden {
+	display: none;
 }
 
 .site-title span {
