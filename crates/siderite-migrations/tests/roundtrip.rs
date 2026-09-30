@@ -11,6 +11,7 @@ use siderite_migrations::executor::Migrator;
 use siderite_migrations::loader::{self, MigrationGraph};
 use siderite_migrations::migration::Migration;
 use siderite_migrations::operation::Operation;
+use siderite_migrations::registry::MigrationRegistry;
 use siderite_migrations::state::{FieldState, ProjectState};
 use siderite_migrations::{MigrationError, SqlType, make_migrations};
 use siderite_orm::{Db, Value};
@@ -390,5 +391,52 @@ async fn concurrent_sqlite_migrate_applies_once() {
     db.raw_sql("SELECT COUNT(*) AS n FROM authors", vec![])
         .await
         .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RunRust must run between the SQL operations that surround it.
+#[tokio::test]
+async fn run_rust_interleaves_with_sql() {
+    let dir = temp_dir();
+    let db = memory_db().await;
+    let create = Migration::new(
+        "0001_t",
+        Vec::new(),
+        vec![
+            Operation::RunSQL {
+                sql: "CREATE TABLE t (n INTEGER)".into(),
+                reverse_sql: Some("DROP TABLE t".into()),
+            },
+            Operation::RunRust {
+                name: "seed".into(),
+                backwards: Some("unseed".into()),
+            },
+            Operation::RunSQL {
+                sql: "CREATE TABLE u AS SELECT * FROM t WHERE n = 1".into(),
+                reverse_sql: Some("DROP TABLE u".into()),
+            },
+        ],
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    loader::write_migration(&dir, &create).unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let mut registry = MigrationRegistry::new();
+    registry.register("seed", |db| {
+        Box::pin(async move {
+            db.raw_execute("INSERT INTO t (n) VALUES (1)", vec![])
+                .await?;
+            Ok(())
+        })
+    });
+    registry.register("unseed", |_db| Box::pin(async { Ok(()) }));
+    Migrator::new(&db, &graph)
+        .with_registry(registry)
+        .migrate(None, false)
+        .await
+        .unwrap();
+    let rows = db.raw_sql("SELECT n FROM u", vec![]).await.unwrap();
+    assert_eq!(rows.rows.len(), 1, "seed must run before the second SQL");
     let _ = std::fs::remove_dir_all(&dir);
 }

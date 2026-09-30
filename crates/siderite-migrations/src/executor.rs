@@ -442,33 +442,23 @@ impl<'a> Migrator<'a> {
         state: &mut ProjectState,
     ) -> Result<(), MigrationError> {
         let kind = self.kind();
-        let sqls = schema_editor::statements(kind, state, &migration.operations)?;
-        let rust_ops: Vec<&Operation> = migration
-            .operations
-            .iter()
-            .filter(|op| matches!(op, Operation::RunRust { .. }))
-            .collect();
+        let migration = migration.clone();
+        let start_state = state.clone();
         let run = |db: Db| {
-            let sqls = sqls.clone();
-            let rust_ops = rust_ops.iter().map(|op| (*op).clone()).collect::<Vec<_>>();
+            let migration = migration.clone();
             let registry = self.registry.clone();
+            let start_state = start_state.clone();
             async move {
-                execute_sqls(&db, kind, &migration.id, &sqls).await?;
-                for op in &rust_ops {
-                    if let Operation::RunRust { name, .. } = op {
-                        registry.run(name, &db).await?;
-                    }
-                }
-                record_history(&db, kind, migration).await?;
+                apply_ops_in_order(&db, kind, &migration, &start_state, &registry).await?;
                 Ok::<_, MigrationError>(())
             }
         };
         if db.in_transaction() {
             run(db.clone()).await?;
         } else if self.kind() == BackendKind::Sqlite {
-            db.schema_change(runs_in_transaction(db, migration), run)
+            db.schema_change(runs_in_transaction(db, &migration), run)
                 .await?;
-        } else if runs_in_transaction(db, migration) {
+        } else if runs_in_transaction(db, &migration) {
             db.transaction(run).await?;
         } else {
             run(db.clone()).await?;
@@ -486,19 +476,16 @@ impl<'a> Migrator<'a> {
         state_before: &ProjectState,
     ) -> Result<(), MigrationError> {
         let kind = self.kind();
-        let sqls = reverse_sql(kind, migration, state_before)?;
-        let rust_ops = reverse_rust(migration, state_before)?;
+        let operations = migration.operations.clone();
+        let id = migration.id.clone();
+        let start_state = state_before.clone();
         let run = |db: Db| {
-            let sqls = sqls.clone();
-            let rust_ops = rust_ops.clone();
+            let operations = operations.clone();
             let registry = self.registry.clone();
-            let id = migration.id.clone();
+            let id = id.clone();
+            let start_state = start_state.clone();
             async move {
-                execute_sqls(&db, kind, &id, &sqls).await?;
-                for name in &rust_ops {
-                    registry.run(name, &db).await?;
-                }
-                delete_history(&db, kind, &id).await?;
+                unapply_ops_in_order(&db, kind, &id, &operations, &start_state, &registry).await?;
                 Ok::<_, MigrationError>(())
             }
         };
@@ -615,24 +602,104 @@ fn create_history_sql(kind: BackendKind) -> String {
     )
 }
 
-async fn execute_sqls(
+async fn apply_ops_in_order(
+    db: &Db,
+    kind: BackendKind,
+    migration: &Migration,
+    state: &ProjectState,
+    registry: &crate::registry::MigrationRegistry,
+) -> Result<(), MigrationError> {
+    let total_sql = schema_editor::statements(kind, state, &migration.operations)?.len();
+    let mut current = state.clone();
+    let mut sql_index = 0usize;
+    for op in &migration.operations {
+        if let Operation::RunRust { name, .. } = op {
+            registry.run(name, db).await?;
+        } else {
+            let stmts = schema_editor::render(kind, op, &current)?;
+            for sql in stmts {
+                sql_index += 1;
+                execute_one_sql(db, kind, &migration.id, sql_index, total_sql, &sql).await?;
+            }
+            op.apply_to_state(&mut current)?;
+        }
+    }
+    record_history(db, kind, migration).await?;
+    Ok(())
+}
+
+async fn unapply_ops_in_order(
+    db: &Db,
+    kind: BackendKind,
+    id: &str,
+    operations: &[Operation],
+    state_before: &ProjectState,
+    registry: &crate::registry::MigrationRegistry,
+) -> Result<(), MigrationError> {
+    let mut snapshots = vec![state_before.clone()];
+    let mut current = state_before.clone();
+    for op in operations {
+        op.apply_to_state(&mut current)?;
+        snapshots.push(current.clone());
+    }
+    current = snapshots
+        .last()
+        .cloned()
+        .unwrap_or_else(|| state_before.clone());
+    let mut rev_ops = Vec::new();
+    for i in (0..operations.len()).rev() {
+        let Some(rev) = operations[i].reverse(&snapshots[i]) else {
+            return Err(MigrationError::Irreversible {
+                id: id.to_owned(),
+                reason: format!("{} has no reverse", operations[i].summary()),
+            });
+        };
+        rev_ops.push(rev);
+    }
+    let total_sql = {
+        let mut n = 0;
+        let mut walk = current.clone();
+        for rev in &rev_ops {
+            n += schema_editor::render(kind, rev, &walk)?.len();
+            rev.apply_to_state(&mut walk)?;
+        }
+        n
+    };
+    let mut sql_index = 0usize;
+    for rev in rev_ops {
+        if let Operation::RunRust { name, .. } = &rev {
+            registry.run(name, db).await?;
+        } else {
+            let stmts = schema_editor::render(kind, &rev, &current)?;
+            for sql in stmts {
+                sql_index += 1;
+                execute_one_sql(db, kind, id, sql_index, total_sql, &sql).await?;
+            }
+        }
+        rev.apply_to_state(&mut current)?;
+    }
+    delete_history(db, kind, id).await?;
+    Ok(())
+}
+
+async fn execute_one_sql(
     db: &Db,
     kind: BackendKind,
     migration_id: &str,
-    sqls: &[String],
+    index: usize,
+    total: usize,
+    sql: &str,
 ) -> Result<(), MigrationError> {
-    for (i, sql) in sqls.iter().enumerate() {
-        if let Err(err) = db.execute_script(sql).await {
-            if kind == BackendKind::MySql && i > 0 {
-                return Err(MigrationError::MysqlPartial {
-                    id: migration_id.to_owned(),
-                    index: i + 1,
-                    total: sqls.len(),
-                    source: err,
-                });
-            }
-            return Err(err.into());
+    if let Err(err) = db.execute_script(sql).await {
+        if kind == BackendKind::MySql && index > 1 {
+            return Err(MigrationError::MysqlPartial {
+                id: migration_id.to_owned(),
+                index,
+                total,
+                source: err,
+            });
         }
+        return Err(err.into());
     }
     Ok(())
 }
@@ -751,32 +818,6 @@ fn reverse_sql(
         rev.apply_to_state(&mut current)?;
     }
     Ok(sql)
-}
-
-fn reverse_rust(
-    migration: &Migration,
-    state_before: &ProjectState,
-) -> Result<Vec<String>, MigrationError> {
-    let mut snapshots = vec![state_before.clone()];
-    let mut current = state_before.clone();
-    for op in &migration.operations {
-        op.apply_to_state(&mut current)?;
-        snapshots.push(current.clone());
-    }
-    let mut names = Vec::new();
-    for i in (0..migration.operations.len()).rev() {
-        let op = &migration.operations[i];
-        let Some(rev) = op.reverse(&snapshots[i]) else {
-            return Err(MigrationError::Irreversible {
-                id: migration.id.clone(),
-                reason: format!("{} has no reverse", op.summary()),
-            });
-        };
-        if let Operation::RunRust { name, .. } = rev {
-            names.push(name);
-        }
-    }
-    Ok(names)
 }
 
 #[cfg(test)]
