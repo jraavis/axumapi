@@ -7,8 +7,11 @@
 //! * Every other enum (data variants, `tag`, `untagged`) gets an implementation
 //!   that validates nothing itself: `prepare` and `validate` are no-ops and
 //!   Serde reports malformed input. Fields of data variants are *not*
-//!   validated; put the data in a struct that derives `Validate`.
+//!   validated, so validation rules on them are a compile error; put the
+//!   data in a struct that derives `Validate`.
 
+use super::constraints::has_rules;
+use crate::attrs::field::FieldOptions;
 use crate::attrs::model::Container;
 use crate::attrs::serde::VariantSerde;
 use crate::diag::Errors;
@@ -28,6 +31,17 @@ pub fn derive(
         let serde = VariantSerde::parse(&variant.attrs, errors);
         if !matches!(variant.fields, Fields::Unit) {
             all_unit = false;
+        }
+        // Fields of data variants are never validated; reject rules on them
+        // rather than accepting input that silently skips them.
+        for field in &variant.fields {
+            if has_rules(&FieldOptions::parse(&field.attrs, errors)) {
+                errors.spanned(
+                    field,
+                    "validation rules on enum variant fields are not enforced; \
+                     move the data into a struct that derives `Validate`",
+                );
+            }
         }
         if serde.skip_deserializing {
             continue;

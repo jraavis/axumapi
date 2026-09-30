@@ -1,0 +1,6 @@
+error: validation rules on enum variant fields are not enforced; move the data into a struct that derives `Validate`
+ --> tests/ui/validate_rules_on_enum_variant.rs:7:9
+  |
+7 | /         #[field(gt = 0)]
+8 | |         radius: f64,
+  | |___________________^

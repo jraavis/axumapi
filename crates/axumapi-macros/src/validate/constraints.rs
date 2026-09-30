@@ -13,6 +13,11 @@ pub struct Checks {
     pub stmts: Vec<TokenStream>,
 }
 
+/// Whether `options` asks for any runtime check.
+pub fn has_rules(options: &FieldOptions) -> bool {
+    !checks(options, 0).stmts.is_empty() || !options.validators.is_empty()
+}
+
 /// Build the checks of `options`; `id` makes static names unique.
 pub fn checks(options: &FieldOptions, id: usize) -> Checks {
     let model = quote!(::axumapi::validation::model);

@@ -1,6 +1,6 @@
 //! `derive(Validate)` for structs.
 
-use super::constraints::checks;
+use super::constraints::{checks, has_rules};
 use crate::attrs::model::Container;
 use crate::attrs::plan::{FieldPlan, resolve_named, resolve_unnamed};
 use crate::diag::Errors;
@@ -165,6 +165,16 @@ pub fn tuple(header: &TokenStream, fields: &FieldsUnnamed, errors: &mut Errors) 
     let validation = quote!(::axumapi::validation);
     let elements = resolve_unnamed(fields, errors);
     let [element] = elements.as_slice() else {
+        // Only newtypes are validated; rules on wider tuples would be ignored.
+        for (field, element) in fields.unnamed.iter().zip(&elements) {
+            if has_rules(&element.options) {
+                errors.spanned(
+                    field,
+                    "validation rules are only supported on single-field tuple structs; \
+                     use a struct with named fields",
+                );
+            }
+        }
         return quote!(#header {});
     };
     let ty = element.ty;

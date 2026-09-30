@@ -1,0 +1,5 @@
+error: validation rules are only supported on single-field tuple structs; use a struct with named fields
+ --> tests/ui/validate_rules_on_wide_tuple.rs:5:13
+  |
+5 | struct Pair(#[field(min_length = 1)] String, String);
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
