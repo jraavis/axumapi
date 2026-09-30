@@ -51,23 +51,31 @@ fn path_is_secret(path: &[String]) -> bool {
     path.iter().any(|segment| is_secret_key(segment))
 }
 
+/// Whether a config key may hold a secret. Errs toward redacting: a false
+/// positive only hides a value in an error message, a false negative leaks it.
 fn is_secret_key(key: &str) -> bool {
-    matches!(
-        key.to_ascii_lowercase().as_str(),
-        "url"
-            | "secret_key"
-            | "password"
-            | "passwd"
-            | "token"
-            | "secret"
-            | "api_key"
-            | "apikey"
-            | "authorization"
-            | "cookie"
-            | "credential"
-            | "credentials"
-            | "private_key"
-    )
+    let key = key.to_ascii_lowercase().replace('-', "_");
+    const CONTAINS: [&str; 9] = [
+        "secret",
+        "passw",
+        "passphrase",
+        "token",
+        "credential",
+        "authorization",
+        "cookie",
+        "apikey",
+        "privatekey",
+    ];
+    CONTAINS.iter().any(|needle| key.contains(needle))
+        || key == "url"
+        || key.ends_with("_url")
+        || key.ends_with("_uri")
+        || key == "pass"
+        || key.ends_with("_pass")
+        || key == "dsn"
+        || key.ends_with("_dsn")
+        || key == "key"
+        || key.ends_with("_key")
 }
 
 fn format_kind(kind: &Kind, redact: bool) -> String {
@@ -97,7 +105,9 @@ fn format_kind(kind: &Kind, redact: bool) -> String {
         }
         Kind::MissingField(field) => format!("missing field `{field}`"),
         Kind::DuplicateField(field) => format!("duplicate field `{field}`"),
-        Kind::ISizeOutOfRange(_) | Kind::USizeOutOfRange(_) => kind.to_string(),
+        Kind::ISizeOutOfRange(_) | Kind::USizeOutOfRange(_) => {
+            format!("integer out of range, value {REDACTED}")
+        }
     }
 }
 
@@ -117,6 +127,47 @@ mod tests {
         assert!(path_is_secret(&["cache".into(), "url".into()]));
         assert!(!path_is_secret(&["server".into(), "addr".into()]));
         assert!(!path_is_secret(&["app".into(), "name".into()]));
+    }
+
+    #[test]
+    fn secret_key_variants_are_detected() {
+        for key in [
+            "database_url",
+            "DATABASE_URL",
+            "redis_uri",
+            "access_token",
+            "api_token",
+            "refresh_tokens",
+            "private-key",
+            "signing_key",
+            "passphrase",
+            "db_password",
+            "client_secret",
+            "secrets",
+            "sentry_dsn",
+            "pass",
+            "smtp_pass",
+        ] {
+            assert!(is_secret_key(key), "{key} should be secret");
+        }
+        for key in [
+            "addr",
+            "port",
+            "name",
+            "level",
+            "workers",
+            "bypass",
+            "passthrough",
+        ] {
+            assert!(!is_secret_key(key), "{key} should not be secret");
+        }
+    }
+
+    #[test]
+    fn redacted_out_of_range_omits_value() {
+        let rendered = format_kind(&Kind::ISizeOutOfRange(-987_654_321), true);
+        assert!(rendered.contains(REDACTED));
+        assert!(!rendered.contains("987654321"));
     }
 
     #[test]
