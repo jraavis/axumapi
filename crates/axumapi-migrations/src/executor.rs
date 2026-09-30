@@ -328,7 +328,17 @@ impl<'a> Migrator<'a> {
     }
 
     async fn load_history(&self) -> Result<History, MigrationError> {
-        match self
+        if !self.history_table_exists().await? {
+            return Ok(History {
+                ids: HashSet::new(),
+                checksums: HashMap::new(),
+                table_exists: false,
+            });
+        }
+        // Any failure past this point (permissions, a dropped connection, a
+        // damaged table) must surface: treating it as an empty history would
+        // replay every migration against a live database.
+        let result = self
             .db
             .raw_sql(
                 &format!(
@@ -339,35 +349,47 @@ impl<'a> Migrator<'a> {
                 ),
                 Vec::new(),
             )
-            .await
-        {
-            Ok(result) => {
-                let mut ids = HashSet::new();
-                let mut checksums = HashMap::new();
-                for row in result.rows {
-                    let id = match row.get("id") {
-                        Some(Value::Text(s)) => s.clone(),
-                        _ => continue,
-                    };
-                    let checksum = match row.get("checksum") {
-                        Some(Value::Text(s)) => s.clone(),
-                        _ => String::new(),
-                    };
-                    ids.insert(id.clone());
-                    checksums.insert(id, checksum);
-                }
-                Ok(History {
-                    ids,
-                    checksums,
-                    table_exists: true,
-                })
-            }
-            Err(_) => Ok(History {
-                ids: HashSet::new(),
-                checksums: HashMap::new(),
-                table_exists: false,
-            }),
+            .await?;
+        let mut ids = HashSet::new();
+        let mut checksums = HashMap::new();
+        for row in result.rows {
+            let Some(Value::Text(id)) = row.get("id") else {
+                return Err(MigrationError::state(format!(
+                    "`{HISTORY_TABLE}` has a row without a text `id`"
+                )));
+            };
+            let checksum = match row.get("checksum") {
+                Some(Value::Text(s)) => s.clone(),
+                _ => String::new(),
+            };
+            ids.insert(id.clone());
+            checksums.insert(id.clone(), checksum);
         }
+        Ok(History {
+            ids,
+            checksums,
+            table_exists: true,
+        })
+    }
+
+    /// Ask the catalog whether the history table exists, so a failing read
+    /// of the table itself is never mistaken for a fresh database.
+    async fn history_table_exists(&self) -> Result<bool, MigrationError> {
+        let sql = match self.kind() {
+            BackendKind::Sqlite => format!(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{HISTORY_TABLE}'"
+            ),
+            BackendKind::Postgres => format!(
+                "SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = current_schema() AND table_name = '{HISTORY_TABLE}'"
+            ),
+            BackendKind::MySql => format!(
+                "SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = DATABASE() AND table_name = '{HISTORY_TABLE}'"
+            ),
+            other => return Err(MigrationError::UnsupportedBackend(other)),
+        };
+        Ok(!self.db.raw_sql(&sql, Vec::new()).await?.rows.is_empty())
     }
 
     async fn apply_one(

@@ -250,3 +250,26 @@ async fn sqlite_rebuild_preserves_rows() {
     assert!(db.raw_sql("SELECT pages FROM books", vec![]).await.is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn unreadable_history_is_an_error_not_a_fresh_db() {
+    let dir = temp_dir();
+    let models: &[&'static axumapi_orm::ModelMeta] = &[author_meta(), book_meta()];
+    make_migrations(models, &dir, None, false).unwrap().unwrap();
+    let db = memory_db().await;
+    // A history table that exists but cannot be read as history.
+    db.raw_execute(
+        "CREATE TABLE axumapi_migrations (id INTEGER, checksum TEXT)",
+        vec![],
+    )
+    .await
+    .unwrap();
+    db.raw_execute("INSERT INTO axumapi_migrations VALUES (1, 'x')", vec![])
+        .await
+        .unwrap();
+    let graph = MigrationGraph::build(loader::load_dir(&dir).unwrap()).unwrap();
+    let err = Migrator::new(&db, &graph).show().await;
+    assert!(err.is_err(), "expected an error, got {err:?}");
+    // Nothing was replayed.
+    assert!(db.raw_sql("SELECT 1 FROM authors", vec![]).await.is_err());
+}
