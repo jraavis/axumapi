@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="axumapi">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FAF7F0"/>
+      <stop offset="1" stop-color="#EFE9DB"/>
+    </linearGradient>
+    <linearGradient id="rust" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#D46548"/>
+      <stop offset="1" stop-color="#B5472A"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <rect x="1.5" y="1.5" width="125" height="125" rx="26.5" fill="none" stroke="#D9D0BF" stroke-width="1.5"/>
+  <path d="M28 100 L64 24 L100 100" fill="none" stroke="url(#rust)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M44 72 H84" fill="none" stroke="#0E1116" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="64" cy="24" r="7" fill="#0E1116"/>
+  <circle cx="64" cy="24" r="3.2" fill="#B5472A"/>
+  <circle cx="28" cy="100" r="6" fill="#0E1116"/>
+  <circle cx="100" cy="100" r="6" fill="#0E1116"/>
+  <circle cx="64" cy="72" r="5.5" fill="#B5472A" stroke="#0E1116" stroke-width="2"/>
+</svg>

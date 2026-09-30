@@ -14,7 +14,8 @@ export default defineConfig({
 				'A FastAPI-style Rust web framework with Pydantic-style validation and a Django-style ORM.',
 			favicon: '/favicon.svg',
 			logo: {
-				src: './src/assets/logo.svg',
+				light: './src/assets/logo-light.svg',
+				dark: './src/assets/logo-dark.svg',
 				alt: 'axumapi',
 			},
 			social: [
