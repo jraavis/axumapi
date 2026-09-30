@@ -391,15 +391,27 @@ impl App {
         if let Some(spec_url) = docs.openapi_url {
             let json = serde_json::to_string(&openapi)
                 .map_err(|e| ServerError::Configuration(e.to_string()))?;
-            router = router.route(&spec_url, static_route("application/json", json));
+            // Docs routes sit outside the DI layer, which records the matched
+            // route for request logging, so they record it themselves.
+            let mut docs_router =
+                axum::Router::new().route(&spec_url, static_route("application/json", json));
             if let Some(url) = docs.swagger_url {
                 let html = ui::swagger_ui_html(&title, &spec_url);
-                router = router.route(&url, static_route("text/html; charset=utf-8", html));
+                docs_router =
+                    docs_router.route(&url, static_route("text/html; charset=utf-8", html));
             }
             if let Some(url) = docs.redoc_url {
                 let html = ui::redoc_html(&title, &spec_url);
-                router = router.route(&url, static_route("text/html; charset=utf-8", html));
+                docs_router =
+                    docs_router.route(&url, static_route("text/html; charset=utf-8", html));
             }
+            router = router.merge(docs_router.route_layer(axum::middleware::from_fn(
+                |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let (parts, body) = req.into_parts();
+                    crate::middleware::note_matched_path(&parts);
+                    next.run(axum::extract::Request::from_parts(parts, body))
+                },
+            )));
         }
         let router = match fallback {
             Some(install) => install(router),

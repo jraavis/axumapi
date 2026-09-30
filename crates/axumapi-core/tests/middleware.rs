@@ -602,3 +602,26 @@ async fn rate_limit_keys_by_forwarded_for_only_when_trusted() {
         StatusCode::TOO_MANY_REQUESTS
     );
 }
+
+#[tokio::test]
+async fn request_logging_records_nested_docs_and_unmatched_routes() {
+    let capture = Capture::default();
+    let _guard = tracing::subscriber::set_default(capture.clone());
+    let child = App::new().route("/items/{id}", get(|| async { "i" }));
+    let app = App::new().mount("/api", child).request_logging();
+    let client = TestClient::new(app);
+    for (path, status, route) in [
+        ("/api/items/7", StatusCode::OK, "route=/api/items/{id}"),
+        ("/openapi.json", StatusCode::OK, "route=/openapi.json"),
+        ("/nope", StatusCode::NOT_FOUND, "route=<unmatched>"),
+    ] {
+        capture.lines.lock().unwrap().clear();
+        let res = get_with(&client, path, &[]).await;
+        assert_eq!(res.status, status, "{path}");
+        let logged = capture.lines.lock().unwrap().join("\n");
+        assert!(
+            logged.contains(route),
+            "{path}: expected {route} in\n{logged}"
+        );
+    }
+}
