@@ -121,6 +121,14 @@ Each scheme registers itself under `components.securitySchemes` and pushes a req
 
 The extractors return raw values and never compare them, so timing is your code's concern. Compare API keys, tokens and passwords in constant time (for example with the `subtle` crate), not with `==`, which returns early at the first differing byte. Store password hashes, not passwords, and compare hashes with a purpose-built verifier.
 
-## Known gap
+## Requirements in OpenAPI
 
-`Option<HttpBearer>` (or any `Option<Scheme>`) makes authentication optional at runtime: a missing or invalid header yields `None`. The OpenAPI document still lists the requirement as mandatory, because `Option<T>` marks only the parameters and request body that `T` adds as optional, and a security requirement is neither. Until that is fixed, document truly optional authentication by hand or accept the stricter description.
+Security requirement objects are alternatives, and the schemes inside one
+object are all required. Extractors follow the handler signature:
+
+| Handler arguments | `security` |
+|---|---|
+| `HttpBearer` | `[{"HTTPBearer": []}]` |
+| `HttpBearer, ApiKey<K>` | `[{"HTTPBearer": [], "K": []}]` (both required) |
+| `Option<HttpBearer>` | `[{}, {"HTTPBearer": []}]` (anonymous or bearer) |
+| `ApiKey<K>, Option<HttpBearer>` | `[{"K": []}, {"K": [], "HTTPBearer": []}]` |

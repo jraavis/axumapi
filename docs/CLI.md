@@ -45,6 +45,16 @@ async fn main() -> std::process::ExitCode {
 
 `CliSettings` is a thin adapter holding the listen address and the database URLs by alias. Build it from loaded configuration with `CliSettings::from(&axumapi::config::load()?)`, which takes `server.addr` and every `databases.<alias>.url`, or set the fields by hand. Its `Debug` output lists aliases only, because URLs can contain passwords. `AppCli::run_from(args)` takes explicit arguments, which is handy in tests.
 
+`runserver` connects every SQL alias and registers them as the app's `Databases`. Two hooks shape that registry:
+
+```rust
+AppCli::new(build_app)
+    // Runs once per connected alias, before registration.
+    .configure_db(|_alias, db| db.with_signals(receivers::signals()))
+    // Routes models to aliases (see DATABASE_ROUTING.md).
+    .database_router(AppRouter)
+```
+
 ## Commands
 
 | Command | What it does |
