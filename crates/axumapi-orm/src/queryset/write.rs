@@ -7,6 +7,7 @@
 use super::QuerySet;
 use super::fetch::{is_flat, unordered};
 use crate::Feature;
+use crate::capabilities::RowLocking;
 use crate::db::Db;
 use crate::error::{BackendError, OrmError, QueryError};
 use crate::expr::{Expr, Ident};
@@ -142,8 +143,10 @@ impl<M: Model> QuerySet<M> {
     /// insert the object built by `create`; the flag says whether it was
     /// created. Runs in a transaction.
     ///
-    /// Rows are not locked between the lookup and the write; guard against
-    /// concurrent writers with a unique constraint.
+    /// On backends with row locking the lookup is `SELECT ... FOR UPDATE`, so
+    /// concurrent updates of an existing row serialize instead of losing
+    /// writes. Two callers can still both miss and insert; guard against that
+    /// with a unique constraint.
     ///
     /// # Errors
     /// [`QueryError::MultipleObjectsReturned`], or capability / backend errors.
@@ -154,7 +157,11 @@ impl<M: Model> QuerySet<M> {
         update: impl FnOnce(&mut M) + Send,
     ) -> Result<(M, bool), OrmError> {
         self.ready()?;
-        let lookup = self.filter(predicate);
+        let lock = self.db.capabilities().row_locking > RowLocking::None;
+        let mut lookup = self.filter(predicate);
+        if lock {
+            lookup = lookup.select_for_update();
+        }
         lookup
             .db
             .clone()
