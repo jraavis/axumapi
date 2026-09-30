@@ -102,9 +102,9 @@ impl<'a> Migrator<'a> {
                 let history = this.load_history_from(&session).await?;
                 this.verify_checksums(&history)?;
                 let plan = this.forward_plan(&history, target)?;
-                // Render under the lock from the re-read plan: the pre-lock
-                // preview above may be stale when a concurrent replica
-                // applied migrations in between.
+                // Render under the lock, from the plan re-read here:
+                // `Report.sql` must not disagree with `Report.planned`
+                // about what actually ran.
                 let (mut sql, mut state) = this.plan_sql(&history, &plan)?;
                 if created_history {
                     sql.insert(0, create_history_sql(this.kind()));
