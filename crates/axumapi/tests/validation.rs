@@ -1207,6 +1207,25 @@ fn two_names_for_one_field_are_a_duplicate() {
 }
 
 #[derive(Debug, Deserialize, Validate, Schema)]
+#[model_config(extra = "forbid")]
+struct ServerStamped {
+    name: String,
+    #[serde(skip_deserializing)]
+    stamp: u8,
+}
+
+#[test]
+fn a_skip_deserializing_key_is_extra_under_forbid() {
+    // Like Serde's `deny_unknown_fields`: the field is not an input, so its
+    // key is an unknown one.
+    assert!(codes_of::<ServerStamped>(json!({"name": "a"})).is_empty());
+    assert_eq!(
+        codes_of::<ServerStamped>(json!({"name": "a", "stamp": 1})),
+        vec![pair("stamp", "extra_forbidden")]
+    );
+}
+
+#[derive(Debug, Deserialize, Validate, Schema)]
 #[model_config(extra = "allow")]
 struct Permissive {
     a: u8,

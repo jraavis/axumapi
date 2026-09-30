@@ -12,7 +12,9 @@ pub enum Extra {
     /// Drop unknown keys silently (default).
     #[default]
     Ignore,
-    /// Reject unknown keys with `extra_forbidden`.
+    /// Reject unknown keys with `extra_forbidden`. Keys of fields Serde
+    /// skips when deserializing count as unknown, as with
+    /// `deny_unknown_fields`.
     Forbid,
     /// Accept unknown keys. Rust structs cannot store them, so they are
     /// dropped after validation; see `PYDANTIC_EQUIVALENCE.md`.

@@ -108,7 +108,9 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 /// `str_to_lower`, `str_to_upper`, `populate_by_name` (the Rust field name
 /// is accepted as an input key too) and `hooks` (see below). Flags accept
 /// `flag` and `flag = true`. Serde's `deny_unknown_fields` implies
-/// `extra = "forbid"` unless `extra` is given.
+/// `extra = "forbid"` unless `extra` is given. As with `deny_unknown_fields`,
+/// the key of a `#[serde(skip_deserializing)]` (or `skip`) field is not an
+/// input, so under `extra = "forbid"` sending it is `extra_forbidden`.
 ///
 /// # `#[field(...)]`
 /// Constraints: `min_length`, `max_length`, `pattern` (or `regex`, checked at
