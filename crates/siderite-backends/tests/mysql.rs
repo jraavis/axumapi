@@ -1002,6 +1002,191 @@ async fn returning_is_emulated_for_updates_deletes_and_inserts() {
     t.cleanup().await;
 }
 
+/// A single-row insert returns its row without reading it back when the
+/// stored values are known; the row must equal what a read gives.
+#[tokio::test]
+async fn single_row_inserts_return_the_stored_row() {
+    use siderite_orm::{InsertPlan, WritePlan};
+    let Some(t) = TestDb::open().await else {
+        return;
+    };
+    let db = &t.db;
+    db.execute_script(
+        "CREATE TABLE plain (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(8) NOT NULL, body TEXT,
+            n INT, small TINYINT, flag BOOLEAN NOT NULL, legacy VARCHAR(8) CHARACTER SET latin1);
+         CREATE TABLE defaults (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(8) NOT NULL,
+            state VARCHAR(8) NOT NULL DEFAULT 'new', shout VARCHAR(8) AS (UPPER(name)),
+            price DECIMAL(6,2), tag CHAR(4));
+         CREATE TABLE triggered (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(8) NOT NULL);
+         CREATE TRIGGER triggered_bi BEFORE INSERT ON triggered
+            FOR EACH ROW SET NEW.name = UPPER(NEW.name);",
+    )
+    .await
+    .unwrap();
+    let insert = |table: &'static str, columns: Vec<&'static str>, row: Vec<Value>| {
+        let returning: Vec<&'static str> = match table {
+            "plain" => vec!["id", "name", "body", "n", "small", "flag", "legacy"],
+            "defaults" => vec!["id", "name", "state", "shout", "price", "tag"],
+            _ => vec!["id", "name"],
+        };
+        WritePlan::Insert(InsertPlan {
+            table: table.into(),
+            columns: columns.into_iter().map(Into::into).collect(),
+            rows: vec![row],
+            returning: returning.into_iter().map(Into::into).collect(),
+        })
+    };
+    // What a read of the row with the returned key gives.
+    let stored = |table: &'static str, row: &siderite_orm::Row| {
+        let columns: Vec<&str> = row.iter().map(|(c, _)| c).collect();
+        let sql = format!("SELECT {} FROM {table} WHERE id = ?", columns.join(", "));
+        let id = row.get("id").cloned().unwrap();
+        async move { db.raw_sql(&sql, vec![id]).await.unwrap().rows.remove(0) }
+    };
+    let plain_columns = || vec!["name", "body", "n", "small", "flag", "legacy"];
+
+    // Known without a read-back: integers, booleans, text, NULLs.
+    for row in [
+        vec![
+            "ünï 🦀".into(),
+            "long text".into(),
+            Value::Int(-7),
+            Value::Int(127),
+            Value::Bool(true),
+            "ascii".into(),
+        ],
+        vec![
+            "".into(),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Bool(false),
+            Value::Null,
+        ],
+        // Not ASCII in a latin1 column: read back.
+        vec![
+            "x".into(),
+            Value::Null,
+            Value::Int(1),
+            Value::Int(1),
+            Value::Bool(true),
+            "é".into(),
+        ],
+    ] {
+        let done = db
+            .execute(&insert("plain", plain_columns(), row))
+            .await
+            .unwrap();
+        assert_eq!(done.rows_affected, 1);
+        assert_eq!(done.returning.len(), 1);
+        assert_eq!(done.returning[0], stored("plain", &done.returning[0]).await);
+    }
+    let ids: Vec<i64> = db
+        .raw_sql("SELECT id FROM plain ORDER BY id", vec![])
+        .await
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| r.get_as::<i64>("id").unwrap())
+        .collect();
+    assert_eq!(ids, [1, 2, 3]);
+
+    // Text that does not fit is the server's to reject or truncate.
+    let long = db
+        .execute(&insert(
+            "plain",
+            vec!["name", "flag"],
+            vec!["123456789".into(), Value::Bool(true)],
+        ))
+        .await;
+    assert!(long.is_err(), "{long:?}");
+
+    // Defaults, generated columns and lossy types are read back.
+    let done = db
+        .execute(&insert(
+            "defaults",
+            vec!["name", "price", "tag"],
+            vec![
+                "ab".into(),
+                Value::Decimal("1.005".parse().unwrap()),
+                "t ".into(),
+            ],
+        ))
+        .await
+        .unwrap();
+    let row = &done.returning[0];
+    assert_eq!(row.get_as::<String>("state").unwrap(), "new");
+    assert_eq!(row.get_as::<String>("shout").unwrap(), "AB");
+    assert_eq!(row.get_as::<String>("tag").unwrap(), "t");
+    assert_eq!(row, &stored("defaults", row).await);
+
+    // A trigger may rewrite the row.
+    let done = db
+        .execute(&insert("triggered", vec!["name"], vec!["abc".into()]))
+        .await
+        .unwrap();
+    assert_eq!(done.returning[0].get_as::<String>("name").unwrap(), "ABC");
+
+    // A user without the TRIGGER privilege cannot see triggers in
+    // `information_schema`; its rows are read back all the same.
+    let user = format!("sid_{}", &t.name[t.name.len() - 12..]);
+    for sql in [
+        format!("CREATE USER '{user}'@'%' IDENTIFIED BY 'pw'"),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON {}.* TO '{user}'@'%'",
+            t.name
+        ),
+    ] {
+        sqlx::query(&sql).execute(&t.admin).await.unwrap();
+    }
+    let url = ["MYSQL_URL", "DATABASE_URL"]
+        .into_iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .find(|u| u.starts_with("mysql"))
+        .unwrap();
+    let host = url.rsplit_once('@').unwrap().1.rsplit_once('/').unwrap().0;
+    let limited = MySqlBackend::connect(&format!("mysql://{user}:pw@{host}/{}", t.name))
+        .await
+        .unwrap();
+    let done = Db::new(limited)
+        .execute(&insert("triggered", vec!["name"], vec!["low".into()]))
+        .await
+        .unwrap();
+    assert_eq!(done.returning[0].get_as::<String>("name").unwrap(), "LOW");
+    sqlx::query(&format!("DROP USER '{user}'@'%'"))
+        .execute(&t.admin)
+        .await
+        .unwrap();
+
+    // Inside a transaction the row is the same, and rolls back with it.
+    let inside = db
+        .transaction(|tx| async move {
+            let done = tx
+                .execute(&insert(
+                    "triggered",
+                    vec!["id", "name"],
+                    vec![Value::Int(50), "x".into()],
+                ))
+                .await?;
+            assert_eq!(done.returning[0].get("id"), Some(&Value::Int(50)));
+            let team = Team {
+                id: 0,
+                name: "tx".into(),
+            };
+            let team = Team::objects(&tx).create(team).await?;
+            assert_eq!(Team::objects(&tx).get(Team::id.eq(team.id)).await?, team);
+            Err::<(), _>(OrmError::from(siderite_orm::QueryError::InvalidPlan(
+                "undo".into(),
+            )))
+        })
+        .await;
+    assert!(inside.is_err());
+    assert_eq!(Team::objects(db).count().await.unwrap(), 0);
+    t.cleanup().await;
+}
+
 #[tokio::test]
 async fn update_assignments_read_old_values() {
     let Some(t) = TestDb::open().await else {

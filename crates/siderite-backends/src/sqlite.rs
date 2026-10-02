@@ -14,7 +14,8 @@ use siderite_orm::{
 };
 use sqlx::pool::PoolConnection;
 use sqlx::sqlite::{
-    SqliteArguments, SqlitePool, SqlitePoolOptions, SqliteRow, SqliteTransactionManager,
+    SqliteArguments, SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow,
+    SqliteTransactionManager,
 };
 use sqlx::{Column as _, Row as _, TransactionManager, TypeInfo as _, ValueRef as _};
 use std::collections::HashSet;
@@ -42,6 +43,48 @@ impl SqliteBackend {
             .await
             .map_err(|e| BackendError::Connection(e.to_string()))?;
         Ok(Self { pool })
+    }
+
+    /// Connect with explicit connection and pool options, for example to opt
+    /// in to write-ahead logging:
+    ///
+    /// ```no_run
+    /// # use siderite_backends::sqlite::SqliteBackend;
+    /// # use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+    /// # async fn open() -> Result<(), Box<dyn std::error::Error>> {
+    /// let options: SqliteConnectOptions = "sqlite://app.db?mode=rwc".parse()?;
+    /// let db = SqliteBackend::connect_with(
+    ///     options.journal_mode(SqliteJournalMode::Wal),
+    ///     SqlitePoolOptions::new().max_connections(10),
+    /// )
+    /// .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`connect`](Self::connect) leaves the journal mode and `synchronous`
+    /// at the SQLite defaults (a rollback journal, synced on every commit).
+    /// WAL is recorded in the database file and does not work on network
+    /// filesystems; `synchronous = NORMAL` with WAL can lose the most recent
+    /// commits on power loss. An in-memory database needs a pool of one
+    /// connection.
+    ///
+    /// # Errors
+    /// Returns [`BackendError::Connection`] if the pool cannot be created.
+    pub async fn connect_with(
+        options: SqliteConnectOptions,
+        pool: SqlitePoolOptions,
+    ) -> Result<Self, BackendError> {
+        let pool = pool
+            .connect_with(options)
+            .await
+            .map_err(|e| BackendError::Connection(e.to_string()))?;
+        Ok(Self { pool })
+    }
+
+    /// Wrap an existing pool.
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 }
 

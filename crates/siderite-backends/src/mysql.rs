@@ -31,13 +31,28 @@
 //!   and the rows are read back (after an `UPDATE`) or were read beforehand
 //!   (`DELETE`).
 //!
-//! Each emulated write, single-row ones included, runs in a transaction (or
-//! the caller's), so the rows read back are the ones written: no concurrent
-//! statement can change or delete them in between.
+//! Each emulated write that reads rows back, single-row ones included, runs
+//! in a transaction (or the caller's), so the rows read back are the ones
+//! written: no concurrent statement can change or delete them in between.
 //!
-//! The primary key and the auto-increment column are looked up once per table
-//! in `information_schema` and cached; [`execute_script`](Executor::execute_script)
-//! clears the cache. A table without a primary key cannot use the emulation.
+//! A **single-row `INSERT`** skips the read-back, and with it the
+//! transaction, when the stored row is known without asking: the table has no
+//! `INSERT` trigger (which takes the `TRIGGER` privilege, granted directly
+//! and not through a role, to find out; without it the row is read back),
+//! and every returned column is either the omitted
+//! `AUTO_INCREMENT` column (taken from the OK packet) or a supplied value its
+//! column stores unchanged. That holds for integers within the range of a
+//! signed integer column, booleans in `TINYINT(1)`, and text that fits a
+//! `VARCHAR` / `TEXT` column (`utf8mb4`, or ASCII in any character set).
+//! Everything else (defaults, generated columns, `DECIMAL`, temporal, `JSON`,
+//! binary and `CHAR` columns) is read back as described above.
+//!
+//! The columns of a table and whether it has an `INSERT` trigger are looked up
+//! once per table in `information_schema` and cached;
+//! [`execute_script`](Executor::execute_script) clears the cache. A table or
+//! trigger changed by other means (another process, `execute_raw`) while the
+//! backend is in use is not noticed until then. A table without a primary key
+//! cannot use the emulation.
 //!
 //! # Session setup
 //!
@@ -86,14 +101,27 @@ impl MySqlBackend {
     /// Connect to `url` (`mysql://user:pass@host/db`) with a pool of up to
     /// ten connections, each configured as described in the module docs.
     ///
+    /// A connection is **not** checked when it is taken from the pool: SQLx's
+    /// `test_before_acquire` costs a round trip per query. The price is that
+    /// the first query on a connection the server has closed (a restart,
+    /// `wait_timeout`) fails with a connection error instead of being retried
+    /// on a fresh connection. To have connections checked, use
+    /// [`connect_with`](Self::connect_with) with
+    /// `MySqlPoolOptions::new().test_before_acquire(true)`.
+    ///
     /// # Errors
     /// [`BackendError::Connection`] if the pool cannot be created.
     pub async fn connect(url: &str) -> Result<Self, BackendError> {
-        Self::connect_with(url, MySqlPoolOptions::new().max_connections(10)).await
+        let options = MySqlPoolOptions::new()
+            .max_connections(10)
+            .test_before_acquire(false);
+        Self::connect_with(url, options).await
     }
 
     /// Like [`connect`](Self::connect) with explicit pool options (pool size,
-    /// timeouts). The session setup is added to `options`.
+    /// timeouts, `test_before_acquire`), used as given: a plain
+    /// `MySqlPoolOptions::new()` checks connections on acquire. The session
+    /// setup is added to `options`.
     ///
     /// # Errors
     /// [`BackendError::Connection`] if the pool cannot be created.
@@ -142,9 +170,18 @@ impl Executor for MySqlBackend {
         }
         let prepared = prepare(plan)?;
         let info = self.tables.table(&self.pool, table_of(plan)).await?;
-        // Even a single-row write runs in a transaction: the write's row lock
-        // is held until the read-back, so a concurrent update or delete
-        // cannot change or remove the row in between.
+        if let WritePlan::Insert(p) = plan
+            && let Some(row) = synthesize(&info, p)
+        {
+            // One statement and nothing to read back: no transaction needed.
+            let write = prepared.write;
+            let done = run(&self.pool, &write.sql, write.params).await?;
+            return synthesized_result(&info, row, &done);
+        }
+        // A write that is read back runs in a transaction even for a single
+        // row: the write's row lock is held until the read-back, so a
+        // concurrent update or delete cannot change or remove the row in
+        // between.
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         let result = write_returning(&mut tx, &info, plan, prepared).await?;
         tx.commit().await.map_err(db_error)?;
@@ -394,12 +431,82 @@ where
 
 // ---- RETURNING emulation ----------------------------------------------------
 
-/// Primary key and generated column of a table.
+/// Keys, columns and triggers of a table.
 #[derive(Debug)]
 struct TableInfo {
     table: String,
     primary_key: Vec<String>,
     auto_increment: Option<String>,
+    columns: Vec<ColumnInfo>,
+    /// Whether an `INSERT` trigger exists (it may change the stored row), or
+    /// the user cannot see the table's triggers.
+    insert_triggers: bool,
+}
+
+/// What [`synthesize`] needs to know about a column.
+#[derive(Debug)]
+struct ColumnInfo {
+    name: String,
+    /// `DATA_TYPE`, e.g. `bigint`, `varchar`.
+    data_type: String,
+    /// `COLUMN_TYPE`, e.g. `tinyint(1)`, `int unsigned`.
+    column_type: String,
+    /// `CHARACTER_MAXIMUM_LENGTH` of a string column.
+    max_length: Option<u64>,
+    utf8mb4: bool,
+    nullable: bool,
+}
+
+impl ColumnInfo {
+    /// Range of a signed integer column that is not `TINYINT(1)` (which reads
+    /// back as a boolean).
+    fn integer_range(&self) -> Option<(i64, i64)> {
+        if self.column_type.contains("unsigned") || self.column_type.starts_with("tinyint(1)") {
+            return None;
+        }
+        match self.data_type.as_str() {
+            "tinyint" => Some((i64::from(i8::MIN), i64::from(i8::MAX))),
+            "smallint" => Some((i64::from(i16::MIN), i64::from(i16::MAX))),
+            "mediumint" => Some((-(1 << 23), (1 << 23) - 1)),
+            "int" => Some((i64::from(i32::MIN), i64::from(i32::MAX))),
+            "bigint" => Some((i64::MIN, i64::MAX)),
+            _ => None,
+        }
+    }
+
+    /// Whether `text` is stored as it is: no truncation, padding or character
+    /// set conversion.
+    fn stores_text(&self, text: &str) -> bool {
+        let Some(max) = self.max_length else {
+            return false;
+        };
+        let fits = match self.data_type.as_str() {
+            // Counted in characters.
+            "varchar" => text.chars().count() as u64 <= max,
+            // Counted in bytes.
+            "text" | "mediumtext" | "longtext" => text.len() as u64 <= max,
+            _ => false,
+        };
+        fits && (self.utf8mb4 || text.is_ascii())
+    }
+
+    /// Whether reading the column after writing `value` gives `value` back.
+    fn stores_exactly(&self, value: &Value) -> bool {
+        match value {
+            Value::Null => {
+                self.nullable
+                    && (self.integer_range().is_some()
+                        || self.column_type == "tinyint(1)"
+                        || self.stores_text(""))
+            }
+            Value::Bool(_) => self.column_type == "tinyint(1)",
+            Value::Int(v) => self
+                .integer_range()
+                .is_some_and(|(min, max)| (min..=max).contains(v)),
+            Value::Text(text) => self.stores_text(text),
+            _ => false,
+        }
+    }
 }
 
 /// Per-backend cache of [`TableInfo`].
@@ -431,9 +538,27 @@ impl TableCache {
         }
         let rows = sqlx::query(
             "SELECT CAST(COLUMN_NAME AS CHAR) AS c, CAST(COLUMN_KEY AS CHAR) AS k, \
-             CAST(EXTRA AS CHAR) AS e FROM information_schema.COLUMNS \
+             CAST(EXTRA AS CHAR) AS e, CAST(DATA_TYPE AS CHAR) AS d, \
+             CAST(COLUMN_TYPE AS CHAR) AS t, CAST(CHARACTER_MAXIMUM_LENGTH AS UNSIGNED) AS m, \
+             CAST(CHARACTER_SET_NAME AS CHAR) AS s, CAST(IS_NULLABLE AS CHAR) AS n, \
+             (SELECT COUNT(*) FROM information_schema.TRIGGERS \
+              WHERE EVENT_OBJECT_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE = ? \
+              AND EVENT_MANIPULATION = 'INSERT') AS g, \
+             (SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES p \
+              WHERE p.PRIVILEGE_TYPE = 'TRIGGER' AND p.GRANTEE = me.grantee) + \
+             (SELECT COUNT(*) FROM information_schema.SCHEMA_PRIVILEGES p \
+              WHERE p.PRIVILEGE_TYPE = 'TRIGGER' AND p.GRANTEE = me.grantee \
+              AND DATABASE() LIKE p.TABLE_SCHEMA) + \
+             (SELECT COUNT(*) FROM information_schema.TABLE_PRIVILEGES p \
+              WHERE p.PRIVILEGE_TYPE = 'TRIGGER' AND p.GRANTEE = me.grantee \
+              AND p.TABLE_SCHEMA = DATABASE() AND p.TABLE_NAME = ?) AS v \
+             FROM information_schema.COLUMNS, \
+             (SELECT CONCAT('''', SUBSTRING_INDEX(CURRENT_USER(), '@', 1), '''@''', \
+              SUBSTRING_INDEX(CURRENT_USER(), '@', -1), '''') AS grantee) me \
              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
         )
+        .bind(name)
+        .bind(name)
         .bind(name)
         .fetch_all(ex)
         .await
@@ -445,11 +570,30 @@ impl TableCache {
             table: name.to_owned(),
             primary_key: Vec::new(),
             auto_increment: None,
+            columns: Vec::with_capacity(rows.len()),
+            insert_triggers: false,
         };
         for row in &rows {
             let column: String = row.try_get("c").map_err(db_error)?;
             let key: String = row.try_get("k").map_err(db_error)?;
             let extra: String = row.try_get("e").map_err(db_error)?;
+            let data_type: String = row.try_get("d").map_err(db_error)?;
+            let column_type: String = row.try_get("t").map_err(db_error)?;
+            let charset: Option<String> = row.try_get("s").map_err(db_error)?;
+            let nullable: String = row.try_get("n").map_err(db_error)?;
+            // `information_schema.TRIGGERS` only lists the triggers of tables
+            // the user has the `TRIGGER` privilege on. Without it (or with it
+            // only through a role), assume there is one.
+            let visible = row.try_get::<i64, _>("v").map_err(db_error)? > 0;
+            info.insert_triggers = !visible || row.try_get::<i64, _>("g").map_err(db_error)? > 0;
+            info.columns.push(ColumnInfo {
+                name: column.clone(),
+                data_type: data_type.to_ascii_lowercase(),
+                column_type: column_type.to_ascii_lowercase(),
+                max_length: row.try_get("m").map_err(db_error)?,
+                utf8mb4: charset.is_some_and(|c| c.eq_ignore_ascii_case("utf8mb4")),
+                nullable: nullable.eq_ignore_ascii_case("YES"),
+            });
             if extra.to_ascii_lowercase().contains("auto_increment") {
                 info.auto_increment = Some(column.clone());
             }
@@ -559,6 +703,10 @@ async fn write_returning(
     let Prepared { write, read } = prepared;
     match plan {
         WritePlan::Insert(p) => {
+            if let Some(row) = synthesize(info, p) {
+                let done = run(&mut *conn, &write.sql, write.params).await?;
+                return synthesized_result(info, row, &done);
+            }
             let keys = InsertKeys::of(info, p)?;
             let done = run(&mut *conn, &write.sql, write.params).await?;
             let inserted = done.rows_affected();
@@ -621,6 +769,87 @@ async fn write_returning(
             })
         }
     }
+}
+
+/// A returned column of a single-row `INSERT` whose stored value is known
+/// without reading the row back.
+enum Known {
+    /// The supplied value, stored unchanged.
+    Supplied(Value),
+    /// The omitted `AUTO_INCREMENT` column: `LAST_INSERT_ID()`.
+    Generated,
+}
+
+/// The row a single-row `INSERT` returns, if every returned column is known
+/// without a read-back (see the module docs). `None` means: read it back.
+fn synthesize(info: &TableInfo, plan: &siderite_orm::InsertPlan) -> Option<Vec<(String, Known)>> {
+    let [row] = plan.rows.as_slice() else {
+        return None;
+    };
+    if info.insert_triggers {
+        return None;
+    }
+    plan.returning
+        .iter()
+        .map(|column| {
+            let name: &str = column;
+            let auto = info.auto_increment.as_deref() == Some(name);
+            let known = match plan.columns.iter().position(|c| c == column) {
+                // A supplied `AUTO_INCREMENT` value of 0 or NULL is generated.
+                Some(_) if auto => return None,
+                Some(i) => {
+                    let value = row.get(i)?;
+                    let meta = info.columns.iter().find(|c| c.name == name)?;
+                    if !meta.stores_exactly(value) {
+                        return None;
+                    }
+                    Known::Supplied(value.clone())
+                }
+                None if auto => Known::Generated,
+                // Omitted: a default or a generated column.
+                None => return None,
+            };
+            Some((name.to_owned(), known))
+        })
+        .collect()
+}
+
+/// The result of a single-row `INSERT` whose row is [`synthesize`]d.
+fn synthesized_result(
+    info: &TableInfo,
+    row: Vec<(String, Known)>,
+    done: &MySqlQueryResult,
+) -> Result<ExecResult, OrmError> {
+    if done.rows_affected() != 1 {
+        return Err(QueryError::Model(format!(
+            "inserted {} rows into `{}` instead of 1",
+            done.rows_affected(),
+            info.table
+        ))
+        .into());
+    }
+    let columns = row
+        .into_iter()
+        .map(|(name, known)| {
+            let value = match known {
+                Known::Supplied(value) => value,
+                Known::Generated => match i64::try_from(done.last_insert_id()) {
+                    Ok(id) if id != 0 => Value::Int(id),
+                    _ => {
+                        return Err(QueryError::Model(format!(
+                            "no usable generated key for `{}`",
+                            info.table
+                        )));
+                    }
+                },
+            };
+            Ok((name, value))
+        })
+        .collect::<Result<Vec<_>, QueryError>>()?;
+    Ok(ExecResult {
+        rows_affected: 1,
+        returning: vec![Row::new(columns)],
+    })
 }
 
 /// How the keys of the rows of an `INSERT` are known.
@@ -846,8 +1075,8 @@ fn decode_value(row: &MySqlRow, i: usize, raw: MySqlValueRef<'_>) -> Result<Valu
                 .map_err(|e| e.to_string())
         };
     }
-    let type_name = raw.type_info().name().to_owned();
-    match type_name.as_str() {
+    let type_info = raw.type_info();
+    match type_info.name() {
         "BOOLEAN" => get!(bool => Value::Bool),
         "TINYINT" => get!(i8 => |v| Value::Int(i64::from(v))),
         "SMALLINT" => get!(i16 => |v| Value::Int(i64::from(v))),

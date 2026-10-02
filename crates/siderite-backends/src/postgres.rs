@@ -38,14 +38,27 @@ impl PgBackend {
     /// Connect to `url` (`postgres://user:pass@host/db`) with a pool of up to
     /// ten connections, each set to the UTC time zone.
     ///
+    /// A connection is **not** checked when it is taken from the pool: SQLx's
+    /// `test_before_acquire` costs a round trip per query. The price is that
+    /// the first query on a connection the server has closed (a restart, an
+    /// idle timeout) fails with a connection error instead of being retried
+    /// on a fresh connection. To have connections checked, use
+    /// [`connect_with`](Self::connect_with) with
+    /// `PgPoolOptions::new().test_before_acquire(true)`.
+    ///
     /// # Errors
     /// [`BackendError::Connection`] if the pool cannot be created.
     pub async fn connect(url: &str) -> Result<Self, BackendError> {
-        Self::connect_with(url, PgPoolOptions::new().max_connections(10)).await
+        let options = PgPoolOptions::new()
+            .max_connections(10)
+            .test_before_acquire(false);
+        Self::connect_with(url, options).await
     }
 
     /// Like [`connect`](Self::connect) with explicit pool options (pool size,
-    /// timeouts). The UTC time-zone setup is added to `options`.
+    /// timeouts, `test_before_acquire`), used as given: a plain
+    /// `PgPoolOptions::new()` checks connections on acquire. The UTC
+    /// time-zone setup is added to `options`.
     ///
     /// # Errors
     /// [`BackendError::Connection`] if the pool cannot be created.
@@ -355,8 +368,8 @@ fn decode_value(row: &PgRow, i: usize, raw: PgValueRef<'_>) -> Result<Value, Str
             get!(Vec<$t> => |items| Value::Json(JsonValue::Array(items.into_iter().map(JsonValue::from).collect())))
         };
     }
-    let type_name = raw.type_info().name().to_owned();
-    match type_name.as_str() {
+    let type_info = raw.type_info();
+    match type_info.name() {
         "BOOL" => get!(bool => Value::Bool),
         "INT2" => get!(i16 => |v| Value::Int(i64::from(v))),
         "INT4" => get!(i32 => |v| Value::Int(i64::from(v))),
