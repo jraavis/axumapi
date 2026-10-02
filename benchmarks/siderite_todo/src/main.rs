@@ -5,6 +5,7 @@ use siderite_backends::mongodb::MongoBackend;
 use siderite_backends::mysql::MySqlBackend;
 use siderite_backends::postgres::PgBackend;
 use siderite_backends::sqlite::SqliteBackend;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
 const SQLITE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS todos (
@@ -47,18 +48,39 @@ pub struct NewTodo {
     pub title: String,
 }
 
+/// `DATABASE_POOL_SIZE` (the runner's `--pool-size`), ten by default like
+/// `connect`. Applies to PostgreSQL and MySQL, in both apps.
+fn pool_size() -> u32 {
+    std::env::var("DATABASE_POOL_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10)
+}
+
 pub async fn open_db(url: &str) -> Result<Db, ApiError> {
     if url.starts_with("postgres://") || url.starts_with("postgresql://") {
-        let backend = PgBackend::connect(url).await.map_err(ApiError::internal)?;
+        let backend = PgBackend::connect_with(
+            url,
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(pool_size())
+                .test_before_acquire(false),
+        )
+        .await
+        .map_err(ApiError::internal)?;
         let db = Db::new(backend);
         db.execute_script(PG_SCHEMA)
             .await
             .map_err(ApiError::internal)?;
         Ok(db)
     } else if url.starts_with("mysql://") {
-        let backend = MySqlBackend::connect(url)
-            .await
-            .map_err(ApiError::internal)?;
+        let backend = MySqlBackend::connect_with(
+            url,
+            sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(pool_size())
+                .test_before_acquire(false),
+        )
+        .await
+        .map_err(ApiError::internal)?;
         let db = Db::new(backend);
         db.execute_script(MYSQL_SCHEMA)
             .await
@@ -70,9 +92,21 @@ pub async fn open_db(url: &str) -> Result<Db, ApiError> {
             .map_err(ApiError::internal)?;
         Ok(Db::new(backend))
     } else {
-        let backend = SqliteBackend::connect(url)
+        // `SQLITE_WAL=1` (the runner's `--sqlite-wal`) trades durability for
+        // write throughput; the FastAPI app applies the same pragmas.
+        let backend = if std::env::var("SQLITE_WAL").is_ok_and(|v| v == "1") {
+            let options: SqliteConnectOptions = url.parse().map_err(ApiError::internal)?;
+            SqliteBackend::connect_with(
+                options
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .synchronous(SqliteSynchronous::Normal),
+                SqlitePoolOptions::new().max_connections(10),
+            )
             .await
-            .map_err(ApiError::internal)?;
+        } else {
+            SqliteBackend::connect(url).await
+        }
+        .map_err(ApiError::internal)?;
         let db = Db::new(backend);
         db.execute_script(SQLITE_SCHEMA)
             .await

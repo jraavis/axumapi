@@ -26,6 +26,8 @@ BENCHMARKS_DIR = ROOT_DIR / "benchmarks"
 FASTAPI_DIR = BENCHMARKS_DIR / "fastapi"
 LOGS_DIR = BENCHMARKS_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+# One SQLite file for the runner and both servers, whatever their cwd.
+SQLITE_DB = ROOT_DIR / "todo_bench.db"
 
 
 @dataclass
@@ -244,12 +246,23 @@ def resolve_db_url(backend: str) -> str:
     elif backend == "mongodb":
         return os.getenv("MONGODB_URL", "mongodb://127.0.0.1:57017/siderite?directConnection=true")
     else:
-        return "sqlite://todo_bench.db?mode=rwc"
+        return f"sqlite://{SQLITE_DB}?mode=rwc"
 
 
 # ---------------------------------------------------------------------------
 # Database Seeding
 # ---------------------------------------------------------------------------
+
+
+def reset_sqlite_file(wal: bool):
+    """Recreate the SQLite file so the journal mode (stored in it) is known."""
+    import sqlite3
+
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        Path(f"{SQLITE_DB}{suffix}").unlink(missing_ok=True)
+    if wal:
+        with sqlite3.connect(SQLITE_DB) as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
 
 
 def seed_database(backend: str):
@@ -258,8 +271,7 @@ def seed_database(backend: str):
     if backend == "sqlite":
         import sqlite3
 
-        db_path = "todo_bench.db"
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(SQLITE_DB) as conn:
             cur = conn.cursor()
             cur.execute("DROP TABLE IF EXISTS todos")
             cur.execute(
@@ -557,24 +569,33 @@ def run_todo_suite(
     num_runs: int = 3,
     fast: bool = False,
     keep_alive: bool = False,
+    sqlite_wal: bool = False,
+    pool_size: int = 10,
 ) -> Dict[str, Dict[str, Any]]:
     print(f"\n>>> STARTING TODO API BENCHMARK SUITE (Backend: {backend}) <<<")
 
     n_read = 1000 if fast else 5000
     c_read = 25 if fast else 50
-    n_write = 500 if fast else 2000
+    # Long enough (seconds, not a fraction of one) for a stable median.
+    n_write = 500 if fast else 10000
     c_write = 10 if fast else 20
 
+    if backend == "sqlite":
+        reset_sqlite_file(sqlite_wal)
     seed_database(backend)
 
     # Determine connection string
     env = os.environ.copy()
     db_url = resolve_db_url(backend)
     env["DATABASE_URL"] = db_url
+    env["DATABASE_POOL_SIZE"] = str(pool_size)
     if backend == "mysql":
         env["MYSQL_URL"] = db_url
     elif backend == "mongodb":
         env["MONGODB_URL"] = db_url
+    elif backend == "sqlite":
+        env["SQLITE_PATH"] = str(SQLITE_DB)
+        env["SQLITE_WAL"] = "1" if sqlite_wal else "0"
 
     # Start Siderite server (siderite_todo)
     siderite_bin = ROOT_DIR / "target" / "release" / "siderite_todo"
@@ -699,14 +720,17 @@ def print_markdown_summary(plain_results: Dict[str, Any], todo_results: Dict[str
 
     if todo_results:
         print("### Database-backed Todo API (Siderite ORM vs FastAPI)\n")
-        print("| Backend | Test | Siderite (req/s) | FastAPI (req/s) | Speedup |")
-        print("|---|---|---|---|---|")
+        print("| Backend | Test | Siderite (req/s) | FastAPI (req/s) | Speedup | Min-max (S / F) |")
+        print("|---|---|---|---|---|---|")
         for test_key, data in todo_results.items():
             backend, test_name = test_key.split(":", 1)
             s_rps = data["siderite"]["median_rps"]
             f_rps = data["fastapi"]["median_rps"]
             ratio = s_rps / (f_rps or 1.0)
-            print(f"| {backend.strip().capitalize()} | {test_name.strip()} | {s_rps:,.0f} | {f_rps:,.0f} | **{ratio:.2f}x** |")
+            spread = " / ".join(
+                f"{data[side]['min_rps']:,.0f}-{data[side]['max_rps']:,.0f}" for side in ("siderite", "fastapi")
+            )
+            print(f"| {backend.strip().capitalize()} | {test_name.strip()} | {s_rps:,.0f} | {f_rps:,.0f} | **{ratio:.2f}x** | {spread} |")
         print()
 
 
@@ -729,6 +753,17 @@ def main():
     parser.add_argument("--fastapi-port", type=int, default=8082, help="Port for FastAPI server")
     parser.add_argument("--fast", action="store_true", help="Quick run with reduced request counts")
     parser.add_argument("--keep-alive", action="store_true", help="Enable HTTP keep-alive (-k) in ab")
+    parser.add_argument(
+        "--sqlite-wal",
+        action="store_true",
+        help="SQLite: journal_mode=WAL and synchronous=NORMAL in both apps (default: SQLite defaults)",
+    )
+    parser.add_argument(
+        "--pool-size",
+        type=int,
+        default=10,
+        help="PostgreSQL / MySQL connection pool size in both apps (default: 10)",
+    )
     parser.add_argument("--json", action="store_true", help="Print JSON result at end")
     parser.add_argument("--output", type=str, default="", help="File to write markdown report to")
     args = parser.parse_args()
@@ -764,6 +799,8 @@ def main():
                 num_runs=args.runs,
                 fast=args.fast,
                 keep_alive=args.keep_alive,
+                sqlite_wal=args.sqlite_wal,
+                pool_size=args.pool_size,
             )
             all_todo_results.update(res)
 

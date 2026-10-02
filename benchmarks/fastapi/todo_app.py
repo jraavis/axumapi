@@ -13,6 +13,19 @@ mysql_pool = None
 mongo_db = None
 mongo_client = None
 sqlite_path: str = os.getenv("SQLITE_PATH", "todo_bench.db")
+pool_size: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
+# Matches the Siderite app: WAL (set on the file by the runner) with
+# synchronous = NORMAL on every connection.
+sqlite_wal: bool = os.getenv("SQLITE_WAL") == "1"
+
+
+def sqlite_connect():
+    import sqlite3
+
+    db = sqlite3.connect(sqlite_path)
+    if sqlite_wal:
+        db.execute("PRAGMA synchronous = NORMAL")
+    return db
 
 
 class TodoCreate(BaseModel):
@@ -36,7 +49,7 @@ async def lifespan(app: FastAPI):
             "DATABASE_URL",
             "postgres://siderite:siderite@127.0.0.1:55432/siderite",
         )
-        pg_pool = await asyncpg.create_pool(pg_url, min_size=10, max_size=10)
+        pg_pool = await asyncpg.create_pool(pg_url, min_size=pool_size, max_size=pool_size)
         async with pg_pool.acquire() as conn:
             await conn.execute(
                 """
@@ -74,8 +87,8 @@ async def lifespan(app: FastAPI):
             user=user,
             password=password,
             db=db,
-            minsize=10,
-            maxsize=10,
+            minsize=pool_size,
+            maxsize=pool_size,
             autocommit=True,
         )
         async with mysql_pool.acquire() as conn:
@@ -101,7 +114,7 @@ async def lifespan(app: FastAPI):
     elif db_backend == "sqlite":
         import sqlite3
 
-        with sqlite3.connect(sqlite_path) as db:
+        with sqlite_connect() as db:
             db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS todos (
@@ -170,7 +183,7 @@ async def list_todos():
     elif db_backend == "sqlite":
         import sqlite3
 
-        with sqlite3.connect(sqlite_path) as db:
+        with sqlite_connect() as db:
             cur = db.cursor()
             cur.execute("SELECT id, title, done FROM todos ORDER BY id DESC LIMIT 20")
             rows = cur.fetchall()
@@ -209,7 +222,7 @@ async def get_todo(todo_id: int):
     elif db_backend == "sqlite":
         import sqlite3
 
-        with sqlite3.connect(sqlite_path) as db:
+        with sqlite_connect() as db:
             cur = db.cursor()
             cur.execute("SELECT id, title, done FROM todos WHERE id = ?", (todo_id,))
             row = cur.fetchone()
@@ -253,7 +266,7 @@ async def create_todo(todo: TodoCreate):
     elif db_backend == "sqlite":
         import sqlite3
 
-        with sqlite3.connect(sqlite_path) as db:
+        with sqlite_connect() as db:
             cur = db.cursor()
             cur.execute(
                 "INSERT INTO todos (title, done) VALUES (?, 0)",

@@ -3263,6 +3263,7 @@ dependencies = [
  "siderite",
  "siderite-backends",
  "siderite-cli",
+ "sqlx",
  "tokio",
 ]
 
