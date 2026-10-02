@@ -30,10 +30,11 @@ End-to-end throughput measured with ApacheBench (`ab -l`) on the same
 machine, one server at a time (DB rounds) or side by side on different ports
 (plain-HTTP round). Siderite runs a `--release` build; FastAPI runs under
 Uvicorn with a single worker, no reload, and warning log level. Each figure
-is the median of 3 runs with 0 failed requests.
+is the median of 3 runs with 0 failed requests. Automated benchmark harnesses
+live in `benchmarks/`.
 
 Machine: Darwin arm64 (Apple M3 Pro), rustc 1.96.0, Python 3.13.14,
-FastAPI 0.142.1. Databases run in local containers: PostgreSQL 17,
+FastAPI 0.142.1, Uvicorn 0.54.0. Databases run in local containers: PostgreSQL 17,
 MySQL 8.4, MongoDB 8 (single-node replica set).
 
 ### Plain HTTP (`examples/hello_world`)
@@ -41,40 +42,38 @@ MySQL 8.4, MongoDB 8 (single-node replica set).
 `GET /` (`-n 20000 -c 100`), `GET /hello/world` (`-n 20000 -c 100`),
 `POST /echo` with a small JSON body (`-n 10000 -c 50`).
 
-| Test | Siderite (req/s) | FastAPI (req/s) |
-|---|---|---|
-| `GET /` | 28,674 | 5,039 |
-| `GET /hello/{name}` | 28,023 | 5,238 |
-| `POST /echo` (JSON) | 29,573 | 3,541 |
-
-Two response-shape caveats: `GET /` returns `PlainText` from siderite but a
-JSON string from FastAPI, and `POST /echo` returns `200` from the example
-app versus `201` from the FastAPI equivalent. Both are 2xx with tiny bodies,
-so the comparison still reflects per-request framework overhead.
+| Test | Siderite (req/s) | FastAPI (req/s) | Speedup | Latency p99 (S / F) |
+|---|---|---|---|---|
+| `GET /` | 36,985 | 8,044 | 4.60x | 7 ms / 35 ms |
+| `GET /hello/{name}` | 35,776 | 6,715 | 5.33x | 6 ms / 41 ms |
+| `POST /echo` (JSON) | 37,701 | 7,045 | 5.35x | 2 ms / 14 ms |
 
 ### Database-backed Todo API
 
 A minimal Todo API (`id`, `title`, `done`) with `GET /todos` (latest 20),
 `GET /todos/{id}`, and `POST /todos` → 201, implemented once with the
-siderite ORM (`PgBackend`, `MySqlBackend`, `MongoBackend`, pool of 10) and
-once with FastAPI (`asyncpg`, `aiomysql`, `motor`, pool of 10). Tables are
+siderite ORM (`SqliteBackend`, `PgBackend`, `MySqlBackend`, `MongoBackend`, pool of 10) and
+once with FastAPI (`sqlite3`, `asyncpg`, `aiomysql`, `motor`, pool of 10). Tables are
 truncated and reseeded with 100 rows before each phase. Reads use
 `-n 5000 -c 50`; inserts use `-n 2000 -c 20`.
 
-| DB | Test | Siderite (req/s) | FastAPI (req/s) |
-|---|---|---|---|
-| PostgreSQL | list 20 | 8,114 | 5,031 |
-| PostgreSQL | get one | 7,825 | 7,476 |
-| PostgreSQL | insert | 7,116 | 4,543 |
-| MySQL | list 20 | 7,103 | 3,565 |
-| MySQL | get one | 8,335 | 6,665 |
-| MySQL | insert | 2,445 | 2,644 |
-| MongoDB | list 20 | 14,280 | 2,952 |
-| MongoDB | get one | 11,714 | 3,792 |
-| MongoDB | insert | 2,526 | 2,363 |
+| DB | Test | Siderite (req/s) | FastAPI (req/s) | Speedup |
+|---|---|---|---|---|
+| SQLite | list 20 | 25,252 | 5,191 | 4.86x |
+| SQLite | get one | 44,876 | 5,627 | 7.98x |
+| SQLite | insert | 1,914 | 1,921 | 1.00x |
+| PostgreSQL | list 20 | 8,048 | 7,870 | 1.02x |
+| PostgreSQL | get one | 8,050 | 8,032 | 1.00x |
+| PostgreSQL | insert | 7,562 | 7,962 | 0.95x |
+| MySQL | list 20 | 7,438 | 5,172 | 1.44x |
+| MySQL | get one | 7,924 | 7,332 | 1.08x |
+| MySQL | insert | 2,472 | 3,198 | 0.77x |
+| MongoDB | list 20 | 13,726 | 3,705 | 3.70x |
+| MongoDB | get one | 15,389 | 4,179 | 3.68x |
+| MongoDB | insert | 2,963 | 2,608 | 1.14x |
 
-Writes are DB-bound and land near parity (except PostgreSQL inserts).
-Reads favor siderite, most clearly on MongoDB list/get (Rust driver versus
+Writes are DB-bound and land near parity.
+Reads favor siderite, most clearly on SQLite, MongoDB list/get (Rust driver versus
 Motor) and MySQL list. Per-run spread is roughly ±20–30%, so treat ratios
 near 1.0–1.3x as noise; the larger gaps reproduce across reruns.
 

@@ -3255,6 +3255,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "siderite_todo"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "siderite",
+ "siderite-backends",
+ "siderite-cli",
+ "tokio",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

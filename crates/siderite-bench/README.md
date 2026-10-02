@@ -66,5 +66,5 @@ same machine (median of 3 runs, 0 failures), is documented in
 [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md) and on the website's
 [benchmarks page](https://jraavis.github.io/siderite/contributing/benchmarks/):
 plain-HTTP routes from `examples/hello_world` plus a minimal Todo API on
-PostgreSQL, MySQL and MongoDB. Those harnesses are ad hoc and do not live in
-this crate.
+SQLite, PostgreSQL, MySQL and MongoDB. Those automated harnesses live in
+[`benchmarks/`](../../benchmarks/) and are driven via `python3 benchmarks/run_benchmarks.py`.
