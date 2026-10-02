@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI):
             "MONGODB_URL",
             "mongodb://127.0.0.1:57017/siderite?directConnection=true",
         )
-        mongo_client = AsyncIOMotorClient(mongo_url, maxPoolSize=10)
+        mongo_client = AsyncIOMotorClient(mongo_url, maxPoolSize=pool_size)
         mongo_db = mongo_client["siderite"]
     elif db_backend == "sqlite":
         import sqlite3

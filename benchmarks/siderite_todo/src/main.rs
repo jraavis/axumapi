@@ -100,11 +100,16 @@ pub async fn open_db(url: &str) -> Result<Db, ApiError> {
                 options
                     .journal_mode(SqliteJournalMode::Wal)
                     .synchronous(SqliteSynchronous::Normal),
-                SqlitePoolOptions::new().max_connections(10),
+                SqlitePoolOptions::new().max_connections(pool_size()),
             )
             .await
         } else {
-            SqliteBackend::connect(url).await
+            let options: SqliteConnectOptions = url.parse().map_err(ApiError::internal)?;
+            SqliteBackend::connect_with(
+                options,
+                SqlitePoolOptions::new().max_connections(pool_size()),
+            )
+            .await
         }
         .map_err(ApiError::internal)?;
         let db = Db::new(backend);

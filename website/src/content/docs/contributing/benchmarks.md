@@ -44,9 +44,9 @@ MySQL 8.4, MongoDB 8 (single-node replica set).
 
 | Test | Siderite (req/s) | FastAPI (req/s) | Speedup | Latency p99 (S / F) |
 |---|---|---|---|---|
-| `GET /` | 36,985 | 8,044 | 4.60x | 7 ms / 35 ms |
-| `GET /hello/{name}` | 35,776 | 6,715 | 5.33x | 6 ms / 41 ms |
-| `POST /echo` (JSON) | 37,701 | 7,045 | 5.35x | 2 ms / 14 ms |
+| `GET /` | 36,281 | 4,321 | 8.40x | 6 ms / 77 ms |
+| `GET /hello/{name}` | 17,789 | 4,015 | 4.43x | 19 ms / 53 ms |
+| `POST /echo` (JSON) | 26,265 | 3,817 | 6.88x | 4 ms / 48 ms |
 
 ### Database-backed Todo API
 
@@ -55,22 +55,22 @@ A minimal Todo API (`id`, `title`, `done`) with `GET /todos` (latest 20),
 siderite ORM (`SqliteBackend`, `PgBackend`, `MySqlBackend`, `MongoBackend`, pool of 10) and
 once with FastAPI (`sqlite3`, `asyncpg`, `aiomysql`, `motor`, pool of 10). Tables are
 truncated and reseeded with 100 rows before each phase. Reads use
-`-n 5000 -c 50`; inserts use `-n 2000 -c 20`.
+`-n 5000 -c 50`; inserts use `-n 10000 -c 20`.
 
 | DB | Test | Siderite (req/s) | FastAPI (req/s) | Speedup |
 |---|---|---|---|---|
-| SQLite | list 20 | 25,252 | 5,191 | 4.86x |
-| SQLite | get one | 44,876 | 5,627 | 7.98x |
-| SQLite | insert | 1,914 | 1,921 | 1.00x |
-| PostgreSQL | list 20 | 8,048 | 7,870 | 1.02x |
-| PostgreSQL | get one | 8,050 | 8,032 | 1.00x |
-| PostgreSQL | insert | 7,562 | 7,962 | 0.95x |
-| MySQL | list 20 | 7,438 | 5,172 | 1.44x |
-| MySQL | get one | 7,924 | 7,332 | 1.08x |
-| MySQL | insert | 2,472 | 3,198 | 0.77x |
-| MongoDB | list 20 | 13,726 | 3,705 | 3.70x |
-| MongoDB | get one | 15,389 | 4,179 | 3.68x |
-| MongoDB | insert | 2,963 | 2,608 | 1.14x |
+| SQLite | list 20 | 26,659 | 5,249 | 5.08x |
+| SQLite | get one | 39,053 | 5,666 | 6.89x |
+| SQLite | insert | 2,129 | 1,942 | 1.10x |
+| PostgreSQL | list 20 | 9,044 | 7,873 | 1.15x |
+| PostgreSQL | get one | 10,715 | 8,187 | 1.31x |
+| PostgreSQL | insert | 8,675 | 7,569 | 1.15x |
+| MySQL | list 20 | 9,396 | 5,147 | 1.83x |
+| MySQL | get one | 9,948 | 7,218 | 1.38x |
+| MySQL | insert | 3,333 | 3,732 | 0.89x |
+| MongoDB | list 20 | 11,214 | 3,717 | 3.02x |
+| MongoDB | get one | 13,846 | 4,119 | 3.36x |
+| MongoDB | insert | 3,049 | 2,533 | 1.20x |
 
 Writes are DB-bound and land near parity.
 Reads favor siderite, most clearly on SQLite, MongoDB list/get (Rust driver versus

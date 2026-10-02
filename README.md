@@ -113,12 +113,12 @@ End-to-end throughput versus FastAPI (ApacheBench, same machine, median of 3 run
 
 | Test | Siderite | FastAPI |
 |---|---|---|
-| `GET /` (`hello_world`) | 36,985 req/s | 8,044 req/s |
-| `POST /echo` (JSON) | 37,701 req/s | 7,045 req/s |
-| Todo list 20 (SQLite) | 25,252 req/s | 5,191 req/s |
-| Todo list 20 (PostgreSQL) | 8,048 req/s | 7,870 req/s |
-| Todo list 20 (MySQL) | 7,438 req/s | 5,172 req/s |
-| Todo list 20 (MongoDB) | 13,726 req/s | 3,705 req/s |
+| `GET /` (`hello_world`) | 36,281 req/s | 4,321 req/s |
+| `POST /echo` (JSON) | 26,265 req/s | 3,817 req/s |
+| Todo list 20 (SQLite) | 26,659 req/s | 5,249 req/s |
+| Todo list 20 (PostgreSQL) | 9,044 req/s | 7,873 req/s |
+| Todo list 20 (MySQL) | 9,396 req/s | 5,147 req/s |
+| Todo list 20 (MongoDB) | 11,214 req/s | 3,717 req/s |
 
 DB writes are DB-bound and land near parity; reads favor siderite. Numbers are machine-specific snapshots, not guarantees.
 

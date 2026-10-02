@@ -592,6 +592,10 @@ def run_todo_suite(
     if backend == "mysql":
         env["MYSQL_URL"] = db_url
     elif backend == "mongodb":
+        if "maxPoolSize=" not in db_url:
+            sep = "&" if "?" in db_url else "?"
+            db_url = f"{db_url}{sep}maxPoolSize={pool_size}"
+        env["DATABASE_URL"] = db_url
         env["MONGODB_URL"] = db_url
     elif backend == "sqlite":
         env["SQLITE_PATH"] = str(SQLITE_DB)
