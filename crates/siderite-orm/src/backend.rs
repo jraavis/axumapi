@@ -140,7 +140,7 @@ pub trait Backend: Executor {
 #[async_trait]
 pub trait Transaction: Executor {
     /// Commit. Later calls on this transaction fail with
-    /// [`QueryError::TransactionClosed`](crate::QueryError::TransactionClosed).
+    /// [`QueryError::TransactionClosed`].
     async fn commit(&self) -> Result<(), OrmError>;
 
     /// Roll back. Later calls fail like after [`commit`](Self::commit).
