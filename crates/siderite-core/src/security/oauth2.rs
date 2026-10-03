@@ -1,4 +1,7 @@
 //! The OAuth2 password flow: bearer-token extraction and the token form.
+//!
+//! Password-flow types are legacy compatibility. New OAuth applications use
+//! authorization code with PKCE; extraction does not validate access tokens.
 
 use super::{bearer_token, document_scheme};
 use crate::body::Body;

@@ -58,6 +58,46 @@ let team = user.fetch_team(&db).await?; // Option<Arc<Team>>
 
 ## Transactions
 
+### Experimental native MySQL
+
+Enable `mysql-native` on `siderite-backends` to opt into
+`mysql::native::{NativeMySqlBackend, NativeMySqlOptions}`. The existing
+SQLx `MySqlBackend` remains available and is the compatibility default.
+
+```rust
+use siderite_backends::mysql::native::NativeMySqlBackend;
+use siderite_orm::Db;
+
+let backend = NativeMySqlBackend::connect(&database_url).await?;
+let db = Db::new(backend.clone());
+// Release all transaction handles before closing the pool.
+backend.close().await?;
+```
+
+`connect_with` accepts a connection count, maximum waiting callers and
+checkout deadline. Defaults are 10 connections, 100 waiters and 10 seconds.
+Startup warms every configured slot. `warm` can repeat this after schema
+setup, provided application traffic has not started. Excess admission and
+expired checkout fail explicitly; application-level retries require their
+own policy.
+
+Clean compiled ORM operations reuse configured prepared-statement sessions.
+Raw SQL invalidates cached table metadata and retires its connection after
+use; raw operations inside a transaction retain that session until the
+transaction finishes. Schema scopes likewise pin and then retire a session,
+releasing session locks. An interrupted exchange or unfinished transaction
+retires its socket, and an escaped interrupted handle becomes unusable.
+Writes are never automatically retried after a transport failure or an
+unknown commit outcome.
+
+The adapter shares the SQLx MySQL RETURNING engine and canonical value
+contract. Native URL options belong to the pinned native driver; they are
+not interchangeable with SQLx options. TLS, server restart, full migration
+recovery and the performance matrix still require acceptance evidence before
+production adoption or a default-driver change.
+
+### Scoped transactions
+
 ```rust
 db.transaction(|tx| async move {
     let mut user = User::objects(&tx).get(User::id.eq(1)).await?;
@@ -69,7 +109,16 @@ db.transaction(|tx| async move {
 ```
 
 * Returning `Ok` commits, and `Err` rolls back.
-* A panic drops the transaction, which rolls it back.
+* Cancelling a closure, child savepoint or statement makes the whole
+  transaction unusable. The outer scope cannot commit its writes, even if
+  application code catches the cancellation or panic and returns success.
+* Overlapping statements and sibling scopes return `TransactionBusy`.
+  While a child is active, use its handle; the parent is temporarily inactive.
+  Recursive nesting through the child remains supported.
+* Handles retained after a completed scope cannot execute or register
+  commit hooks. Hooks of cancelled or rolled-back scopes are discarded.
+* Cancellation during COMMIT can leave the database outcome unknown;
+  resolve the operation outcome before retrying an insert.
 * Calling `transaction` on a transaction handle creates a savepoint. `on_commit` hooks registered inside a savepoint that rolls back are discarded.
 * `transaction_with(IsolationLevel::..)` accepts only the levels the backend lists. SQLite lists only `Serializable`. Any other level is a capability error raised before any I/O.
 * Inside the closure, use `tx` and not the outer `db`. On a one-connection pool such as `sqlite::memory:`, the outer handle would wait forever for a second connection.
@@ -114,3 +163,55 @@ db.transaction(|tx| async move {
 * Each many-to-many adds `book.tags(&db)`, a `ManyToManyManager`. With `related_name`, it also adds a reverse `tag.tagged_books(&db)` queryset (a correlated `EXISTS` over the join table).
 * Generic structs are not supported.
 * `ForeignKey<T>` implements `Validate`, `Schema` and `Dump` by delegating to `T::Pk`, so a model with relation fields can derive those together with `Model`. OpenAPI shows the key type (an integer for `ForeignKey<User>` whose primary key is `i64`).
+
+## Prefetch parameter admission
+
+Prefetch constructs each source key's canonical identity once and uses a
+hash set to deduplicate keys. Repeated references share loaded objects;
+target queries are batched, without one query per source object. An explicit
+prefetch queryset uses its own database's capabilities. SQL adapters count
+its full compiled bind parameters before allocating the remaining IN-list
+budget; NULL literals do not consume placeholders. Exhausted budgets fail
+before target I/O. Empty target querysets skip parameter counting and I/O.
+
+`Backend::read_parameter_count` returns an exact compiled read bind count;
+SQL extension backends must implement it to support bounded prefetch.
+`Db::read_parameter_count` exposes the same no-I/O diagnostic. Unknown SQL
+counts fail explicitly. MongoDB batching uses its document batch capacity.
+Sliced target querysets spanning multiple bind batches are rejected because
+repeating a limit/offset per batch would change the queryset's meaning.
+
+## SQLx connection initialization
+
+PostgreSQL/MySQL `connect_with(url, options)` installs mandatory session
+settings and replaces `options.after_connect`. SQLx keeps that callback
+private, so a constructor cannot recover it for transparent composition.
+Other pool settings, including checkout validation, remain in effect.
+Use `connect_with_init(url, options, hook)` for custom session setup:
+
+```rust
+use siderite_backends::connection_init::ConnectionInit;
+use siderite_backends::postgres::PgBackend;
+use sqlx::postgres::PgPoolOptions;
+use std::sync::Arc;
+
+let hook: ConnectionInit<sqlx::Postgres> = Arc::new(|conn, _| {
+    Box::pin(async move {
+        sqlx::Executor::execute(conn,
+            "SET application_name = 'my-app'").await?;
+        Ok(())
+    })
+});
+let backend = PgBackend::connect_with_init(
+    &database_url, PgPoolOptions::new(), hook,
+).await?;
+```
+
+The custom hook runs first on every fresh/replacement connection. Required
+UTC (and MySQL SQL-mode/GROUP_CONCAT) settings run afterwards, overriding
+conflicting values. A hook must leave no transaction or lock open. Its
+failure rejects that physical connection; SQLx retries within the pool
+acquisition deadline and controls hook error logging. Callback capture
+must be safe across concurrent connections. Wrapping an external pool with
+`from_pool` leaves session initialization and reset obligations to its owner.
+Native MySQL retains its separate explicit session/lease policy.

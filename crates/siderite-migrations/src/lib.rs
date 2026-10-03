@@ -29,7 +29,9 @@ pub mod state;
 pub use autodetector::{RenameHints, diff, diff_with};
 pub use cli::{ExitCode, make_migrations, run};
 pub use error::MigrationError;
-pub use executor::{HISTORY_TABLE, Migrator, Report};
+pub use executor::{
+    HISTORY_TABLE, MigrationIntent, Migrator, RecoveryEntry, RecoveryReport, Report,
+};
 pub use loader::{MigrationGraph, load_dir, write_migration};
 pub use migration::Migration;
 pub use operation::Operation;

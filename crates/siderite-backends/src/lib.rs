@@ -13,6 +13,8 @@
 //!   ([`redis::RedisStore`]), not a QuerySet backend.
 #![forbid(unsafe_code)]
 
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+pub mod connection_init;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
 #[cfg(feature = "mysql")]

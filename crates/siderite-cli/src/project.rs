@@ -14,6 +14,7 @@ pub const APP_COMMANDS: &[&str] = &[
     "migrate",
     "rollback",
     "showmigrations",
+    "inspectmigrations",
     "squashmigrations",
 ];
 

@@ -13,3 +13,7 @@ sqlx.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+mongodb.workspace = true
+
+[features]
+mysql-native = ["siderite-backends/mysql-native"]

@@ -27,7 +27,7 @@ use crate::types::DbType;
 use crate::value::Value;
 use async_trait::async_trait;
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -251,7 +251,9 @@ impl<M: Model, T: Model> Prefetch<M, T> {
     }
 
     /// Load targets through `queryset`. Its filters apply; targets it does
-    /// not return stay unloaded.
+    /// not return stay unloaded. Its database capabilities and compiled
+    /// existing bind count govern prefetch batching. SQL backends must
+    /// implement Backend::read_parameter_count.
     #[must_use]
     pub fn queryset(mut self, queryset: QuerySet<T>) -> Self {
         self.queryset = Some(queryset);
@@ -278,37 +280,63 @@ impl<M: Model, T: Model> Prefetcher<M> for Prefetch<M, T> {
             return Ok(());
         };
         let column = step.hop.fk_column.as_ref();
-        let keys: Vec<Option<Value>> = models
+        let mut seen = HashSet::new();
+        let mut wanted = Vec::new();
+        let keys: Vec<Option<String>> = models
             .iter()
             .map(|model| {
-                model
+                let value = model
                     .to_values()
                     .into_iter()
                     .find(|(c, _)| *c == column)
                     .map(|(_, v)| v)
-                    .filter(|v| !v.is_null())
+                    .filter(|v| !v.is_null())?;
+                let key = value_key(&value);
+                if seen.insert(key.clone()) {
+                    wanted.push(value);
+                }
+                Some(key)
             })
             .collect();
-        let mut wanted: Vec<Value> = Vec::new();
-        for key in keys.iter().flatten() {
-            if !wanted.iter().any(|w| value_key(w) == value_key(key)) {
-                wanted.push(key.clone());
-            }
-        }
         if wanted.is_empty() {
             return Ok(());
         }
         let base = self.queryset.clone().unwrap_or_else(|| T::objects(db));
-        let chunk = db.capabilities().max_params.max(1);
+        base.ready()?;
+        if base.empty {
+            return Ok(());
+        }
+        let caps = base.db.capabilities();
+        let used = match base.db.read_parameter_count(base.plan())? {
+            Some(count) => count,
+            None if matches!(caps.kind, crate::BackendKind::MongoDb) => 0,
+            None => {
+                return Err(QueryError::InvalidPlan(
+                    "prefetch requires compiled parameter counting".into(),
+                )
+                .into());
+            }
+        };
+        let chunk = caps
+            .max_params
+            .checked_sub(used)
+            .filter(|remaining| *remaining > 0)
+            .ok_or_else(|| QueryError::InvalidPlan("prefetch bind capacity exhausted".into()))?;
+        if wanted.len() > chunk && (base.plan.limit.is_some() || base.plan.offset.is_some()) {
+            return Err(
+                QueryError::InvalidPlan("sliced prefetch cannot span bind batches".into()).into(),
+            );
+        }
         let mut loaded: HashMap<String, Arc<T>> = HashMap::new();
         for wanted in wanted.chunks(chunk) {
-            let predicate = Expr::col(step.hop.pk_column.clone()).is_in(wanted.iter().cloned());
+            let pk = Expr::col(step.hop.pk_column.clone());
+            let predicate = pk.is_in(wanted.iter().cloned());
             for target in base.clone().filter(predicate).all().await? {
                 loaded.insert(value_key(&target.pk().to_value()), Arc::new(target));
             }
         }
         for (model, key) in models.iter_mut().zip(&keys) {
-            let target = key.as_ref().and_then(|k| loaded.get(&value_key(k)));
+            let target = key.as_ref().and_then(|key| loaded.get(key));
             if let Some(target) = target {
                 (step.attach)(model, Arc::<T>::clone(target));
             }

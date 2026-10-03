@@ -49,6 +49,9 @@
 //! }
 //! # let _ = me;
 //! ```
+//!
+//! Password-flow types are legacy compatibility. New OAuth applications use
+//! authorization code with PKCE; extraction does not validate access tokens.
 
 mod api_key;
 mod http_auth;

@@ -246,6 +246,9 @@ pub enum ServerError {
     /// The server failed while serving connections.
     #[error("server error: {0}")]
     Serve(#[source] std::io::Error),
+    /// Request draining or resource teardown exceeded its shutdown budget.
+    #[error("application shutdown exceeded its deadline")]
+    ShutdownTimeout,
 }
 
 /// Failure to read a request or response body.

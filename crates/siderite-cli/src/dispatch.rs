@@ -115,6 +115,7 @@ Migrations:
   migrate [TARGET] [--dry-run]
   rollback [--steps N | TARGET] [--dry-run]
   showmigrations
+  inspectmigrations       Read-only recovery report
   squashmigrations FROM TO [--name SLUG]
 
 Options:

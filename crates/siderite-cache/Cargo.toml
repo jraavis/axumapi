@@ -14,10 +14,14 @@ workspace = true
 
 [features]
 default = []
+tls = ["siderite-backends?/tls"]
 redis = ["dep:siderite-backends", "siderite-backends/redis"]
 
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
+httpdate.workspace = true
+uuid.workspace = true
 siderite-core.workspace = true
 http.workspace = true
 lru.workspace = true
@@ -25,9 +29,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tower.workspace = true
+tracing.workspace = true
 siderite-backends = { workspace = true, optional = true }
 
 [dev-dependencies]
+axum.workspace = true
 siderite-testkit.workspace = true
 bytes.workspace = true
 futures-util.workspace = true

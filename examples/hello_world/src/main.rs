@@ -44,5 +44,16 @@ fn app() -> App {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    if std::env::var_os("BENCHMARK_RUNTIME").is_some() {
+        let runtime = tokio::runtime::Handle::current();
+        let workers = runtime.metrics().num_workers();
+        eprintln!(
+            "BENCHMARK_RUNTIME {}",
+            serde_json::json!({
+                "scheduler_workers": workers,
+                "pid": std::process::id(),
+            })
+        );
+    }
     siderite_cli::AppCli::new(app).run().await
 }

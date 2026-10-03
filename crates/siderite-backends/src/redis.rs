@@ -157,7 +157,25 @@ impl RedisStore {
     /// [`RedisError::Connection`] when the URL is invalid or the server cannot be reached.
     pub async fn connect(url: &str) -> Result<Self, RedisError> {
         let client = redis::Client::open(url)?;
-        let manager = redis::aio::ConnectionManager::new(client).await?;
+        Self::connect_with(client, redis::aio::ConnectionManagerConfig::new()).await
+    }
+
+    /// Connect a configured client, including custom TLS trust roots.
+    ///
+    /// Args:
+    ///     client: Driver client with transport, certificate and DB policy.
+    ///     config: Retry, timeout and multiplexed admission limits.
+    ///
+    /// Returns:
+    ///     Connected store with an empty key prefix.
+    ///
+    /// # Errors
+    /// Connection, authentication or certificate verification failure.
+    pub async fn connect_with(
+        client: redis::Client,
+        config: redis::aio::ConnectionManagerConfig,
+    ) -> Result<Self, RedisError> {
+        let manager = redis::aio::ConnectionManager::new_with_config(client, config).await?;
         Ok(Self {
             manager,
             prefix: String::new(),

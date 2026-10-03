@@ -79,6 +79,7 @@ pub(crate) struct Endpoint {
     pub(crate) handler: BoxedHandler,
     pub(crate) describe: DescribeFn,
     pub(crate) meta: OperationMeta,
+    pub(crate) background_tasks: bool,
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -98,6 +99,7 @@ impl Endpoint {
             handler: boxed,
             describe: H::describe,
             meta: OperationMeta::default(),
+            background_tasks: H::BACKGROUND_TASKS,
         }
     }
 
@@ -140,16 +142,23 @@ impl Endpoint {
         };
         let handler = self.handler;
         let status = self.meta.status;
+        let background = self.background_tasks;
         Some(axum::routing::on(
             filter,
             move |req: axum::extract::Request| {
                 let handler = Arc::clone(&handler);
                 async move {
-                    let mut response = handler(req.map(Body::from_inner)).await;
+                    let mut req = req.map(Body::from_inner);
+                    let guard = background
+                        .then(|| crate::background::RequestGuard::install(req.extensions_mut()));
+                    let mut response = handler(req).await;
                     if let Some(status) = status
                         && response.status() == StatusCode::OK
                     {
                         *response.status_mut() = status;
+                    }
+                    if let Some(guard) = guard {
+                        guard.finish(response.status());
                     }
                     response.map(Body::into_inner)
                 }

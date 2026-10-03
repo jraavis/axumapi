@@ -1,15 +1,12 @@
-//! Process-local background tasks run after the response, and a durable
-//! queue trait (adapters come later).
+//! Bounded process-local tasks authorized by successful endpoint responses.
 //!
-//! # Process-local tasks
-//! [`BackgroundTasks`] collects futures during a request. When the extractor
-//! is dropped (after the handler returns) they run **sequentially** in a
-//! single spawned tokio task.
-//!
-//! These tasks are **not durable**: they live only in this process and are
-//! lost on crash or shutdown. A panic in one task is caught (via
-//! [`futures_util::FutureExt::catch_unwind`]) and logged with `tracing`;
-//! later tasks still run.
+//! Tasks run sequentially within a request batch after the endpoint produces
+//! a 2xx response. Failed extraction, errors, cancellation and panic discard
+//! queued work. This boundary does not guarantee streaming-body delivery or
+//! client receipt; middleware may subsequently replace the response.
+//! Accepted work is tracked by the application's lifespan and drained before
+//! resource teardown within its shutdown deadline. Task panic is logged and
+//! later tasks in the batch continue. A crash still loses process-local work.
 //!
 //! # Durable queues
 //! [`TaskQueue`] is the interface for a durable backend. Redis / RabbitMQ
@@ -17,36 +14,115 @@
 
 use crate::error::ApiError;
 use crate::extract::FromRequestParts;
-use futures_util::FutureExt;
 use http::request::Parts;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::future::Future;
-use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use thiserror::Error;
 use uuid::Uuid;
 
+mod manager;
+mod request;
+pub(crate) use manager::TaskManager;
+pub(crate) use request::RequestGuard;
+use request::RequestTasks;
+
+/// Limits for each app's process-local background queue.
+///
+/// Mounted apps have separate queues. Admission counts pending and running
+/// tasks, including batches awaiting an execution slot.
+#[derive(Debug, Clone, Copy)]
+pub struct BackgroundTaskLimits {
+    /// Maximum concurrently running request batches (default: 64).
+    pub max_active_batches: usize,
+    /// Maximum admitted tasks across requests (default: 1024).
+    pub max_tasks: usize,
+    /// Maximum tasks queued by one request (default: 100).
+    pub max_tasks_per_request: usize,
+}
+
+impl Default for BackgroundTaskLimits {
+    fn default() -> Self {
+        Self {
+            max_active_batches: 64,
+            max_tasks: 1024,
+            max_tasks_per_request: 100,
+        }
+    }
+}
+
+/// Rejection while queuing process-local work.
+#[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BackgroundTaskError {
+    /// The request or application is no longer accepting work.
+    #[error("background queue is closed")]
+    Closed,
+    /// A request or app admission limit has been reached.
+    #[error("background queue capacity reached")]
+    Capacity,
+    /// No endpoint request or Tokio runtime owns this work.
+    #[error("background execution is unavailable")]
+    Unavailable,
+}
+
 type LocalTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-/// Extractor that schedules process-local work after the handler returns.
+/// Collect bounded process-local work for a successful endpoint response.
 ///
-/// See the [module docs](self) for durability and panic behaviour.
+/// Default-constructed instances are inert. Extract through a handler to
+/// obtain request ownership. Use [`Self::try_add`] to handle overload;
+/// [`Self::add`] logs a rejection and drops the rejected future.
 #[derive(Default)]
 pub struct BackgroundTasks {
-    tasks: Vec<LocalTask>,
+    queue: Option<RequestTasks>,
 }
 
 impl BackgroundTasks {
-    /// Queue `fut` to run after the response is produced.
+    /// Queue work, logging and discarding it when admission is rejected.
+    ///
+    /// Args:
+    ///     fut: Future executed after a successful endpoint response.
+    ///
+    /// Returns:
+    ///     Nothing; use [`Self::try_add`] to inspect rejection.
     pub fn add<F>(&mut self, fut: F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.tasks.push(Box::pin(fut));
+        if let Err(error) = self.try_add(fut) {
+            tracing::warn!(%error, "background task rejected");
+        }
     }
 
-    /// Queue the future returned by `f`.
+    /// Reserve bounded admission for work within this request.
+    ///
+    /// Args:
+    ///     fut: Future whose execution requires a successful endpoint.
+    ///
+    /// Returns:
+    ///     Success after admission; cancellation still discards queued work.
+    ///
+    /// # Errors
+    /// Closed request/app, unavailable ownership, or exhausted capacity.
+    pub fn try_add<F>(&mut self, fut: F) -> Result<(), BackgroundTaskError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.queue
+            .as_ref()
+            .ok_or(BackgroundTaskError::Unavailable)?
+            .add(Box::pin(fut))
+    }
+
+    /// Queue the future returned by `f`, with [`Self::add`] admission policy.
+    ///
+    /// Args:
+    ///     f: Factory called immediately to construct the queued future.
+    ///
+    /// Returns:
+    ///     Nothing; the future is discarded if admission is rejected.
     pub fn add_fn<F, Fut>(&mut self, f: F)
     where
         F: FnOnce() -> Fut,
@@ -56,29 +132,46 @@ impl BackgroundTasks {
     }
 }
 
-impl Drop for BackgroundTasks {
-    fn drop(&mut self) {
-        let tasks = std::mem::take(&mut self.tasks);
-        if tasks.is_empty() {
-            return;
-        }
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            tracing::error!("no tokio runtime; dropping background tasks");
-            return;
-        };
-        handle.spawn(async move {
-            for task in tasks {
-                if let Err(panic) = AssertUnwindSafe(task).catch_unwind().await {
-                    tracing::error!(error = %panic_message(&panic), "background task panicked");
-                }
-            }
-        });
+impl FromRequestParts for BackgroundTasks {
+    const BACKGROUND_TASKS: bool = true;
+
+    async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
+        let queue = parts
+            .extensions
+            .get::<RequestTasks>()
+            .cloned()
+            .ok_or_else(|| {
+                let message = "background extractor needs endpoint ownership";
+                ApiError::internal(message)
+            })?;
+        Ok(Self { queue: Some(queue) })
     }
 }
 
-impl FromRequestParts for BackgroundTasks {
-    async fn from_request_parts(_parts: &mut Parts) -> Result<Self, ApiError> {
-        Ok(Self::default())
+impl crate::App {
+    /// Configure admission and execution limits for this app's task queue.
+    ///
+    /// Args:
+    ///     limits: Positive limits within Tokio semaphore capacity.
+    ///
+    /// Returns:
+    ///     Configured app; invalid limits become a configuration error.
+    #[must_use]
+    pub fn background_tasks(mut self, limits: BackgroundTaskLimits) -> Self {
+        let capacity = tokio::sync::Semaphore::MAX_PERMITS;
+        if limits.max_active_batches == 0
+            || limits.max_tasks == 0
+            || limits.max_tasks_per_request == 0
+            || limits.max_active_batches > capacity
+            || limits.max_tasks > capacity
+            || limits.max_tasks_per_request > limits.max_tasks
+        {
+            self.config_errors
+                .push("invalid background task limits".into());
+        } else {
+            self.background_limits = limits;
+        }
+        self
     }
 }
 

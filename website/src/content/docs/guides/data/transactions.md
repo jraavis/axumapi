@@ -17,7 +17,16 @@ db.transaction(|tx| async move {
 ```
 
 - Returning `Ok` commits; `Err` rolls back.
-- A panic drops the transaction, which rolls it back.
+- Cancelling a closure, child savepoint or statement makes the whole
+  transaction unusable. The outer scope cannot commit its writes, even if
+  application code catches the cancellation or panic and returns success.
+- Overlapping statements and sibling scopes return `TransactionBusy`.
+  While a child is active, use its handle; the parent is temporarily inactive.
+  Recursive nesting through the child remains supported.
+- Handles retained after a completed scope cannot execute or register
+  commit hooks. Hooks of cancelled or rolled-back scopes are discarded.
+- Cancellation during COMMIT can leave the database outcome unknown;
+  resolve the operation outcome before retrying an insert.
 - Calling `transaction` on a transaction handle creates a savepoint.
   `on_commit` hooks registered inside a savepoint that rolls back are
   discarded.

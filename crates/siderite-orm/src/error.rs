@@ -50,6 +50,12 @@ pub enum QueryError {
     /// A statement ran on a transaction that was already committed or rolled back.
     #[error("the transaction is already closed")]
     TransactionClosed,
+    /// Cancelled or failed scope cleanup made this transaction unusable.
+    #[error("the transaction was aborted; its writes cannot be committed")]
+    TransactionAborted,
+    /// Another statement or child scope owns this transaction connection.
+    #[error("another statement or child scope owns this transaction")]
+    TransactionBusy,
     /// A model or relation was used in a way its metadata does not allow.
     #[error("{0}")]
     Model(String),

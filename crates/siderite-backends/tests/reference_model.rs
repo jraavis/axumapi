@@ -1,6 +1,7 @@
 //! Hand-written `Model` implementations: the reference for what
 //! `#[derive(Model)]` generates, and an end-to-end test of the ORM contract
 //! (write plans, querysets, transactions) on SQLite.
+#![cfg(feature = "sqlite")]
 #![allow(clippy::unwrap_used, non_upper_case_globals, dead_code)]
 
 use siderite_backends::sqlite::SqliteBackend;

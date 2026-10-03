@@ -206,19 +206,10 @@ async fn postgres_non_atomic_migration_resumes_at_failed_statement() {
     assert_eq!(progress.rows[0].get("op_index"), Some(&Value::Int(1)));
     assert_eq!(progress.rows[0].get("stmt_index"), Some(&Value::Int(0)));
 
-    // Re-run with nothing repaired: it resumes at operation 2 and fails on the
-    // same statement. Replaying the committed statement 1 would fail on the
-    // existing table and report `index: 1` instead.
+    // An unconfirmed explicit script requires operator reconciliation.
     let err = migrator.migrate(None, false).await.unwrap_err();
     assert!(
-        matches!(
-            err,
-            MigrationError::PostgresPartial {
-                index: 2,
-                total: 2,
-                ..
-            }
-        ),
+        matches!(err, MigrationError::UncertainSqlStep { operation: 1, .. }),
         "{err:?}"
     );
     let progress = db
@@ -234,6 +225,13 @@ async fn postgres_non_atomic_migration_resumes_at_failed_statement() {
     // Repair what the failed statement left behind, then the resume finishes
     // the remaining operation and clears the progress row.
     db.execute_script("DROP TABLE pg_resume").await.unwrap();
+    // This fixture's failed CREATE wrote no data; acknowledge only after repair.
+    db.raw_execute(
+        "DELETE FROM siderite_migration_intents WHERE migration_id = $1",
+        vec![Value::Text(migration.id.clone())],
+    )
+    .await
+    .unwrap();
     let report = migrator.migrate(None, false).await.unwrap();
     assert_eq!(report.applied, vec![migration.id.clone()]);
     db.raw_sql("SELECT n FROM pg_resume", vec![]).await.unwrap();

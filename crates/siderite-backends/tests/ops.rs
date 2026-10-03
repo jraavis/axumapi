@@ -1,4 +1,5 @@
 //! `ModelOps`: save / delete / refresh on SQLite.
+#![cfg(feature = "sqlite")]
 #![allow(clippy::unwrap_used)]
 
 mod common;

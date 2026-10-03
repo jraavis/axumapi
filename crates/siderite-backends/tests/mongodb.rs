@@ -1,10 +1,9 @@
 //! MongoDB end-to-end tests.
 //!
-//! They run only when `MONGODB_URL` starts with `mongodb` (a replica set is
-//! needed for the transaction tests, for example
-//! `mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true`) and
-//! print a note otherwise. Every test works in its own database, dropped at
-//! the end, so tests run in parallel against one server.
+//! These tests are explicitly ignored in offline runs. Select --ignored
+//! with the documented service URL to run them; missing configuration fails.
+//! Each test owns a disposable schema/database or a unique Redis namespace.
+//! Shared application data and Redis FLUSH commands are not used.
 #![cfg(feature = "mongodb")]
 #![allow(clippy::unwrap_used)]
 
@@ -32,8 +31,7 @@ impl TestDb {
             .ok()
             .filter(|u| u.starts_with("mongodb"))
         else {
-            eprintln!("skipping MongoDB test: MONGODB_URL does not start with `mongodb`");
-            return None;
+            panic!("live mongodb tests require MONGODB_URL");
         };
         let name = format!("siderite_test_{}", Uuid::new_v4().simple());
         let backend = MongoBackend::connect(&url, &name)
@@ -78,6 +76,7 @@ fn ms(t: DateTime<Utc>) -> DateTime<Utc> {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn keys_are_generated_in_bulk_order_and_stored_as_id() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -116,6 +115,7 @@ async fn keys_are_generated_in_bulk_order_and_stored_as_id() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn instance_operations_and_timestamps() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -142,6 +142,7 @@ async fn instance_operations_and_timestamps() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn every_scalar_type_round_trips() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -212,6 +213,7 @@ async fn every_scalar_type_round_trips() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn decimals_are_exact_and_summed_by_the_server() {
     let Some((t, _)) = TestDb::seeded().await else {
         return;
@@ -241,6 +243,7 @@ async fn decimals_are_exact_and_summed_by_the_server() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn lookups_follow_sql_semantics() {
     let Some((t, _)) = TestDb::seeded().await else {
         return;
@@ -375,6 +378,7 @@ async fn lookups_follow_sql_semantics() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn expressions_compile_to_aggregation_operators() {
     let Some((t, _)) = TestDb::seeded().await else {
         return;
@@ -447,6 +451,7 @@ async fn expressions_compile_to_aggregation_operators() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn date_parts_functions_casts_and_case() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -543,6 +548,7 @@ async fn date_parts_functions_casts_and_case() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn ordering_paging_distinct_count_exists() {
     let Some((t, _)) = TestDb::seeded().await else {
         return;
@@ -627,6 +633,7 @@ async fn ordering_paging_distinct_count_exists() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn aggregates_grouping_and_having() {
     let Some((t, s)) = TestDb::seeded().await else {
         return;
@@ -743,6 +750,7 @@ async fn aggregates_grouping_and_having() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn updates_deletes_and_f_expressions() {
     let Some((t, _)) = TestDb::seeded().await else {
         return;
@@ -813,6 +821,7 @@ async fn updates_deletes_and_f_expressions() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn create_family_and_bulk_operations() {
     let Some((t, s)) = TestDb::seeded().await else {
         return;
@@ -888,6 +897,7 @@ async fn create_family_and_bulk_operations() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn duplicate_keys_and_unique_indexes_are_constraint_errors() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -929,6 +939,7 @@ async fn duplicate_keys_and_unique_indexes_are_constraint_errors() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn transactions_commit_and_roll_back() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -984,6 +995,7 @@ async fn transactions_commit_and_roll_back() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn unsupported_features_fail_before_any_io() {
     // Nothing listens here: any I/O would fail with a connection error.
     let client = mongodb::Client::with_uri_str(
@@ -1057,6 +1069,7 @@ async fn unsupported_features_fail_before_any_io() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MONGODB_URL and an isolated live service"]
 async fn raw_commands_reach_the_server() {
     let Some(t) = TestDb::open().await else {
         return;

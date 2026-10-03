@@ -7,6 +7,34 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum MigrationError {
+    /// An explicit SQL script may have committed unrecorded effects.
+    #[error(
+        "migration `{id}` has uncertain RunSQL at operation {operation}; \
+        reconcile its effects before clearing the intent and retrying"
+    )]
+    UncertainSqlStep {
+        /// Migration id.
+        id: String,
+        /// Zero-based operation index.
+        operation: usize,
+    },
+    /// A non-transactional callback may have committed unrecorded effects.
+    #[error(
+        "migration `{id}` has uncertain RunRust `{callback}` at operation \
+        {operation}; reconcile its effects before clearing the intent, or \
+        explicitly register it as replay safe"
+    )]
+    UncertainRustStep {
+        /// Migration id.
+        id: String,
+        /// Callback name.
+        callback: String,
+        /// Zero-based operation index in the recorded direction.
+        operation: usize,
+    },
+    /// The advisory migration lock could not be acquired before its deadline.
+    #[error("timed out waiting for the migration lock")]
+    LockTimeout,
     /// A migration lists a dependency that is not on disk.
     #[error("unknown dependency `{dependency}` of migration `{id}`")]
     MissingDependency {

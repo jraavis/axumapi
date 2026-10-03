@@ -16,6 +16,8 @@ use thiserror::Error;
 /// connection) become `400` or `426` problem details responses.
 pub struct WebSocketUpgrade {
     inner: axum::extract::ws::WebSocketUpgrade,
+    owner: crate::server::tasks::TaskHandle,
+    permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl std::fmt::Debug for WebSocketUpgrade {
@@ -28,7 +30,19 @@ impl FromRequestParts for WebSocketUpgrade {
     async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
         use axum::extract::FromRequestParts as _;
         match axum::extract::ws::WebSocketUpgrade::from_request_parts(parts, &()).await {
-            Ok(inner) => Ok(Self { inner }),
+            Ok(inner) => {
+                let owner = parts
+                    .extensions
+                    .get::<crate::server::tasks::TaskHandle>()
+                    .cloned()
+                    .ok_or_else(upgrade_unavailable)?;
+                let permit = owner.reserve().ok_or_else(upgrade_unavailable)?;
+                Ok(Self {
+                    inner,
+                    owner,
+                    permit,
+                })
+            }
             Err(rejection) => Err(ApiError::new(rejection.status(), rejection.body_text())),
         }
     }
@@ -40,6 +54,8 @@ impl WebSocketUpgrade {
     pub fn max_message_size(self, max: usize) -> Self {
         Self {
             inner: self.inner.max_message_size(max),
+            owner: self.owner,
+            permit: self.permit,
         }
     }
 
@@ -52,11 +68,38 @@ impl WebSocketUpgrade {
         F: FnOnce(WebSocket) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let response = self
-            .inner
-            .on_upgrade(move |socket| callback(WebSocket { inner: socket }));
+        let Self {
+            inner,
+            owner,
+            permit,
+        } = self;
+        let (established, socket) = tokio::sync::oneshot::channel();
+        if !owner.spawn(permit, async move {
+            if let Ok(socket) = socket.await {
+                callback(WebSocket { inner: socket }).await;
+            }
+        }) {
+            let response = upgrade_unavailable().into_response();
+            return WebSocketResponse(response.map(Body::into_inner));
+        }
+        let response = inner.on_upgrade(move |socket| async move {
+            // Axum's handoff owns only the channel. Pending callbacks and
+            // established sockets remain under the lifespan supervisor.
+            let _ = established.send(socket);
+        });
         WebSocketResponse(response)
     }
+}
+
+fn upgrade_unavailable() -> ApiError {
+    ApiError::new(
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        "WebSocket admission is unavailable.",
+    )
+    .with_header(
+        http::header::RETRY_AFTER,
+        http::HeaderValue::from_static("1"),
+    )
 }
 
 /// Response produced by [`WebSocketUpgrade::on_upgrade`].

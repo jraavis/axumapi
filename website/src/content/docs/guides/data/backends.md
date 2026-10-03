@@ -107,6 +107,35 @@ Bulk operations chunk rows to `max_params` (SQLite 32766, PostgreSQL/MySQL
 - DDL commits implicitly. `TEXT` cannot be a primary key: use
   `VARCHAR(191)`. See [Migrations](/siderite/guides/data/migrations/).
 
+### Experimental native MySQL
+
+Enable the `mysql-native` feature on `siderite-backends` and explicitly use
+`mysql::native::NativeMySqlBackend`. SQLx `MySqlBackend` remains the default.
+The adapter shares its canonical values and trigger-aware RETURNING engine.
+
+```rust
+use siderite_backends::mysql::native::NativeMySqlBackend;
+use siderite::orm::Db;
+
+let backend = NativeMySqlBackend::connect(&database_url).await?;
+let db = Db::new(backend.clone());
+// Release transaction handles before disconnecting the pool.
+backend.close().await?;
+```
+
+`connect_with` accepts `NativeMySqlOptions`: defaults are 10 connections,
+100 waiting callers and a 10-second checkout deadline. Startup initializes
+all pool slots; `warm` repeats this after schema setup, before traffic starts.
+Clean ORM sessions retain prepared statements. Raw SQL clears table metadata
+and retires its session after use; transaction and schema scopes retain that
+session until completion. Cancellation and unfinished transactions retire
+their sockets, and interrupted handles cannot commit. Writes are never
+automatically retried after a transport error or ambiguous commit.
+
+Native URL settings use the pinned driver's syntax. TLS, server restart,
+complete migration recovery and matched performance evidence remain release
+gates. This adapter is experimental and has not replaced the default driver.
+
 ## MongoDB
 
 - Requires MongoDB 5.0+. Transactions need a replica set (a single-node one
@@ -164,3 +193,74 @@ MongoDB rejects raw SQL (`Feature::RawSql`); use
 - [Backend matrix](/siderite/reference/backend-matrix/)
 - [QueryPlan IR](/siderite/internals/query-plan/)
 - [Transactions](/siderite/guides/data/transactions/)
+
+## Prefetch parameter admission
+
+Prefetch constructs each source key's canonical identity once and uses a
+hash set to deduplicate keys. Repeated references share loaded objects;
+target queries are batched, without one query per source object. An explicit
+prefetch queryset uses its own database's capabilities. SQL adapters count
+its full compiled bind parameters before allocating the remaining IN-list
+budget; NULL literals do not consume placeholders. Exhausted budgets fail
+before target I/O. Empty target querysets skip parameter counting and I/O.
+
+`Backend::read_parameter_count` returns an exact compiled read bind count;
+SQL extension backends must implement it to support bounded prefetch.
+`Db::read_parameter_count` exposes the same no-I/O diagnostic. Unknown SQL
+counts fail explicitly. MongoDB batching uses its document batch capacity.
+Sliced target querysets spanning multiple bind batches are rejected because
+repeating a limit/offset per batch would change the queryset's meaning.
+
+## SQLx connection initialization
+
+PostgreSQL/MySQL `connect_with(url, options)` installs mandatory session
+settings and replaces `options.after_connect`. SQLx keeps that callback
+private, so a constructor cannot recover it for transparent composition.
+Other pool settings, including checkout validation, remain in effect.
+Use `connect_with_init(url, options, hook)` for custom session setup:
+
+```rust
+use siderite_backends::connection_init::ConnectionInit;
+use siderite_backends::postgres::PgBackend;
+use sqlx::postgres::PgPoolOptions;
+use std::sync::Arc;
+
+let hook: ConnectionInit<sqlx::Postgres> = Arc::new(|conn, _| {
+    Box::pin(async move {
+        sqlx::Executor::execute(conn,
+            "SET application_name = 'my-app'").await?;
+        Ok(())
+    })
+});
+let backend = PgBackend::connect_with_init(
+    &database_url, PgPoolOptions::new(), hook,
+).await?;
+```
+
+The custom hook runs first on every fresh/replacement connection. Required
+UTC (and MySQL SQL-mode/GROUP_CONCAT) settings run afterwards, overriding
+conflicting values. A hook must leave no transaction or lock open. Its
+failure rejects that physical connection; SQLx retries within the pool
+acquisition deadline and controls hook error logging. Callback capture
+must be safe across concurrent connections. Wrapping an external pool with
+`from_pool` leaves session initialization and reset obligations to its owner.
+Native MySQL retains its separate explicit session/lease policy.
+
+## Verified network transports
+
+Enable `siderite-backends/tls` for SQLx/Redis Rustls support. PostgreSQL
+uses `sslmode=verify-full` and a trusted `sslrootcert`; MySQL uses
+`ssl-mode=VERIFY_IDENTITY` and `ssl-ca`. Preferred modes do not establish
+verified peer identity and can permit plaintext fallback. Native MySQL
+already compiles Rustls; its `connect_options` accepts `SslOpts` with private
+roots while preserving mandatory adapter/pool settings. Redis uses `rediss`
+and a configured Client plus `RedisStore::connect_with` for custom roots.
+MongoDB already enables Rustls; keep certificate/hostname verification on.
+SQLite has no network transport. Keep credentials and URLs out of logs.
+
+The repository's `docs/BACKEND_TLS.md` documents deployment options and
+`scripts/test_tls.py` owns the local positive/negative verification fixture.
+The rsa exception is reviewed in `docs/DEPENDENCY_EXCEPTIONS.md`: the pinned
+SQLx authentication path encrypts with the server's public key; no framework
+private-key operation was found. This rationale does not cover application
+RSA operations or substitute for verified TLS.

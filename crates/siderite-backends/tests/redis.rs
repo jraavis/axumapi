@@ -1,9 +1,9 @@
 //! Redis end-to-end tests.
 //!
-//! They run only when `REDIS_URL` starts with `redis` (for example
-//! `redis://127.0.0.1:6379/15`) and print a note otherwise. Each test uses its
-//! own key prefix on database 15 and deletes that prefix afterwards. Nothing
-//! here sends `FLUSHDB` or `FLUSHALL`.
+//! These tests are explicitly ignored in offline runs. Select --ignored
+//! with the documented service URL to run them; missing configuration fails.
+//! Each test owns a disposable schema/database or a unique Redis namespace.
+//! Shared application data and Redis FLUSH commands are not used.
 #![cfg(feature = "redis")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -32,8 +32,7 @@ where
         .ok()
         .filter(|value| value.starts_with("redis"))
     else {
-        eprintln!("skipping Redis test: REDIS_URL does not start with `redis`");
-        return;
+        panic!("live Redis tests require REDIS_URL");
     };
     let prefix = format!("siderite:{}:", uuid::Uuid::new_v4().simple());
     let store = RedisStore::connect(&url).await.unwrap().with_prefix(prefix);
@@ -56,6 +55,7 @@ where
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn string_keys_ttl_and_counters() {
     with_namespace(|store| async move {
         assert_eq!(store.get("missing").await.unwrap(), None);
@@ -114,6 +114,7 @@ async fn string_keys_ttl_and_counters() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn prefixes_do_not_collide() {
     with_namespace(|store| async move {
         let left = store.with_prefix(format!("{}left:", store.prefix()));
@@ -141,6 +142,7 @@ async fn prefixes_do_not_collide() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn hashes() {
     with_namespace(|store| async move {
         assert_eq!(store.hget("profile", "name").await.unwrap(), None);
@@ -173,6 +175,7 @@ async fn hashes() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn sets() {
     with_namespace(|store| async move {
         assert!(store.smembers("tags").await.unwrap().is_empty());
@@ -192,6 +195,7 @@ async fn sets() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn json_round_trip() {
     with_namespace(|store| async move {
         let widget = Widget {
@@ -221,6 +225,7 @@ async fn json_round_trip() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn atomic_pipeline_applies_commands_in_order() {
     with_namespace(|store| async move {
         let (first, second): (i64, i64) = store
@@ -237,6 +242,7 @@ async fn atomic_pipeline_applies_commands_in_order() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn a_rejected_queued_command_does_not_apply_the_batch() {
     with_namespace(|store| async move {
         store.set("a", "old", None).await.unwrap();
@@ -254,6 +260,7 @@ async fn a_rejected_queued_command_does_not_apply_the_batch() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn wrong_type_is_a_backend_error() {
     with_namespace(|store| async move {
         store.set("s", "hello", None).await.unwrap();
@@ -267,6 +274,7 @@ async fn wrong_type_is_a_backend_error() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn invalid_arguments_do_not_create_keys() {
     with_namespace(|store| async move {
         let ttl = store.set("k", "v", Some(Duration::ZERO)).await.unwrap_err();
@@ -296,6 +304,7 @@ async fn invalid_arguments_do_not_create_keys() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn delete_namespace_leaves_other_prefixes() {
     with_namespace(|store| async move {
         let outside = store.with_prefix(format!("other:{}", store.prefix()));
@@ -313,6 +322,7 @@ async fn delete_namespace_leaves_other_prefixes() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live service"]
 async fn empty_prefix_delete_is_refused() {
     with_namespace(|store| async move {
         store.set("keep", "1", None).await.unwrap();

@@ -112,6 +112,10 @@ impl Cache for RedisCache {
         Ok(())
     }
 
+    async fn set_if_absent(&self, key: &str, value: Vec<u8>) -> Result<bool, CacheError> {
+        Ok(self.store.set_nx(key, &encode_bytes(value)).await?)
+    }
+
     async fn delete(&self, key: &str) -> Result<bool, CacheError> {
         Ok(self.store.del(key).await? > 0)
     }

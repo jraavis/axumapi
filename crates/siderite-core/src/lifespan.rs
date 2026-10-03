@@ -3,7 +3,7 @@
 //! Hooks run in registration order at startup and in **reverse** order at
 //! shutdown; hooks of mounted child apps run after the parent's at startup
 //! and before them at shutdown. A failing startup hook aborts startup with
-//! [`ServerError::Lifespan`] (shutdown hooks do not run). At shutdown every
+//! [`ServerError::Lifespan`] after reverse-order cleanup. At shutdown every
 //! hook runs even if one fails; the first error is reported.
 //!
 //! [`App::lifespan_resource`] is the equivalent of FastAPI's lifespan
@@ -13,6 +13,17 @@
 use crate::app::{App, BoxFuture, LifespanHook};
 use crate::error::{ApiError, ServerError};
 use crate::extract::FromRequestParts;
+use futures_util::FutureExt;
+use std::panic::AssertUnwindSafe;
+use std::time::Duration;
+use tokio::time::Instant;
+
+mod managed;
+pub use managed::ManagedLifespan;
+
+/// Default budget for request draining and lifespan teardown.
+pub const DEFAULT_SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
+
 use http::StatusCode;
 use http::request::Parts;
 use std::future::Future;
@@ -20,10 +31,26 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 /// The startup and shutdown hooks collected from an app tree.
-#[derive(Default)]
 pub struct Lifespan {
     pub(crate) startup: Vec<LifespanHook>,
     pub(crate) shutdown: Vec<LifespanHook>,
+    pub(crate) shutdown_budget: Duration,
+    pub(crate) background: Vec<crate::background::TaskManager>,
+    pub(crate) transports: Vec<crate::server::tasks::TaskOwner>,
+    pub(crate) server: Option<crate::server::ServerOwners>,
+}
+
+impl Default for Lifespan {
+    fn default() -> Self {
+        Self {
+            startup: Vec::new(),
+            shutdown: Vec::new(),
+            shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
+            background: Vec::new(),
+            transports: Vec::new(),
+            server: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for Lifespan {
@@ -36,31 +63,114 @@ impl std::fmt::Debug for Lifespan {
 }
 
 impl Lifespan {
-    /// Run the startup hooks in order, stopping at the first failure.
+    /// Start a cleanup supervisor without waiting for initialization.
+    ///
+    /// Args:
+    ///     self: The hooks whose ownership transfers to the supervisor.
+    ///
+    /// Returns:
+    ///     An owner used to await readiness and request shutdown.
     ///
     /// # Errors
-    /// [`ServerError::Lifespan`] with the failing hook's error.
+    /// Missing Tokio runtime. Use this API for cancellation-safe ownership;
+    /// initializers must clean their own work until they return successfully.
+    pub fn supervise(self) -> Result<ManagedLifespan, ServerError> {
+        ManagedLifespan::new(self)
+    }
+
+    /// Run startup and unwind successful initialization on error or panic.
+    ///
+    /// Args:
+    ///     self: Lifespan retained by the caller.
+    ///
+    /// Returns:
+    ///     Success, or the original startup error after cleanup.
+    ///
+    /// # Errors
+    /// Hook or cleanup failure. Direct callers must not cancel this method
+    /// without subsequently calling shutdown; prefer [`Self::supervise`].
     pub async fn startup(&mut self) -> Result<(), ServerError> {
+        let result = self.start_hooks().await;
+        if result.is_err() {
+            let _ = self.shutdown().await;
+        }
+        result
+    }
+
+    async fn start_hooks(&mut self) -> Result<(), ServerError> {
         for hook in std::mem::take(&mut self.startup) {
-            hook().await.map_err(ServerError::Lifespan)?;
+            call_hook(hook, "startup")
+                .await
+                .map_err(ServerError::Lifespan)?;
+        }
+        if let Some(server) = &self.server {
+            server.readiness.ready();
         }
         Ok(())
     }
 
-    /// Run the shutdown hooks in reverse order. All hooks run; failures are
-    /// logged and the first one is returned.
+    /// Run every shutdown hook in reverse order within the configured budget.
+    ///
+    /// Args:
+    ///     self: Lifespan whose remaining teardown hooks are consumed.
+    ///
+    /// Returns:
+    ///     Success, or the first failure after all cleanup attempts.
     ///
     /// # Errors
-    /// [`ServerError::Lifespan`] with the first hook error.
+    /// Hook failure/panic or deadline expiry. Use a supervisor to shield this
+    /// operation from caller cancellation. Hooks must cooperate with polling.
     pub async fn shutdown(&mut self) -> Result<(), ServerError> {
+        self.shutdown_at(Instant::now() + self.shutdown_budget)
+            .await
+    }
+
+    async fn shutdown_at(&mut self, deadline: Instant) -> Result<(), ServerError> {
         let mut first_error = None;
-        for hook in std::mem::take(&mut self.shutdown).into_iter().rev() {
-            if let Err(err) = hook().await {
-                tracing::error!(error = %err, "shutdown hook failed");
-                first_error.get_or_insert(err);
+        let server = self.server.take();
+        if let Some(server) = &server
+            && !server.stop_at(deadline).await
+        {
+            first_error.get_or_insert(ServerError::ShutdownTimeout);
+        }
+        for owner in std::mem::take(&mut self.transports) {
+            if !owner.stop_at(deadline).await {
+                first_error.get_or_insert(ServerError::ShutdownTimeout);
             }
         }
-        first_error.map_or(Ok(()), |e| Err(ServerError::Lifespan(e)))
+        for manager in std::mem::take(&mut self.background).into_iter().rev() {
+            if let Err(error) = manager.shutdown_at(deadline).await {
+                tracing::error!(%error, "background shutdown failed");
+                first_error.get_or_insert(error);
+            }
+        }
+        while let Some(hook) = self.shutdown.pop() {
+            let result = tokio::time::timeout_at(deadline, call_hook(hook, "shutdown")).await;
+            let error = match result {
+                Ok(Ok(())) => continue,
+                Ok(Err(error)) => ServerError::Lifespan(error),
+                Err(_) => ServerError::ShutdownTimeout,
+            };
+            tracing::error!(%error, "shutdown hook failed");
+            first_error.get_or_insert(error);
+        }
+        if let Some(server) = server {
+            server.readiness.stopped();
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+async fn call_hook(hook: LifespanHook, phase: &str) -> Result<(), ApiError> {
+    match AssertUnwindSafe(async move { hook().await })
+        .catch_unwind()
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::error!(phase, "lifespan hook panicked");
+            Err(ApiError::internal(format!("{phase} hook panicked")))
+        }
     }
 }
 
@@ -119,6 +229,23 @@ impl<T: Send + Sync + 'static> FromRequestParts for Resource<T> {
 }
 
 impl App {
+    /// Set the total graceful-shutdown budget, including resource teardown.
+    ///
+    /// Args:
+    ///     budget: Positive, representable duration (default: 30 seconds).
+    ///
+    /// Returns:
+    ///     The configured application; invalid budgets fail validation.
+    #[must_use]
+    pub fn shutdown_timeout(mut self, budget: Duration) -> Self {
+        if budget.is_zero() || std::time::Instant::now().checked_add(budget).is_none() {
+            self.config_errors.push("invalid shutdown timeout".into());
+        } else {
+            self.shutdown_budget = budget;
+        }
+        self
+    }
+
     /// Run `hook` at startup (before the socket is bound).
     #[must_use]
     pub fn on_startup<F, Fut>(mut self, hook: F) -> Self

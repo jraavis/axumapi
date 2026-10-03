@@ -12,6 +12,8 @@ mod lookup;
 mod tests;
 #[cfg(test)]
 mod tests_mysql;
+#[cfg(all(test, feature = "mysql"))]
+mod tests_write_bare;
 
 use super::dialect::Dialect;
 use siderite_orm::expr::Ident;
@@ -50,7 +52,37 @@ pub fn compile(plan: &QueryPlan, dialect: &dyn Dialect) -> Result<CompiledQuery,
 /// [`QueryError::InvalidPlan`] for an insert without rows or with rows whose
 /// length differs from the column list.
 pub fn compile_write(plan: &WritePlan, dialect: &dyn Dialect) -> Result<CompiledQuery, OrmError> {
-    plan.check(&dialect.capabilities())?;
+    compile_write_inner(plan, dialect, true)
+}
+
+/// Compile the statement body for an adapter emulating RETURNING itself.
+/// Other capability and structural checks remain mandatory.
+///
+/// Args:
+///     plan: Borrowed write plan, including emulated return columns.
+///     dialect: SQL grammar and supported capabilities.
+///
+/// Returns:
+///     Statement SQL and bind values, or a capability/validation error.
+#[cfg(feature = "mysql")]
+pub(crate) fn compile_write_bare(
+    plan: &WritePlan,
+    dialect: &dyn Dialect,
+) -> Result<CompiledQuery, OrmError> {
+    compile_write_inner(plan, dialect, false)
+}
+
+fn compile_write_inner(
+    plan: &WritePlan,
+    dialect: &dyn Dialect,
+    returning: bool,
+) -> Result<CompiledQuery, OrmError> {
+    let caps = dialect.capabilities();
+    for feature in plan.required_features() {
+        if returning || feature != siderite_orm::Feature::Returning {
+            caps.require(feature)?;
+        }
+    }
     let mut c = Compiler::new(dialect);
     match plan {
         WritePlan::Insert(p) => {
@@ -111,7 +143,9 @@ pub fn compile_write(plan: &WritePlan, dialect: &dyn Dialect) -> Result<Compiled
     }
     // Dialects without `RETURNING` fail the capability check above, so this
     // only ever writes a clause the dialect supports.
-    c.returning(plan.returning());
+    if returning {
+        c.returning(plan.returning());
+    }
     c.finish()
 }
 

@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "examples/hello_world", "examples/todo_sqlite", "examples/blog_postgres", "examples/todo_mongo", "examples/polyglot", "benchmarks/siderite_todo"]
+members = [
+    "crates/*",
+    "examples/hello_world",
+    "examples/todo_sqlite",
+    "examples/blog_postgres",
+    "examples/todo_mongo",
+    "examples/polyglot",
+    "benchmarks/siderite_todo",
+    "benchmarks/mysql_driver_probe",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,6 +37,7 @@ siderite-cli = { path = "crates/siderite-cli", version = "0.1.0" }
 
 async-trait = "0.1"
 base64 = "0.22"
+httpdate = "=1.0.3"
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 figment = { version = "0.10", features = ["toml", "env", "test"] }
 lru = "0.18"
@@ -45,8 +55,10 @@ url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "form", "multipart", "ws", "tokio", "matched-path", "original-uri"] }
 http = "1"
+http-body = "1"
 http-body-util = "0.1"
 hyper = "1"
+hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
 regex = "1"
 rust_decimal = { version = "1", default-features = false, features = ["std", "serde-str"] }
 serde = { version = "1", features = ["derive"] }

@@ -5,7 +5,7 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing sidechannel; pulled in by sqlx-mysql; no patched crates.io release" },
+    { id = "RUSTSEC-2023-0071", reason = "Reviewed 2026-10-03: SQLx MySQL public-key encryption only; no patched release. Scope and exit: docs/DEPENDENCY_EXCEPTIONS.md" },
 ]
 
 [licenses]

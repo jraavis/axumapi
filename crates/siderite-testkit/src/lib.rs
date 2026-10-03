@@ -11,7 +11,7 @@ pub use http;
 
 use http::{HeaderMap, Method, Request, StatusCode, header};
 use serde::{Serialize, de::DeserializeOwned};
-use siderite_core::lifespan::Lifespan;
+use siderite_core::lifespan::ManagedLifespan;
 use siderite_core::{App, Body, BodyError, RouterService, ServerError};
 use std::sync::{Arc, Mutex, PoisonError};
 use thiserror::Error;
@@ -67,7 +67,7 @@ impl TestResponse {
 #[derive(Debug, Clone)]
 pub struct TestClient {
     service: RouterService,
-    lifespan: Arc<Mutex<Option<Lifespan>>>,
+    lifespan: Arc<Mutex<Option<ManagedLifespan>>>,
 }
 
 impl TestClient {
@@ -111,8 +111,9 @@ impl TestClient {
     /// Returns the configuration error, or [`ServerError::Lifespan`] if a
     /// startup hook fails.
     pub async fn start(app: App) -> Result<Self, ServerError> {
-        let (service, mut lifespan) = app.into_service_with_lifespan()?;
-        lifespan.startup().await?;
+        let (service, lifespan) = app.into_service_with_lifespan()?;
+        let mut lifespan = lifespan.supervise()?;
+        lifespan.ready().await?;
         Ok(Self {
             service,
             lifespan: Arc::new(Mutex::new(Some(lifespan))),
@@ -131,7 +132,7 @@ impl TestClient {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         match taken {
-            Some(mut lifespan) => lifespan.shutdown().await,
+            Some(lifespan) => lifespan.shutdown().await,
             None => Ok(()),
         }
     }

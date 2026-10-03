@@ -1,17 +1,26 @@
 //! [`RouteCache`]: HTTP GET/HEAD response cache as an `App` layer.
 
-use crate::Cache;
-use http::header::{
-    ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CACHE_CONTROL, COOKIE, HOST, PROXY_AUTHORIZATION,
-    SET_COOKIE, VARY,
-};
+use crate::{Cache, CacheError};
+use http::header::PROXY_AUTHORIZATION;
+use http::header::{ACCEPT, ACCEPT_ENCODING, AUTHORIZATION};
+use http::header::{CACHE_CONTROL, COOKIE};
+use http::header::{HOST, SET_COOKIE, VARY};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
-use serde::{Deserialize, Serialize};
+use siderite_core::middleware::TrustedProxies;
 use siderite_core::middleware::{BoxService, Next, from_fn};
 use siderite_core::{ApiError, Body, IntoResponse, Request, Response};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tower::Layer;
+
+mod codec;
+mod generation;
+use codec::{decode, encode};
+use generation::representation_key as make_key;
+type CacheResult<T> = Result<T, CacheError>;
+type Directive = (String, Option<String>);
+type Hit = Option<(HeaderMap, Vec<u8>)>;
 
 const X_CACHE: HeaderName = HeaderName::from_static("x-cache");
 const HIT: HeaderValue = HeaderValue::from_static("hit");
@@ -33,18 +42,12 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
             | "proxy-authenticate"
             | "proxy-authorization"
             | "te"
+            | "trailer"
             | "trailers"
             | "transfer-encoding"
             | "upgrade"
             | "x-cache"
     )
-}
-
-/// Cached GET/HEAD 200 response (headers + body).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CachedResponse {
-    headers: Vec<(String, Vec<u8>)>,
-    body: Vec<u8>,
 }
 
 /// Middleware that caches successful GET and HEAD responses.
@@ -72,7 +75,8 @@ struct CachedResponse {
 ///     }))
 ///     // Opted in by placement.
 ///     .route("/stats", get(|| async { "stats" }).layer(
-///         RouteCache::new(cache.clone()).default_ttl(Duration::from_secs(30)),
+///         RouteCache::new(cache.clone())
+///             .default_ttl(Duration::from_secs(30)),
 ///     ))
 ///     // Never stored: no `public` marker.
 ///     .route("/me", get(|| async { "private" }))
@@ -83,7 +87,9 @@ struct CachedResponse {
 /// the app is safe to share between users.
 ///
 /// # Behaviour
-/// * Only [`GET`](Method::GET) and [`HEAD`](Method::HEAD) are considered.
+/// * Only GET and HEAD responses are stored. Successful unsafe target
+///   writes rotate a shared generation across every representation.
+///   Related URI dependencies require explicit application invalidation.
 /// * The cache key is the method, scheme, `Host`, path and query (as
 ///   received), plus the request's `Accept` and `Accept-Encoding` values, so
 ///   virtual hosts sharing one cache never see each other's responses.
@@ -103,16 +109,29 @@ struct CachedResponse {
 /// * The entry lives for `s-maxage`, else `max-age`, else `default_ttl`. A
 ///   `public` response without any of these, or with a lifetime of zero, is
 ///   not stored.
+/// * Request no-cache refreshes; no-store bypasses without deleting older
+///   entries. Unsupported conditionals and ranges bypass. Date is retained
+///   and Age includes origin age and residence. Entries are versioned.
+/// * Namespaces isolate layers by default. Stable namespaces intentionally
+///   share generations; key, header and encoded byte admission is bounded.
 /// * Every GET/HEAD response is tagged with `x-cache: hit` or `x-cache: miss`.
 ///
 /// Cache backend failures fail open: the request is served and treated as a
-/// miss. Values, passwords and tokens are never logged.
+/// miss. Failed write invalidation disables this layer. A database commit
+/// and distributed cache invalidation are separate operations; other nodes
+/// need an outage/restart consistency policy. No secret values are logged.
 #[derive(Clone, Debug)]
 pub struct RouteCache<C> {
     cache: Arc<C>,
     default_ttl: Option<Duration>,
     max_body: u64,
     bypass: Arc<Vec<HeaderName>>,
+    namespace: Arc<str>,
+    proxies: TrustedProxies,
+    enabled: Arc<AtomicBool>,
+    max_key: usize,
+    max_headers: usize,
+    max_encoded: usize,
 }
 
 impl<C: Cache> RouteCache<C> {
@@ -124,12 +143,104 @@ impl<C: Cache> RouteCache<C> {
             cache: Arc::new(cache),
             default_ttl: None,
             max_body: DEFAULT_MAX_BODY_BYTES,
+            namespace: uuid::Uuid::new_v4().to_string().into(),
+            proxies: TrustedProxies::default(),
+            enabled: Arc::new(AtomicBool::new(true)),
+            max_key: 4096,
+            max_headers: 8192,
+            max_encoded: 2 * 1024 * 1024,
             bypass: Arc::new(vec![
                 AUTHORIZATION,
                 PROXY_AUTHORIZATION,
                 COOKIE,
                 HeaderName::from_static("x-api-key"),
             ]),
+        }
+    }
+
+    /// Set a stable app/deployment namespace for intentionally shared caches.
+    ///
+    /// Args:
+    ///     namespace: Identity distinct from incompatible apps or revisions.
+    ///
+    /// Returns:
+    ///     Configured layer; the default namespace is unique per instance.
+    #[must_use]
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = namespace.into().into();
+        self
+    }
+
+    /// Resolve cache request scheme with the shared trusted-peer policy.
+    ///
+    /// Args:
+    ///     proxies: Same immediate-peer policy used by other middleware.
+    ///
+    /// Returns:
+    ///     Layer ignoring forwarded headers from untrusted peers.
+    #[must_use]
+    pub fn trusted_proxies(mut self, proxies: TrustedProxies) -> Self {
+        self.proxies = proxies;
+        self
+    }
+
+    /// Bound keys, stored header bytes and serialized response bytes.
+    ///
+    /// Args:
+    ///     key: Maximum key bytes, including namespace and generation.
+    ///     hdrs: Maximum stored header-name/value bytes.
+    ///     encoded: Maximum versioned serialized response size.
+    ///
+    /// Returns:
+    ///     Layer bypassing oversized entries without failing the origin.
+    #[must_use]
+    pub fn byte_limits(self, key: usize, hdrs: usize, encoded: usize) -> Self {
+        let mut settings = self;
+        settings.max_key = key;
+        settings.max_headers = hdrs;
+        settings.max_encoded = encoded;
+        settings
+    }
+
+    /// Invalidate every cached representation of one related target URI.
+    ///
+    /// Args:
+    ///     req: Request identifying the target authority, scheme and URI.
+    ///
+    /// Returns:
+    ///     Success after rotating its shared backend generation. Use this
+    ///     for application-specific list/detail dependencies after writes.
+    ///
+    /// # Errors
+    /// Invalid context, oversized key or cache backend failure. A failed
+    /// invalidation disables this layer to avoid stale local reuse.
+    pub async fn invalidate_target(&self, req: &Request) -> CacheResult<()> {
+        let policy = self.policy();
+        let failure = |_| CacheError::Backend("invalid context".into());
+        let context = self.proxies.resolve(req).map_err(failure)?;
+        let target = generation::target(req, &policy, context.scheme);
+        if target.len() > self.max_key {
+            return Err(CacheError::Backend("cache key too large".into()));
+        }
+        let backend = self.cache.as_ref();
+        let result = generation::invalidate(backend, &target).await;
+        if result.is_err() {
+            disable(&self.enabled);
+        }
+        result
+    }
+
+    fn policy(&self) -> Policy {
+        Policy {
+            default_ttl: self.default_ttl,
+            max_body: self.max_body,
+            bypass: Arc::clone(&self.bypass),
+            namespace: Arc::clone(&self.namespace),
+            proxies: self.proxies.clone(),
+            enabled: Arc::clone(&self.enabled),
+            max_key: self.max_key,
+            max_headers: self.max_headers,
+            max_encoded: self.max_encoded,
         }
     }
 
@@ -159,10 +270,17 @@ impl<C: Cache> RouteCache<C> {
 }
 
 /// Per-request view of the layer configuration.
+#[derive(Clone)]
 struct Policy {
     default_ttl: Option<Duration>,
     max_body: u64,
     bypass: Arc<Vec<HeaderName>>,
+    namespace: Arc<str>,
+    proxies: TrustedProxies,
+    enabled: Arc<AtomicBool>,
+    max_key: usize,
+    max_headers: usize,
+    max_encoded: usize,
 }
 
 impl<C: Cache> Layer<BoxService> for RouteCache<C> {
@@ -170,16 +288,11 @@ impl<C: Cache> Layer<BoxService> for RouteCache<C> {
 
     fn layer(&self, inner: BoxService) -> Self::Service {
         let cache = Arc::clone(&self.cache);
-        let (default_ttl, max_body, bypass) =
-            (self.default_ttl, self.max_body, Arc::clone(&self.bypass));
+        let policy = self.policy();
         from_fn(move |req: Request, next: Next| {
             let cache = Arc::clone(&cache);
-            let policy = Policy {
-                default_ttl,
-                max_body,
-                bypass: Arc::clone(&bypass),
-            };
-            async move { dispatch(cache, policy, req, next).await }
+            let policy = policy.clone();
+            async move { Dispatch { cache, policy }.run(req, next).await }
         })
         .layer(inner)
     }
@@ -237,7 +350,10 @@ fn cache_control(headers: &HeaderMap) -> Vec<(String, Option<String>)> {
         .flat_map(|text| text.split(','))
         .filter_map(|directive| {
             let (name, value) = match directive.split_once('=') {
-                Some((name, value)) => (name, Some(value.trim().trim_matches('"').to_owned())),
+                Some((name, value)) => {
+                    let value = value.trim().trim_matches('"').to_owned();
+                    (name, Some(value))
+                }
                 None => (directive, None),
             };
             let name = name.trim().trim_matches('"').to_ascii_lowercase();
@@ -252,7 +368,11 @@ fn cache_control(headers: &HeaderMap) -> Vec<(String, Option<String>)> {
 pub(crate) fn cache_control_forbids_store(headers: &HeaderMap) -> bool {
     cache_control(headers)
         .iter()
-        .any(|(name, _)| matches!(name.as_str(), "no-store" | "no-cache" | "private"))
+        .any(|(name, _)| forbids_store(name))
+}
+
+fn forbids_store(name: &str) -> bool {
+    matches!(name, "no-store" | "no-cache" | "private")
 }
 
 /// How long to store `response`, or `None` when it must not be stored.
@@ -262,6 +382,7 @@ fn storable_ttl(response: &Response, policy: &Policy) -> Option<Duration> {
         && !headers.contains_key(SET_COOKIE)
         && !cache_control_forbids_store(headers)
         && !varies_outside_key(headers)
+        && !headers.contains_key(header::TRAILER)
         && response
             .body()
             .exact_len()
@@ -284,16 +405,17 @@ fn storable_ttl(response: &Response, policy: &Policy) -> Option<Duration> {
         .or_else(|| seconds("max-age"))
         .map(Duration::from_secs)
         .or(policy.default_ttl)?;
-    (ttl > Duration::ZERO).then_some(ttl)
+    let remaining = ttl.checked_sub(codec::initial_age(headers)?)?;
+    (remaining > Duration::ZERO).then_some(remaining)
 }
 
 /// Build the cache key from method, scheme, host, path and query, and the
 /// keyed headers. Every part is length-prefixed so different requests can
 /// never produce the same key.
-fn cache_key(req: &Request) -> String {
+fn cache_key(req: &Request, scheme: &str) -> String {
     let mut key = String::new();
     push_part(&mut key, req.method().as_str().as_bytes());
-    push_part(&mut key, req.uri().scheme_str().unwrap_or("").as_bytes());
+    push_part(&mut key, scheme.as_bytes());
     let host = req
         .headers()
         .get(HOST)
@@ -316,7 +438,7 @@ fn cache_key(req: &Request) -> String {
     key
 }
 
-/// Append `bytes` as `s{len}:{text}` (UTF-8) or `x{len}:{hex}` (anything else).
+/// Append length-prefixed UTF-8 text or hex-encoded non-text bytes.
 fn push_part(key: &mut String, bytes: &[u8]) {
     use std::fmt::Write as _;
     match std::str::from_utf8(bytes) {
@@ -330,29 +452,6 @@ fn push_part(key: &mut String, bytes: &[u8]) {
             }
         }
     }
-}
-
-fn encode(headers: &HeaderMap, body: Vec<u8>) -> Result<Vec<u8>, serde_json::Error> {
-    let headers = headers
-        .iter()
-        .filter(|(name, _)| !is_hop_by_hop(name))
-        .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
-        .collect();
-    serde_json::to_vec(&CachedResponse { headers, body })
-}
-
-fn decode(bytes: &[u8]) -> Option<(HeaderMap, Vec<u8>)> {
-    let stored: CachedResponse = serde_json::from_slice(bytes).ok()?;
-    let mut headers = HeaderMap::new();
-    for (name, value) in stored.headers {
-        let name = HeaderName::try_from(name).ok()?;
-        if is_hop_by_hop(&name) {
-            continue;
-        }
-        let value = HeaderValue::from_bytes(&value).ok()?;
-        headers.append(name, value);
-    }
-    Some((headers, stored.body))
 }
 
 fn with_x_cache(mut response: Response, value: HeaderValue) -> Response {
@@ -373,43 +472,144 @@ fn restore(method: &Method, headers: HeaderMap, body: Vec<u8>) -> Response {
     with_x_cache(response, HIT)
 }
 
-async fn dispatch<C: Cache>(cache: Arc<C>, policy: Policy, req: Request, next: Next) -> Response {
-    if !is_cacheable_method(req.method()) {
-        return next.run(req).await;
-    }
-    if request_bypasses_cache(req.headers(), &policy.bypass) {
-        return with_x_cache(next.run(req).await, MISS);
-    }
+fn disable(enabled: &AtomicBool) {
+    enabled.store(false, Ordering::Release);
+    tracing::warn!("cache invalidation failed; cache layer disabled");
+}
 
-    let key = cache_key(&req);
-    let method = req.method().clone();
-    if let Ok(Some(bytes)) = cache.get(&key).await
-        && let Some((headers, body)) = decode(&bytes)
-    {
-        return restore(&method, headers, body);
+fn header_bytes(headers: &HeaderMap) -> usize {
+    headers.iter().fold(0usize, |size, (name, value)| {
+        size.saturating_add(name.as_str().len())
+            .saturating_add(value.as_bytes().len())
+    })
+}
+
+fn unsupported_request(headers: &HeaderMap) -> bool {
+    [
+        header::RANGE,
+        header::IF_RANGE,
+        header::IF_MATCH,
+        header::IF_NONE_MATCH,
+        header::IF_MODIFIED_SINCE,
+        header::IF_UNMODIFIED_SINCE,
+    ]
+    .iter()
+    .any(|header| headers.contains_key(header))
+}
+
+fn requests_refresh(items: &[Directive], h: &HeaderMap) -> bool {
+    let forced = items.iter().any(|(name, _)| needs_refresh(name));
+    let pragma = h.get(header::PRAGMA).is_some_and(pragma_no_cache);
+    forced || pragma
+}
+
+fn needs_refresh(name: &str) -> bool {
+    matches!(name, "no-cache" | "max-age" | "min-fresh")
+}
+
+fn pragma_no_cache(value: &HeaderValue) -> bool {
+    value.as_bytes().eq_ignore_ascii_case(b"no-cache")
+}
+
+async fn lookup<C: Cache>(cache: &C, key: &str, policy: &Policy) -> Hit {
+    let bytes = cache.get(key).await.ok()??;
+    if bytes.len() > policy.max_encoded {
+        return None;
     }
+    decode(&bytes, policy.max_headers, policy.max_body)
+}
 
-    let response = next.run(req).await;
-    let Some(ttl) = storable_ttl(&response, &policy) else {
-        return with_x_cache(response, MISS);
-    };
+struct Dispatch<C> {
+    cache: Arc<C>,
+    policy: Policy,
+}
 
-    let (mut parts, body) = response.into_parts();
-    let limit = usize::try_from(policy.max_body).unwrap_or(usize::MAX);
-    let bytes = match body.into_bytes_limited(limit).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return ApiError::internal("failed to buffer a cacheable response body")
-                .into_response();
+impl<C: Cache> Dispatch<C> {
+    async fn run(self, req: Request, next: Next) -> Response {
+        let Self { cache, policy } = self;
+        if !policy.enabled.load(Ordering::Acquire) {
+            return with_x_cache(next.run(req).await, MISS);
         }
-    };
-
-    if let Ok(payload) = encode(&parts.headers, bytes.clone()) {
-        let _ = cache.set(&key, payload, Some(ttl)).await;
+        let context = match policy.proxies.resolve(&req) {
+            Ok(context) => context,
+            Err(_) => {
+                let error = ApiError::bad_request("Invalid proxy context.");
+                return error.into_response();
+            }
+        };
+        let target = generation::target(&req, &policy, context.scheme);
+        if target.len() > policy.max_key {
+            return with_x_cache(next.run(req).await, MISS);
+        }
+        if !is_cacheable_method(req.method()) {
+            let invalidate = generation::unsafe_method(req.method());
+            let response = next.run(req).await;
+            let status = response.status();
+            let succeeded = status.is_success() || status.is_redirection();
+            if invalidate
+                && succeeded
+                && generation::invalidate(cache.as_ref(), &target)
+                    .await
+                    .is_err()
+            {
+                // A completed write cannot be undone by a cache failure.
+                // Disable this layer rather than reuse stale local data.
+                disable(&policy.enabled);
+            }
+            return response;
+        }
+        let directives = cache_control(req.headers());
+        let no_store = directives.iter().any(|(name, _)| name == "no-store");
+        let refresh = requests_refresh(&directives, req.headers());
+        if no_store
+            || unsupported_request(req.headers())
+            || request_bypasses_cache(req.headers(), &policy.bypass)
+        {
+            return with_x_cache(next.run(req).await, MISS);
+        }
+        let backend = cache.as_ref();
+        let generation = match generation::current(backend, &target).await {
+            Ok(generation) => generation,
+            Err(_) => return with_x_cache(next.run(req).await, MISS),
+        };
+        let scheme = context.scheme;
+        let key = make_key(&req, &policy, scheme, generation);
+        if key.len() > policy.max_key {
+            return with_x_cache(next.run(req).await, MISS);
+        }
+        let method = req.method().clone();
+        let hit = if refresh {
+            None
+        } else {
+            lookup(backend, &key, &policy).await
+        };
+        if let Some((headers, body)) = hit {
+            return restore(&method, headers, body);
+        }
+        let response = next.run(req).await;
+        let Some(ttl) = storable_ttl(&response, &policy) else {
+            return with_x_cache(response, MISS);
+        };
+        if header_bytes(response.headers()) > policy.max_headers {
+            return with_x_cache(response, MISS);
+        }
+        let (mut parts, body) = response.into_parts();
+        let limit = usize::try_from(policy.max_body).unwrap_or(usize::MAX);
+        let bytes = match body.into_bytes_limited(limit).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let error = ApiError::internal("Cache body read failed.");
+                return error.into_response();
+            }
+        };
+        if let Ok(payload) = encode(&parts.headers, &bytes)
+            && payload.len() <= policy.max_encoded
+        {
+            let _ = cache.set(&key, payload, Some(ttl)).await;
+        }
+        parts.headers.insert(X_CACHE, MISS);
+        Response::from_parts(parts, Body::from(bytes))
     }
-
-    parts.headers.insert(X_CACHE, MISS);
-    Response::from_parts(parts, Body::from(bytes))
 }
 
 #[cfg(test)]
@@ -466,8 +666,8 @@ mod tests {
             ("x-cache", "miss"),
         ]);
         map.append("x-foo", HeaderValue::from_static("baz"));
-        let encoded = encode(&map, b"hello".to_vec()).unwrap();
-        let (decoded, body) = decode(&encoded).unwrap();
+        let encoded = encode(&map, b"hello").unwrap();
+        let (decoded, body) = decode(&encoded, 8192, 1024).unwrap();
         assert_eq!(body, b"hello");
         assert_eq!(
             decoded
@@ -487,7 +687,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_garbage() {
-        assert!(decode(b"not-json").is_none());
-        assert!(decode(b"{}").is_none());
+        assert!(decode(b"not-json", 8192, 1024).is_none());
+        assert!(decode(b"{}", 8192, 1024).is_none());
     }
 }

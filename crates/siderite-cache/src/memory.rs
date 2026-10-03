@@ -1,11 +1,97 @@
 //! Process-local LRU cache with per-entry TTL.
 
+type CacheResult<T> = Result<T, CacheError>;
+
 use crate::{Cache, CacheError};
 use async_trait::async_trait;
 use lru::LruCache;
 use std::num::NonZeroUsize;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+/// Hard byte-admission limits for process-local cache storage.
+///
+/// Key and value lengths count toward total bytes. Fixed entry/map overhead
+/// is additionally bounded by entry capacity; reads clone values and can
+/// temporarily allocate outside the stored-byte budget.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryCacheLimits {
+    /// Total retained key/value bytes (default: 64 MiB).
+    pub max_total_bytes: usize,
+    /// Maximum bytes in one value (default: 2 MiB).
+    pub max_value_bytes: usize,
+    /// Maximum bytes in one key (default: 4 KiB).
+    pub max_key_bytes: usize,
+}
+
+impl Default for MemoryCacheLimits {
+    fn default() -> Self {
+        Self {
+            max_total_bytes: 64 * 1024 * 1024,
+            max_value_bytes: 2 * 1024 * 1024,
+            max_key_bytes: 4096,
+        }
+    }
+}
+
+struct Store {
+    entries: LruCache<String, Entry>,
+    bytes: usize,
+    limits: MemoryCacheLimits,
+}
+
+impl Deref for Store {
+    type Target = LruCache<String, Entry>;
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl DerefMut for Store {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.entries
+    }
+}
+
+impl Store {
+    fn pop(&mut self, key: &str) -> Option<Entry> {
+        let (key, entry) = self.entries.pop_entry(key)?;
+        self.bytes -= key.len() + entry.value.len();
+        Some(entry)
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+
+    fn put(&mut self, key: String, entry: Entry) -> Result<(), CacheError> {
+        let limits = self.limits;
+        let size = key
+            .len()
+            .checked_add(entry.value.len())
+            .ok_or(CacheError::SizeLimit)?;
+        if key.len() > limits.max_key_bytes
+            || entry.value.len() > limits.max_value_bytes
+            || size > limits.max_total_bytes
+        {
+            return Err(CacheError::SizeLimit);
+        }
+        self.pop(&key);
+        while self.bytes > limits.max_total_bytes - size
+            || self.entries.len() >= self.entries.cap().get()
+        {
+            let Some((key, entry)) = self.entries.pop_lru() else {
+                break;
+            };
+            self.bytes -= key.len() + entry.value.len();
+        }
+        self.bytes += size;
+        self.entries.put(key, entry);
+        Ok(())
+    }
+}
 
 struct Entry {
     value: Vec<u8>,
@@ -22,14 +108,16 @@ impl Entry {
 ///
 /// Cloning shares the same map. A poisoned mutex is recovered (`into_inner`)
 /// so a panic in one caller does not disable the cache. `capacity` of `0` is
-/// treated as `1`.
+/// treated as `1`. Retained key/value bytes are bounded by
+/// [`MemoryCacheLimits`]; writes beyond admission limits fail explicitly.
+/// Expiry is lazy on access; pressure evicts LRU entries without full scans.
 ///
 /// [`increment`](Cache::increment) matches Redis `INCRBY`: a missing or
 /// expired key starts at `0`, the stored form is a decimal integer, and a
 /// non-integer value is [`CacheError::NotInteger`].
 #[derive(Clone)]
 pub struct MemoryCache {
-    inner: Arc<Mutex<LruCache<String, Entry>>>,
+    inner: Arc<Mutex<Store>>,
 }
 
 impl std::fmt::Debug for MemoryCache {
@@ -38,6 +126,8 @@ impl std::fmt::Debug for MemoryCache {
         f.debug_struct("MemoryCache")
             .field("len", &inner.len())
             .field("capacity", &inner.cap())
+            .field("stored_bytes", &inner.bytes)
+            .field("byte_limits", &inner.limits)
             .finish()
     }
 }
@@ -46,19 +136,57 @@ impl MemoryCache {
     /// Bound the cache to at most `capacity` live entries (minimum 1).
     #[must_use]
     pub fn new(capacity: usize) -> Self {
-        let cap = NonZeroUsize::new(capacity.max(1)).unwrap_or(NonZeroUsize::MIN);
+        Self::build(capacity, MemoryCacheLimits::default())
+    }
+
+    /// Configure entry count and retained key/value byte budgets.
+    ///
+    /// Args:
+    ///     n: Maximum entry count, with zero treated as one.
+    ///     lim: Positive key/value/total byte limits.
+    ///
+    /// Returns:
+    ///     Cache with size-aware LRU eviction and hard write admission.
+    ///
+    /// # Errors
+    /// Invalid zero limits or key/value maxima above the total budget.
+    pub fn with_limits(n: usize, lim: MemoryCacheLimits) -> CacheResult<Self> {
+        if lim.max_total_bytes == 0
+            || lim.max_key_bytes == 0
+            || lim.max_value_bytes == 0
+            || lim.max_key_bytes > lim.max_total_bytes
+            || lim.max_value_bytes > lim.max_total_bytes
+        {
+            return Err(CacheError::InvalidLimits);
+        }
+        Ok(Self::build(n, lim))
+    }
+
+    fn build(capacity: usize, limits: MemoryCacheLimits) -> Self {
+        let size = NonZeroUsize::new(capacity.max(1));
+        let cap = size.unwrap_or(NonZeroUsize::MIN);
         Self {
-            inner: Arc::new(Mutex::new(LruCache::new(cap))),
+            inner: Arc::new(Mutex::new(Store {
+                entries: LruCache::new(cap),
+                bytes: 0,
+                limits,
+            })),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, LruCache<String, Entry>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Store> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-fn expires_at(ttl: Option<Duration>) -> Option<Instant> {
-    ttl.and_then(|ttl| Instant::now().checked_add(ttl))
+fn expires_at(ttl: Option<Duration>) -> Result<Option<Instant>, CacheError> {
+    match ttl {
+        Some(ttl) => Instant::now()
+            .checked_add(ttl)
+            .map(Some)
+            .ok_or(CacheError::InvalidTtl),
+        None => Ok(None),
+    }
 }
 
 /// Redis `INCRBY` accepts an optional ASCII minus and one or more digits.
@@ -78,23 +206,12 @@ fn parse_incr_int(bytes: &[u8]) -> Option<i64> {
     text.parse().ok()
 }
 
-fn purge_expired(cache: &mut LruCache<String, Entry>, now: Instant) {
-    let expired: Vec<String> = cache
-        .iter()
-        .filter(|(_, entry)| entry.is_expired(now))
-        .map(|(key, _)| key.clone())
-        .collect();
-    for key in expired {
-        cache.pop(&key);
-    }
-}
-
 #[async_trait]
 impl Cache for MemoryCache {
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
         let mut cache = self.lock();
         let now = Instant::now();
-        let expired = cache.peek(key).is_some_and(|entry| entry.is_expired(now));
+        let expired = cache.peek(key).is_some_and(|e| e.is_expired(now));
         if expired {
             cache.pop(key);
             return Ok(None);
@@ -109,18 +226,29 @@ impl Cache for MemoryCache {
         ttl: Option<Duration>,
     ) -> Result<(), CacheError> {
         let mut cache = self.lock();
-        let now = Instant::now();
-        if cache.len() >= cache.cap().get() && cache.peek(key).is_none() {
-            purge_expired(&mut cache, now);
-        }
         cache.put(
             key.to_owned(),
             Entry {
                 value,
-                expires_at: expires_at(ttl),
+                expires_at: expires_at(ttl)?,
             },
-        );
-        Ok(())
+        )
+    }
+
+    async fn set_if_absent(&self, key: &str, v: Vec<u8>) -> CacheResult<bool> {
+        let mut cache = self.lock();
+        let now = Instant::now();
+        if cache.peek(key).is_some_and(|entry| !entry.is_expired(now)) {
+            return Ok(false);
+        }
+        cache.put(
+            key.to_owned(),
+            Entry {
+                value: v,
+                expires_at: None,
+            },
+        )?;
+        Ok(true)
     }
 
     async fn delete(&self, key: &str) -> Result<bool, CacheError> {
@@ -145,29 +273,31 @@ impl Cache for MemoryCache {
         if cache.peek(key).is_some_and(|entry| entry.is_expired(now)) {
             cache.pop(key);
         }
-        if let Some(entry) = cache.get_mut(key) {
-            let current = parse_incr_int(&entry.value).ok_or_else(|| CacheError::NotInteger {
+        let deadline;
+        let next;
+        if let Some(entry) = cache.get(key) {
+            let invalid = || CacheError::NotInteger {
                 key: key.to_owned(),
-            })?;
-            let next = current
+            };
+            let current = parse_incr_int(&entry.value).ok_or_else(invalid)?;
+            next = current
                 .checked_add(by)
                 .ok_or_else(|| CacheError::NotInteger {
                     key: key.to_owned(),
                 })?;
-            entry.value = next.to_string().into_bytes();
-            return Ok(next);
-        }
-        if cache.len() >= cache.cap().get() {
-            purge_expired(&mut cache, now);
+            deadline = entry.expires_at;
+        } else {
+            next = by;
+            deadline = None;
         }
         cache.put(
             key.to_owned(),
             Entry {
-                value: by.to_string().into_bytes(),
-                expires_at: None,
+                value: next.to_string().into_bytes(),
+                expires_at: deadline,
             },
-        );
-        Ok(by)
+        )?;
+        Ok(next)
     }
 
     async fn clear(&self) -> Result<(), CacheError> {
@@ -308,7 +438,8 @@ mod tests {
         let mut joins = Vec::new();
         for _ in 0..32 {
             let cache = cache.clone();
-            joins.push(tokio::spawn(async move { cache.increment("n", 1).await }));
+            let worker = async move { cache.increment("n", 1).await };
+            joins.push(tokio::spawn(worker));
         }
         let mut total = 0;
         for join in joins {
@@ -380,3 +511,7 @@ mod tests {
         assert_eq!(cache.get("n").await.unwrap().as_deref(), Some(&b"42"[..]));
     }
 }
+
+#[cfg(test)]
+#[path = "memory_limits_tests.rs"]
+mod limits_tests;

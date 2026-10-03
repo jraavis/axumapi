@@ -8,6 +8,7 @@
 //! Connections are pinned to the `UTC` time zone so that `timestamptz`
 //! date-part lookups (`EXTRACT`) agree with the values the ORM writes.
 
+use crate::connection_init::ConnectionInit;
 use crate::shared::{
     ConnSlot, TxSlot, affected_result, map_error, returning_result, with_conn, with_tx,
 };
@@ -55,17 +56,49 @@ impl PgBackend {
         Self::connect_with(url, options).await
     }
 
-    /// Like [`connect`](Self::connect) with explicit pool options (pool size,
-    /// timeouts, `test_before_acquire`), used as given: a plain
-    /// `PgPoolOptions::new()` checks connections on acquire. The UTC
-    /// time-zone setup is added to `options`.
+    /// Connect with pool settings and mandatory adapter initialization.
+    ///
+    /// Replaces any after_connect callback already stored in options.
+    /// SQLx does not expose that callback for chaining; pass custom setup to
+    /// [`Self::connect_with_init`] instead. Other pool options are retained.
+    ///
+    /// Args:
+    ///     url: Database URL.
+    ///     options: Pool capacity, timeouts and checkout policy.
+    ///
+    /// Returns:
+    ///     Adapter whose fresh sessions receive mandatory initialization.
     ///
     /// # Errors
-    /// [`BackendError::Connection`] if the pool cannot be created.
+    /// Connection or initialization failure within the acquire deadline.
     pub async fn connect_with(url: &str, options: PgPoolOptions) -> Result<Self, BackendError> {
+        let init: ConnectionInit<sqlx::Postgres> =
+            std::sync::Arc::new(|_, _| Box::pin(async { Ok(()) }));
+        Self::connect_with_init(url, options, init).await
+    }
+
+    /// Compose explicit custom setup with mandatory session settings.
+    ///
+    /// Args:
+    ///     url: Database URL.
+    ///     options: Pool settings; its stored after_connect is replaced.
+    ///     init: Custom hook run first on every new/reconnected session.
+    ///
+    /// Returns:
+    ///     Adapter after custom setup and required settings succeed.
+    ///
+    /// # Errors
+    /// Connection or initialization failure within the acquire deadline.
+    pub async fn connect_with_init(
+        url: &str,
+        options: PgPoolOptions,
+        init: ConnectionInit<sqlx::Postgres>,
+    ) -> Result<Self, BackendError> {
         let pool = options
-            .after_connect(|conn, _meta| {
+            .after_connect(move |conn, meta| {
+                let init = init.clone();
                 Box::pin(async move {
+                    init(conn, meta).await?;
                     conn.execute("SET TIME ZONE 'UTC'").await?;
                     Ok(())
                 })
@@ -114,6 +147,10 @@ impl Executor for PgBackend {
 
 #[async_trait]
 impl Backend for PgBackend {
+    fn read_parameter_count(&self, plan: &QueryPlan) -> Result<Option<usize>, OrmError> {
+        Ok(Some(compile(plan, &Postgres)?.params.len()))
+    }
+
     async fn begin(
         &self,
         isolation: Option<IsolationLevel>,

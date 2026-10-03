@@ -2,17 +2,107 @@
 
 ## [Unreleased]
 
+- Own HTTP/HTTP2 and WebSocket work through shutdown, with bounded transport
+  admission and readiness phases; overdue cooperative workers are aborted
+  and joined before resource teardown.
+
+
 ### Changed
+- **Breaking (Migrations):** bounded PostgreSQL/MySQL advisory acquisition and read-only
+  recovery inspection. Pending-step intents reject automatic replay of
+  uncertain non-transactional scripts/callbacks. Callback replay requires
+  an explicit idempotence declaration; execution requires a pool handle.
+- **Benchmarks:** validate actual scheduler counts, paired confidence bounds,
+  per-pair tail budgets with rounding uncertainty, and retained percentile
+  CSV. SQLite FastAPI now has a retained autocommit connection baseline.
+- **Security docs:** recommend authorization code with PKCE and trusted
+  access-token verification; label password-flow examples as legacy.
+- **ORM:** prefetch hash-deduplicates canonical keys and batches against
+  the target database's remaining compiled bind budget. SQL extensions
+  report counts with `Backend::read_parameter_count`; unknown/exhausted
+  budgets and sliced queries spanning batches fail before target I/O.
+- **Breaking (Core):** ConcurrencyLimit now defaults to a bounded queue
+  with a five-second admission deadline. Overload returns 503/Retry-After.
+  Configure `queue`, opt into body-lifetime permits with `hold_body`, close
+  admission explicitly and observe counters with `stats`.
+- **Cache:** enforce request refresh/no-store, conditional/range bypass,
+  origin freshness and successful target-write invalidation. Namespaced
+  random generations prevent delayed fills and eviction from reviving old
+  entries. Failed invalidation disables the layer. MemoryCache adds hard
+  byte admission and size-aware eviction; route encoding is bounded and
+  versioned. Shared proxy policy resolves cache scheme.
+- **Breaking (Middleware):** HTTPS redirects ignore forwarded scheme by
+  default. Shared `TrustedProxies` enables exact-peer trust for scheme and
+  rate-limit identity; malformed trusted headers are rejected. Redirects
+  preserve IPv6 brackets and support canonical authority/host validation.
+- **Middleware:** rate limits now enforce a hard client-state bound with
+  typed normalized IP keys and bounded expiry. Saturation denies new
+  identities without evicting depleted clients. Invalid numeric settings
+  fail app validation; `try_new` supports immediate validation.
+- **Breaking (Core):** dropping `BackgroundTasks` no longer launches work.
+  Extracted tasks require a successful endpoint response; cancellation,
+  extraction failure, errors and panic discard queued work. Admission is
+  bounded, accepted batches retain tracing context and lifespan shutdown
+  drains them before resource teardown. `try_add` reports overload; configure
+  limits with `App::background_tasks`. Standalone defaults reject admission.
+- **MySQL:** share metadata and RETURNING reconstruction through a private
+  driver interface; compile emulated writes without cloning the whole plan.
+  Existing SQLx constructors and stored-row behavior are preserved.
+- **Breaking (ORM):** overlapping statements and sibling savepoint scopes on
+  one transaction now return `TransactionBusy`. Use the active child handle
+  and await each scope before starting another. Cancelling scope work returns
+  `TransactionAborted` from later operations and prevents outer commit.
 - Site mark is a rhombohedral crystal (header logos and favicon), replacing the old triangle.
 - GitHub Actions use Node 24-capable versions (`actions/checkout@v5`, `upload-pages-artifact@v5`, `deploy-pages@v5`).
 - Renamed the project from `axumapi` to `siderite` (crates, rust paths, CLI binary, config file `siderite.toml`, env prefix `SIDERITE_`, migration history table `siderite_migrations`, docs site). Axum remains the HTTP engine.
 - CLI serve command is `run` (was `runserver`). The `siderite` binary wraps `cargo run` in an application package and adds `siderite new`.
 
 ### Added
+- **Backends/Cache:** explicit `tls` feature enables SQLx and Redis Rustls
+  transport. Deployments still configure certificate/identity verification.
+- **Backends:** PostgreSQL/MySQL `connect_with_init` composes an explicit
+  SQLx callback before mandatory session initialization on every fresh
+  connection. `connect_with` now documents stored callback replacement.
+- **Benchmarks:** concurrent insert correctness batches verify exact HTTP
+  201, unique returned IDs and committed values after each timed trial.
+  One independent batch query checks sample rows; failures reject the trial
+  and retain evidence. Samples remain outside performance measurements.
+- **MySQL:** experimental `mysql-native` feature exposes
+  `mysql::native::NativeMySqlBackend` and `NativeMySqlOptions`. Clean ORM
+  sessions retain prepared statements; cancelled exchanges, raw SQL and
+  unfinished transactions retire their connections. Admission is bounded,
+  checkout has a deadline, and connection startup warms every pool slot.
+  SQLx remains the default; TLS/recovery/migration acceptance remains open.
+- **Benchmarks:** a pinned native MySQL driver probe compares SQLx against
+  reset/retained mysql_async pools and held connections, with independent
+  complete ID/row validation and live cancellation/reuse prerequisites.
+- **Core:** `ManagedLifespan`, `App::run_until` and `shutdown_timeout` provide
+  supervised resource cleanup and a shared shutdown deadline (30 seconds by
+  default). Unix SIGTERM requests shutdown alongside Ctrl-C.
 - `siderite build` runs `cargo build` in the app package and forwards its arguments, e.g. `siderite build --release`.
 - GitHub Pages documentation site (`website/`, Astro Starlight) covering getting started, tutorials, HTTP/data/production guides, reference, internals, and contributing. Deployed from `.github/workflows/pages.yml` with rustdoc at `/api/`.
 
 ### Fixed
+- **Lifespan:** startup/bind failures unwind initialized resources; caller
+  cancellation and last test-client drop retain cleanup ownership. Hook
+  panics and timeouts do not skip remaining cleanup attempts. Original
+  startup/bind errors take priority over cleanup errors.
+- **ORM:** cancelled nested savepoints and interrupted statements now abort
+  the transaction instead of allowing their writes to commit. Failed
+  savepoints are rolled back and released; cleanup failure preserves the
+  original error and invalidates the transaction. Escaped handles are closed.
+- **Backends:** compile shared pool helpers only for backends that use them;
+  strict lint passes for each backend feature independently. CI checks the
+  seven minimal feature combinations across all test targets, avoiding
+  all-features unification. SQLite-only integration tests are feature-gated.
+- **Benchmarks:** reject failed or incomplete load-generator trials and verify
+  committed insert counts. Trials use isolated application lifecycles,
+  schema-preserving resets, alternating pairs and duration calibration;
+  retain raw evidence and manifests. Smoke runs are explicitly labelled.
+- **Benchmarks:** require actual keep-alive negotiation when requested;
+  reject mismatched transports instead of comparing their throughput.
+  MySQL fixtures and FastAPI decode URL credentials consistently and share
+  session setup and matched-row update semantics with the Rust adapters.
 - **Migrations:** SQLite table rebuilds no longer CASCADE-delete child rows. The migrator turns `PRAGMA foreign_keys` off on the dedicated connection before `BEGIN` (SQLite ignores that pragma inside a transaction), runs `PRAGMA foreign_key_check` before commit, and restores the previous value afterwards.
 - **Migrations:** `migrate` and `rollback` take a backend lock (PostgreSQL `pg_advisory_lock`, MySQL `GET_LOCK`, SQLite `BEGIN IMMEDIATE`) and re-read history under it so concurrent replicas cannot double-apply.
 - **Migrations:** a MySQL migration that fails after earlier DDL has committed reports `MigrationError::MysqlPartial` with the 1-based statement index, because MySQL cannot roll the earlier statements back.

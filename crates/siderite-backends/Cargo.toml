@@ -26,11 +26,26 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 
+[dependencies.mysql_async]
+version = "=0.37.1"
+optional = true
+default-features = false
+features = ["minimal-rust", "rustls-tls", "ring", "tls12"]
+
 [features]
 default = ["sqlite"]
+tls = [
+    "sqlx/tls-rustls-ring-webpki",
+    "redis?/tokio-rustls-comp",
+    "redis?/tls-rustls-webpki-roots",
+]
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]
 mysql = ["sqlx/mysql"]
+mysql-native = [
+    "mysql", "dep:mysql_async", "dep:chrono", "dep:rust_decimal",
+    "dep:serde_json",
+]
 mongodb = ["dep:mongodb", "dep:chrono", "dep:rust_decimal", "dep:serde_json", "dep:uuid"]
 redis = ["dep:redis", "dep:serde", "dep:serde_json"]
 

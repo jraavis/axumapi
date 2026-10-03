@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use rust_decimal::Decimal;
+#[cfg(feature = "sqlite")]
 use siderite_backends::sqlite::SqliteBackend;
 use siderite_orm::types::decode;
 use siderite_orm::{
@@ -547,6 +548,7 @@ const SCHEMA: &str = "
 ";
 
 /// Empty in-memory database with every test table.
+#[cfg(feature = "sqlite")]
 pub async fn db() -> Db {
     let db = Db::new(SqliteBackend::connect("sqlite::memory:").await.unwrap());
     db.execute_script(SCHEMA).await.unwrap();

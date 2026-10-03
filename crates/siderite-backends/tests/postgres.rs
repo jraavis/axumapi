@@ -1,9 +1,9 @@
 //! PostgreSQL end-to-end tests.
 //!
-//! They run only when `DATABASE_URL` starts with `postgres` (for example
-//! `postgres://postgres:postgres@localhost/postgres`) and print a note
-//! otherwise. Each test works in its own freshly created schema, so tests can
-//! run in parallel against one database.
+//! These tests are explicitly ignored in offline runs. Select --ignored
+//! with the documented service URL to run them; missing configuration fails.
+//! Each test owns a disposable schema/database or a unique Redis namespace.
+//! Shared application data and Redis FLUSH commands are not used.
 #![cfg(feature = "postgres")]
 #![allow(clippy::unwrap_used)]
 
@@ -58,8 +58,7 @@ impl TestDb {
             .ok()
             .filter(|u| u.starts_with("postgres"))
         else {
-            eprintln!("skipping PostgreSQL test: DATABASE_URL does not start with `postgres`");
-            return None;
+            panic!("live postgres tests require DATABASE_URL");
         };
         let schema = format!("siderite_test_{}", uuid::Uuid::new_v4().simple());
         let admin = PgPool::connect(&url).await.unwrap();
@@ -95,6 +94,7 @@ impl TestDb {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit DATABASE_URL and an isolated live service"]
 async fn instance_operations_and_timestamps() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -127,6 +127,7 @@ async fn instance_operations_and_timestamps() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit DATABASE_URL and an isolated live service"]
 async fn null_parameters_fit_any_column_type() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -155,6 +156,7 @@ async fn null_parameters_fit_any_column_type() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit DATABASE_URL and an isolated live service"]
 async fn scalar_types_round_trip_natively() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -192,6 +194,7 @@ async fn scalar_types_round_trip_natively() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit DATABASE_URL and an isolated live service"]
 async fn queries_aggregates_windows_and_sets() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -292,6 +295,7 @@ async fn queries_aggregates_windows_and_sets() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit DATABASE_URL and an isolated live service"]
 async fn writes_bulk_operations_and_relations() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -343,6 +347,7 @@ async fn writes_bulk_operations_and_relations() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit DATABASE_URL and an isolated live service"]
 async fn transactions_isolation_and_row_locks() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -415,6 +420,7 @@ async fn transactions_isolation_and_row_locks() {
 /// `update_or_create` locks its lookup (`FOR UPDATE`), and retries as an
 /// update when a concurrent insert of the missing row wins.
 #[tokio::test]
+#[ignore = "requires explicit DATABASE_URL and an isolated live service"]
 async fn update_or_create_serializes_with_concurrent_writers() {
     use std::time::Duration;
 

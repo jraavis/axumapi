@@ -57,6 +57,7 @@ pub async fn run(
         "migrate" => cmd_migrate(db, dir, &parsed).await,
         "rollback" => cmd_rollback(db, dir, &parsed).await,
         "showmigrations" => cmd_show(db, dir).await,
+        "inspectmigrations" => cmd_inspect(db, dir).await,
         "squashmigrations" => cmd_squash(dir, &parsed),
         other => Err(MigrationError::usage(format!(
             "unknown command `{other}` (try --help)"
@@ -72,6 +73,7 @@ struct Parsed {
     name: Option<String>,
     steps: Option<u32>,
     help: bool,
+    lock_timeout_ms: u64,
 }
 
 fn parse_args(argv: &[String]) -> Result<Parsed, MigrationError> {
@@ -83,6 +85,7 @@ fn parse_args(argv: &[String]) -> Result<Parsed, MigrationError> {
         name: None,
         steps: None,
         help: false,
+        lock_timeout_ms: 30_000,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -109,6 +112,16 @@ fn parse_args(argv: &[String]) -> Result<Parsed, MigrationError> {
         }
         if a == "--name" {
             parsed.name = Some(need_value(argv, &mut i, "--name")?);
+            continue;
+        }
+        if let Some(value) = strip_flag(a, "--lock-timeout-ms") {
+            parsed.lock_timeout_ms = parse_lock_timeout(value)?;
+            i += 1;
+            continue;
+        }
+        if a == "--lock-timeout-ms" {
+            let value = need_value(argv, &mut i, "--lock-timeout-ms")?;
+            parsed.lock_timeout_ms = parse_lock_timeout(&value)?;
             continue;
         }
         if let Some(v) = strip_flag(a, "--steps") {
@@ -152,6 +165,14 @@ fn parse_steps(v: &str) -> Result<u32, MigrationError> {
         .map_err(|_| MigrationError::usage(format!("invalid --steps `{v}`")))
 }
 
+fn parse_lock_timeout(value: &str) -> Result<u64, MigrationError> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|timeout| *timeout > 0)
+        .ok_or_else(|| MigrationError::usage("lock timeout must be positive"))
+}
+
 fn print_help() {
     println!(
         "\
@@ -162,9 +183,11 @@ Commands:
   migrate [TARGET] [--dry-run]
   rollback [--steps N | TARGET] [--dry-run]
   showmigrations
+  inspectmigrations             Read-only recovery report (JSON)
   squashmigrations FROM TO [--name SLUG]
 
 Flags:
+  --lock-timeout-ms N Advisory-lock deadline (default: 30000)
   --dry-run          Print SQL / operations without writing
   --name SLUG        Slug for a new or squashed migration
   --empty            Write an empty migration
@@ -228,7 +251,8 @@ fn cmd_makemigrations(
 
 async fn cmd_migrate(db: &Db, dir: &Path, parsed: &Parsed) -> Result<ExitCode, MigrationError> {
     let graph = load_graph(dir)?;
-    let migrator = Migrator::new(db, &graph);
+    let timeout = std::time::Duration::from_millis(parsed.lock_timeout_ms);
+    let migrator = Migrator::new(db, &graph).with_lock_timeout(timeout)?;
     let target = parsed.positional.first().map(String::as_str);
     let report = migrator.migrate(target, parsed.dry_run).await?;
     print_report("Applying", &report);
@@ -237,7 +261,8 @@ async fn cmd_migrate(db: &Db, dir: &Path, parsed: &Parsed) -> Result<ExitCode, M
 
 async fn cmd_rollback(db: &Db, dir: &Path, parsed: &Parsed) -> Result<ExitCode, MigrationError> {
     let graph = load_graph(dir)?;
-    let migrator = Migrator::new(db, &graph);
+    let timeout = std::time::Duration::from_millis(parsed.lock_timeout_ms);
+    let migrator = Migrator::new(db, &graph).with_lock_timeout(timeout)?;
     let target = parsed.positional.first().map(String::as_str);
     let report = migrator
         .rollback(target, parsed.steps, parsed.dry_run)
@@ -253,6 +278,17 @@ async fn cmd_show(db: &Db, dir: &Path) -> Result<ExitCode, MigrationError> {
         let mark = if applied { 'X' } else { ' ' };
         println!("[{mark}] {id}");
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn cmd_inspect(db: &Db, dir: &Path) -> Result<ExitCode, MigrationError> {
+    let graph = load_graph(dir)?;
+    let report = Migrator::new(db, &graph).inspect_recovery().await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    eprintln!(
+        "Recorded progress is not proof of the live schema. \
+        Reads may race with an active migrator; reconcile catalogs before repair."
+    );
     Ok(ExitCode::SUCCESS)
 }
 

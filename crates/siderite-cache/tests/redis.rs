@@ -1,20 +1,20 @@
 //! Live [`RedisCache`] tests.
 //!
-//! They run only when `REDIS_URL` starts with `redis` (for example
-//! `redis://127.0.0.1:6379/15`) and print a note otherwise. Each test uses
-//! its own key prefix on database 15 and deletes that prefix afterwards.
+//! These tests are explicitly ignored in offline runs. Select --ignored
+//! with the documented service URL to run them; missing configuration fails.
+//! Each test owns a disposable schema/database or a unique Redis namespace.
+//! Shared application data and Redis FLUSH commands are not used.
 #![cfg(feature = "redis")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::panic::{AssertUnwindSafe, resume_unwind};
 use std::time::Duration;
 
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use siderite_backends::redis::RedisStore;
 use siderite_cache::{Cache, CacheError, CacheExt, RedisCache};
-
-static SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct Widget {
@@ -31,8 +31,7 @@ where
         .ok()
         .filter(|value| value.starts_with("redis"))
     else {
-        eprintln!("skipping Redis cache test: REDIS_URL does not start with `redis`");
-        return;
+        panic!("live Redis cache tests require REDIS_URL");
     };
     let store = RedisStore::connect(&url).await.unwrap();
     assert_eq!(
@@ -41,17 +40,18 @@ where
         "REDIS_URL must select database 15 (selected {})",
         store.database()
     );
-    let prefix = format!(
-        "siderite-cache-test-{}-{}:",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    );
+    let prefix = format!("siderite-cache-test-{}:", uuid::Uuid::new_v4());
     let cache = RedisCache::new(store.with_prefix(prefix));
-    test(cache.clone()).await;
-    cache.clear().await.unwrap();
+    let result = AssertUnwindSafe(test(cache.clone())).catch_unwind().await;
+    let cleaned = cache.clear().await;
+    if let Err(panic) = result {
+        resume_unwind(panic);
+    }
+    cleaned.unwrap();
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live namespace"]
 async fn get_set_delete_clear_and_ttl() {
     with_cache(|cache| async move {
         assert_eq!(cache.get("missing").await.unwrap(), None);
@@ -84,6 +84,7 @@ async fn get_set_delete_clear_and_ttl() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live namespace"]
 async fn increment_matches_redis_incrby() {
     with_cache(|cache| async move {
         assert_eq!(cache.increment("n", 3).await.unwrap(), 3);
@@ -99,6 +100,7 @@ async fn increment_matches_redis_incrby() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live namespace"]
 async fn json_and_binary_roundtrip() {
     with_cache(|cache| async move {
         let widget = Widget {
@@ -116,6 +118,7 @@ async fn json_and_binary_roundtrip() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live namespace"]
 async fn clones_share_the_store() {
     with_cache(|cache| async move {
         let clone = cache.clone();
@@ -132,13 +135,13 @@ async fn connect_rejects_a_malformed_url() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit REDIS_URL and an isolated live namespace"]
 async fn empty_prefix_is_replaced_so_clear_is_safe() {
     let Some(url) = std::env::var("REDIS_URL")
         .ok()
         .filter(|value| value.starts_with("redis"))
     else {
-        eprintln!("skipping Redis cache test: REDIS_URL does not start with `redis`");
-        return;
+        panic!("live Redis cache tests require REDIS_URL");
     };
     let store = RedisStore::connect(&url).await.unwrap();
     assert!(store.prefix().is_empty());

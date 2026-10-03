@@ -2,7 +2,9 @@
 //! [`postgres`](crate::postgres)): error mapping, write-result shaping and
 //! the open-transaction slot.
 
-use siderite_orm::{BackendError, ExecResult, OrmError, QueryError, Row};
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use siderite_orm::Row;
+use siderite_orm::{BackendError, ExecResult, OrmError, QueryError};
 use tokio::sync::Mutex;
 
 /// Classify a driver error: constraint violations (unique, foreign key,
@@ -23,6 +25,7 @@ pub(crate) fn map_error(e: sqlx::Error) -> BackendError {
 }
 
 /// Result of a write that used `RETURNING`: the rows are the outcome.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn returning_result(rows: Vec<Row>) -> ExecResult {
     ExecResult {
         rows_affected: rows.len() as u64,
@@ -87,10 +90,12 @@ pub(crate) use with_tx;
 /// A pooled connection held without an SQL transaction (migration lock).
 /// Dropping it without [`take`](Self::take) closes the connection so session
 /// locks (`pg_advisory_lock`, `GET_LOCK`) are not returned to the pool.
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 pub(crate) struct ConnSlot<DB: sqlx::Database> {
     pub(crate) conn: Mutex<Option<sqlx::pool::PoolConnection<DB>>>,
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 impl<DB: sqlx::Database> ConnSlot<DB> {
     pub(crate) fn new(conn: sqlx::pool::PoolConnection<DB>) -> Self {
         Self {
@@ -107,6 +112,7 @@ impl<DB: sqlx::Database> ConnSlot<DB> {
     }
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 impl<DB: sqlx::Database> Drop for ConnSlot<DB> {
     fn drop(&mut self) {
         if let Some(mut conn) = self.conn.get_mut().take() {
@@ -115,6 +121,7 @@ impl<DB: sqlx::Database> Drop for ConnSlot<DB> {
     }
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 macro_rules! with_conn {
     ($slot:expr, $conn:ident => $body:expr) => {{
         let mut guard = $slot.conn.lock().await;
@@ -125,4 +132,5 @@ macro_rules! with_conn {
         $body
     }};
 }
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 pub(crate) use with_conn;

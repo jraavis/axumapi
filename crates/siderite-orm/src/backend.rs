@@ -100,6 +100,21 @@ pub trait Executor: Send + Sync + 'static {
 /// A connection pool that can open transactions.
 #[async_trait]
 pub trait Backend: Executor {
+    /// Count compiled read parameters without database I/O.
+    ///
+    /// Args:
+    ///     _plan: Complete read plan whose existing binds consume capacity.
+    ///
+    /// Returns:
+    ///     Exact compiled bind count, or None when the backend cannot report
+    ///     it. SQL prefetch requires this contract for bounded batching.
+    ///
+    /// # Errors
+    /// Capability or plan compilation errors.
+    fn read_parameter_count(&self, _plan: &QueryPlan) -> Result<Option<usize>, OrmError> {
+        Ok(None)
+    }
+
     /// Begin a transaction on a dedicated connection.
     ///
     /// `isolation` is validated against

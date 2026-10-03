@@ -1,6 +1,6 @@
 ---
 title: Security
-description: HTTP Bearer, Basic, API keys, OAuth2 password flow, Authenticate, and OpenAPI securitySchemes.
+description: Bearer validation, authorization code with PKCE, and security schemes.
 ---
 
 Security schemes are extractors that document themselves. Reading credentials
@@ -52,29 +52,43 @@ async fn feed(key: ApiKey<PartnerKey>) -> String {
 }
 ```
 
-OAuth2 password flow pairs a token endpoint with a bearer extractor:
+## Recommended OAuth flow
 
-```rust
-use siderite::security::{OAuth2PasswordBearer, OAuth2PasswordRequestForm, OAuth2Spec};
+Use authorization code with PKCE (S256) through an authorization server.
+The password grant is legacy compatibility only; RFC 9700 section 2.4
+prohibits it for current deployments. Siderite extracts API credentials;
+it does not implement the authorization server or a JWT verifier.
+See [OAuth security BCP](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.4).
 
-struct Oauth;
+1. Create a fresh high-entropy PKCE verifier and one-time state bound to the
+   browser session. Redirect to the configured issuer's authorization
+   endpoint with an exact registered redirect URI, `response_type=code`,
+   `code_challenge_method=S256` and the challenge. For OpenID Connect use
+   a fresh nonce and verify it on the returned ID token.
+2. On callback, verify the bound state/issuer and exchange the code once at
+   the configured token endpoint with the original verifier and redirect
+   URI. Do not accept arbitrary issuer, redirect or token-endpoint URLs
+   from request input. Require TLS and provider-supported PKCE.
+3. Send the access token to the API in `Authorization: Bearer ...`.
+   `HttpBearer` plus `Security<T, S>` works independently of the OAuth grant.
+   An ID token intended for a client is not an API access token.
 
-impl OAuth2Spec for Oauth {
-    const TOKEN_URL: &'static str = "/token";
-    const SCOPES: &'static [(&'static str, &'static str)] =
-        &[("read", "Read items"), ("admin", "Administer")];
-    const SCHEME: &'static str = "OAuth2";
-}
+Protocol details are in [PKCE](https://www.rfc-editor.org/rfc/rfc7636.html).
 
-async fn token(form: OAuth2PasswordRequestForm) -> Result<Json<TokenResponse>, ApiError> {
-    // Verify form.username / form.password and issue a token.
-    unimplemented!()
-}
+The application owns browser-session CSRF protection, secure HttpOnly cookie
+policy where cookies are used, token storage, refresh rotation/revocation,
+and issuer key refresh. Keep tokens out of URLs and logs. Browser storage
+and cookies have different XSS/CSRF exposure; select and test one policy.
 
-async fn items(token: OAuth2PasswordBearer<Oauth>) -> String {
-    token.token.len().to_string()
-}
-```
+Before returning a principal, a trusted verifier must check the access-token
+signature with an allowed algorithm and keys from the configured issuer,
+exact issuer, intended audience, expiration and not-before times with
+bounded clock skew, token type and granted scopes. Opaque tokens require
+trusted introspection or a server-side token store, rather than JWT parsing.
+A decoded payload alone is never a verified token. Follow
+[JWT BCP](https://www.rfc-editor.org/rfc/rfc8725.html) and the
+[access-token profile](https://www.rfc-editor.org/rfc/rfc9068.html). Bound and cache trusted
+key material; never fetch a token-supplied key URL.
 
 ## `Authenticate` and `Security`
 
@@ -82,6 +96,20 @@ async fn items(token: OAuth2PasswordBearer<Oauth>) -> String {
 use siderite::security::{Authenticate, HttpBearer, Security, check_scopes};
 use siderite::{ApiError, scopes};
 use http::request::Parts;
+use std::sync::Arc;
+
+struct VerifiedAccess {
+    subject: String,
+    scopes: Vec<String>,
+}
+
+// Application interface: supply a trusted JWT verifier or introspection
+// implementation. There is deliberately no permissive default verifier.
+trait AccessVerifier: Send + Sync {
+    // Verify signature, allowed algorithm, issuer, audience, expiry,
+    // not-before and token type before returning these trusted fields.
+    fn verify(&self, token: &str) -> Result<VerifiedAccess, ApiError>;
+}
 
 struct CurrentUser(String);
 
@@ -93,10 +121,12 @@ impl Authenticate for CurrentUser {
         required: &[&'static str],
         parts: &Parts,
     ) -> Result<Self, ApiError> {
-        // Look the token up. State set with App::with_state is in parts.extensions.
-        let granted = ["read"];
-        check_scopes(required, granted)?;
-        Ok(CurrentUser(credentials.token))
+        let verifier = parts.extensions
+            .get::<Arc<dyn AccessVerifier>>()
+            .ok_or_else(|| ApiError::internal("Verifier not configured."))?;
+        let access = verifier.verify(&credentials.token)?;
+        check_scopes(required, access.scopes.iter().map(String::as_str))?;
+        Ok(CurrentUser(access.subject))
     }
 }
 
@@ -106,6 +136,15 @@ async fn me(Security(user, _): Security<CurrentUser, ReadScopes>) -> String {
     user.0
 }
 ```
+
+Install the verifier with `App::with_state(Arc<dyn AccessVerifier>)`.
+The interface above shows the ownership boundary; implement it with a
+verified token library/provider, not handwritten JWT cryptography.
+Integration tests must reject a forged signature, wrong issuer/audience,
+expired or not-yet-valid access token, ID-token substitution, missing scope
+and untrusted key ID/URL. Test state/nonce replay and redirect mismatch at
+the OAuth callback too. These provider checks are application tests;
+Siderite's extraction/scopes tests cannot establish their correctness.
 
 `Security<T, S>` extracts `T::Credentials`, calls
 `T::authenticate(credentials, S::SCOPES, parts)`, and documents the scheme
@@ -173,3 +212,12 @@ containing `auth`, `token`, `session`, `jwt`, `secret`, `api-key` or
 - [OpenAPI 3.1](/siderite/guides/http/openapi/)
 - [Errors](/siderite/guides/http/errors/)
 - [Blog on PostgreSQL](/siderite/tutorials/blog-postgres/) — OAuth2 password flow in an example
+
+## Legacy password-flow compatibility
+
+`OAuth2Spec`, `OAuth2PasswordBearer` and `OAuth2PasswordRequestForm` remain
+available for legacy contracts and describe a password flow in OpenAPI.
+They are not the recommended authorization architecture. The form accepts
+`grant_type` without verifying it; applications retaining legacy endpoints
+own grant validation and token issuance. The blog example demonstrates this
+compatibility surface and is not a modern authorization-server template.

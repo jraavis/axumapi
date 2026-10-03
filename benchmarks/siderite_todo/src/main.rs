@@ -1,5 +1,8 @@
 //! Siderite Todo API benchmark binary matching FastAPI todo_app.
 
+mod mongo_settings;
+mod settings;
+
 use siderite::prelude::*;
 use siderite_backends::mongodb::MongoBackend;
 use siderite_backends::mysql::MySqlBackend;
@@ -63,6 +66,7 @@ pub async fn open_db(url: &str) -> Result<Db, ApiError> {
             url,
             sqlx::postgres::PgPoolOptions::new()
                 .max_connections(pool_size())
+                .min_connections(pool_size())
                 .test_before_acquire(false),
         )
         .await
@@ -73,43 +77,53 @@ pub async fn open_db(url: &str) -> Result<Db, ApiError> {
             .map_err(ApiError::internal)?;
         Ok(db)
     } else if url.starts_with("mysql://") {
-        let backend = MySqlBackend::connect_with(
-            url,
-            sqlx::mysql::MySqlPoolOptions::new()
-                .max_connections(pool_size())
-                .test_before_acquire(false),
-        )
-        .await
-        .map_err(ApiError::internal)?;
-        let db = Db::new(backend);
-        db.execute_script(MYSQL_SCHEMA)
-            .await
-            .map_err(ApiError::internal)?;
-        Ok(db)
+        open_mysql(url).await
     } else if url.starts_with("mongodb://") {
-        let backend = MongoBackend::connect(url, "siderite")
+        let parsed = mongodb::options::ClientOptions::parse(url)
             .await
             .map_err(ApiError::internal)?;
+        let name = parsed.default_database.as_deref().unwrap_or("siderite");
+        let backend = MongoBackend::connect(url, name)
+            .await
+            .map_err(ApiError::internal)?;
+        if std::env::var_os("BENCHMARK_RUNTIME").is_some() {
+            let observed = mongo_settings::capture(backend.database(), &parsed).await?;
+            settings::emit(observed);
+        }
         Ok(Db::new(backend))
     } else {
         // `SQLITE_WAL=1` (the runner's `--sqlite-wal`) trades durability for
         // write throughput; the FastAPI app applies the same pragmas.
-        let backend = if std::env::var("SQLITE_WAL").is_ok_and(|v| v == "1") {
+        let profile = std::env::var("SQLITE_PROFILE").unwrap_or_else(|_| {
+            if std::env::var("SQLITE_WAL").is_ok_and(|v| v == "1") {
+                "wal-normal".to_owned()
+            } else {
+                "default".to_owned()
+            }
+        });
+        let backend = if profile == "wal-normal" || profile == "wal-full" {
             let options: SqliteConnectOptions = url.parse().map_err(ApiError::internal)?;
+            let sync = if profile == "wal-full" {
+                SqliteSynchronous::Full
+            } else {
+                SqliteSynchronous::Normal
+            };
             SqliteBackend::connect_with(
                 options
                     .journal_mode(SqliteJournalMode::Wal)
-                    .synchronous(SqliteSynchronous::Normal),
+                    .synchronous(sync),
                 SqlitePoolOptions::new().max_connections(pool_size()),
             )
             .await
-        } else {
+        } else if profile == "default" {
             let options: SqliteConnectOptions = url.parse().map_err(ApiError::internal)?;
             SqliteBackend::connect_with(
                 options,
                 SqlitePoolOptions::new().max_connections(pool_size()),
             )
             .await
+        } else {
+            return Err(ApiError::internal("invalid SQLite profile"));
         }
         .map_err(ApiError::internal)?;
         let db = Db::new(backend);
@@ -118,6 +132,53 @@ pub async fn open_db(url: &str) -> Result<Db, ApiError> {
             .map_err(ApiError::internal)?;
         Ok(db)
     }
+}
+
+/// Select the explicitly requested driver with equally initialized pools.
+///
+/// Args:
+///     url: MySQL benchmark database URL.
+///
+/// Returns:
+///     Configured database, or an explicit driver/setup error.
+async fn open_mysql(url: &str) -> Result<Db, ApiError> {
+    let driver = std::env::var("SIDERITE_MYSQL_DRIVER").unwrap_or_else(|_| "sqlx".into());
+    if driver == "native" {
+        #[cfg(feature = "mysql-native")]
+        {
+            use siderite_backends::mysql::native::{NativeMySqlBackend, NativeMySqlOptions};
+            let options = NativeMySqlOptions {
+                max_connections: pool_size() as usize,
+                ..NativeMySqlOptions::default()
+            };
+            let backend = NativeMySqlBackend::connect_with(url, options)
+                .await
+                .map_err(ApiError::internal)?;
+            let db = Db::new(backend.clone());
+            db.execute_script(MYSQL_SCHEMA)
+                .await
+                .map_err(ApiError::internal)?;
+            backend.warm().await.map_err(ApiError::internal)?;
+            return Ok(db);
+        }
+        #[cfg(not(feature = "mysql-native"))]
+        return Err(ApiError::internal("build with mysql-native feature"));
+    }
+    if driver != "sqlx" {
+        return Err(ApiError::internal("invalid SIDERITE_MYSQL_DRIVER"));
+    }
+    let options = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(pool_size())
+        .min_connections(pool_size())
+        .test_before_acquire(false);
+    let backend = MySqlBackend::connect_with(url, options)
+        .await
+        .map_err(ApiError::internal)?;
+    let db = Db::new(backend);
+    db.execute_script(MYSQL_SCHEMA)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(db)
 }
 
 #[get("/health")]
@@ -159,6 +220,17 @@ pub fn app(db: Db) -> App {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    if std::env::var_os("BENCHMARK_RUNTIME").is_some() {
+        let runtime = tokio::runtime::Handle::current();
+        let workers = runtime.metrics().num_workers();
+        eprintln!(
+            "BENCHMARK_RUNTIME {}",
+            serde_json::json!({
+                "scheduler_workers": workers,
+                "pid": std::process::id(),
+            })
+        );
+    }
     let mut addr = "127.0.0.1:8081".to_string();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -181,6 +253,17 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(1);
         }
     };
+
+    if std::env::var_os("BENCHMARK_RUNTIME").is_some() {
+        match settings::capture(&db).await {
+            Ok(Some(settings)) => settings::emit(settings),
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!("Settings capture failed: {err}");
+                return std::process::ExitCode::from(1);
+            }
+        }
+    }
 
     if let Err(err) = app(db).run(&addr).await {
         eprintln!("Server error: {err}");

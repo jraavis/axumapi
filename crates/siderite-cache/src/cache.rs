@@ -23,6 +23,21 @@ pub trait Cache: Send + Sync + 'static {
     async fn set(&self, key: &str, value: Vec<u8>, ttl: Option<Duration>)
     -> Result<(), CacheError>;
 
+    /// Atomically create a nonexpiring entry only when no live entry exists.
+    ///
+    /// Args:
+    ///     key: Entry identity.
+    ///     value: Opaque value to store on successful creation.
+    ///
+    /// Returns:
+    ///     Whether this call created the entry. Backends without atomic
+    ///     insertion report a capability error; RouteCache then bypasses.
+    async fn set_if_absent(&self, _key: &str, _value: Vec<u8>) -> Result<bool, CacheError> {
+        Err(CacheError::Backend(
+            "atomic insertion is unsupported".into(),
+        ))
+    }
+
     /// Remove `key`. `Ok(true)` when a live entry was removed.
     async fn delete(&self, key: &str) -> Result<bool, CacheError>;
 
@@ -50,6 +65,10 @@ impl<T: Cache + ?Sized> Cache for Arc<T> {
         ttl: Option<Duration>,
     ) -> Result<(), CacheError> {
         (**self).set(key, value, ttl).await
+    }
+
+    async fn set_if_absent(&self, key: &str, value: Vec<u8>) -> Result<bool, CacheError> {
+        (**self).set_if_absent(key, value).await
     }
 
     async fn delete(&self, key: &str) -> Result<bool, CacheError> {

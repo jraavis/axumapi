@@ -31,7 +31,7 @@ pub(crate) async fn run_with(
     }
     if matches!(
         command,
-        "migrate" | "rollback" | "showmigrations" | "squashmigrations"
+        "migrate" | "rollback" | "showmigrations" | "inspectmigrations" | "squashmigrations"
     ) {
         let dir = global
             .migrations_dir

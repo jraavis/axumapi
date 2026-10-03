@@ -1,4 +1,5 @@
 //! Capability gating: unsupported features fail before any I/O.
+#![cfg(feature = "sqlite")]
 #![allow(clippy::unwrap_used)]
 
 mod common;

@@ -9,6 +9,7 @@ two backends and a response-caching middleware.
 |---|---|
 | `get(key)` | `Option<Vec<u8>>`; expired entries count as missing |
 | `set(key, value, ttl)` | store bytes; `None` TTL keeps the entry until evicted |
+| `set_if_absent(key, value)` | atomic non-expiring creation; optional for custom backends |
 | `delete(key)` | `true` when an entry was removed |
 | `increment(key, by)` | Redis `INCRBY` semantics: a missing key starts at `0`, a non-integer value is an error |
 | `clear()` | remove every entry (Redis: only this cache's key prefix) |
@@ -102,3 +103,55 @@ the app is safe to share between users.
   `x-cache: hit` or `miss`. A cached `HEAD` keeps the `Content-Length` of the
   original response.
 - **Backend errors fail open:** the request is served as a miss.
+
+
+## Freshness, invalidation and isolation
+
+Request `no-cache`, `max-age` and `min-fresh` refresh from the origin;
+`Pragma: no-cache` does too. Request `no-store` bypasses lookup and storage
+without deleting existing entries. Range and conditional requests bypass
+this supported caching subset. Origin `Date` is preserved; origin `Age`
+and apparent age reduce remaining freshness, and hits add residence time.
+Connection-nominated headers and fixed hop headers are removed. Responses
+with trailers or unknown body length are not buffered.
+
+Successful unsafe writes (2xx/3xx) rotate the target's shared generation
+across GET/HEAD and header variants, including authenticated writes.
+Failed writes preserve entries. Random generations prevent delayed fills
+and evicted generation markers from reviving older representations.
+`invalidate_target(&request)` rotates a related URI after an application
+write; list/detail dependencies are application policy.
+
+Each layer defaults to a unique namespace. Use `.namespace("app-v2")` only
+for applications or nodes intentionally sharing compatible responses and
+invalidation. Cache key scheme uses `.trusted_proxies(...)`, the same exact
+peer policy as redirect and rate limiting; untrusted forwarded headers are
+ignored. The proxy must replace headers. Malformed trusted context fails.
+
+The cache requires atomic `Cache::set_if_absent`; MemoryCache and RedisCache
+implement it. Custom backends without it bypass route storage. Generation
+markers have no TTL; backend capacity/eviction governs their lifetime.
+Backend read/store errors serve the origin. Failed write invalidation
+disables the affected layer, preserving the already completed write.
+Database commits and cache invalidation are separate operations: other
+nodes or restarted processes can retain stale entries during a partition.
+Use bounded TTLs and a coordinated invalidation/outbox policy where that
+consistency matters; this middleware does not offer distributed atomicity.
+
+## Byte budgets
+
+MemoryCache defaults to 64 MiB of retained key/value bytes, a 2 MiB value
+limit and a 4 KiB key limit. `MemoryCache::with_limits(capacity, limits)`
+uses `MemoryCacheLimits` to change them. Entry capacity also remains a hard
+limit. Writes evict least recently used entries to fit; oversized writes
+fail without replacing the prior entry. Replacement, deletion, expiry,
+clear and increment account bytes. Overflowing TTLs fail explicitly.
+The budget covers retained key/value payloads; allocator metadata is
+bounded by entry count, and temporary read copies are outside this budget.
+
+RouteCache separately defaults to 4 KiB keys, 8 KiB stored header bytes,
+2 MiB encoded entries and 1 MiB bodies. `.byte_limits(key, headers, encoded)`
+and `.max_body_bytes(bytes)` configure admission; oversized responses pass
+through. The versioned representation uses base64 binary payloads, avoiding
+JSON numeric byte arrays and an extra whole-body clone. Old encodings miss.
+Redis deployments must configure server capacity and eviction separately.

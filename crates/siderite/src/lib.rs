@@ -36,11 +36,11 @@ pub mod prelude {
     pub use chrono::{DateTime, Utc};
     pub use serde::{Deserialize, Serialize};
     pub use siderite_core::{
-        ApiError, ApiResult, App, BackgroundTasks, Cached, Cookies, Dependency, Depends, Form,
-        FromRequest, FromRequestParts, Header, Html, IntoResponse, Json, Message, MethodRouter,
-        NoContent, Path, PlainText, Provided, Query, Redirect, ResolveContext, Resource, Route,
-        ServerError, State, WebSocket, WebSocketUpgrade, WithStatus, delete, get, head, options,
-        patch, post, put,
+        ApiError, ApiResult, App, BackgroundTaskError, BackgroundTaskLimits, BackgroundTasks,
+        Cached, Cookies, Dependency, Depends, Form, FromRequest, FromRequestParts, Header, Html,
+        IntoResponse, Json, Message, MethodRouter, NoContent, Path, PlainText, Provided, Query,
+        Redirect, ResolveContext, Resource, Route, ServerError, State, WebSocket, WebSocketUpgrade,
+        WithStatus, delete, get, head, options, patch, post, put,
     };
     pub use siderite_macros::{
         Model, Schema, Validate, delete, get, head, model_hooks, options, patch, post, put, routes,

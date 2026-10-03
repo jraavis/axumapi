@@ -23,6 +23,7 @@ pub struct ScratchDb {
     /// Connection to the server's default database, for `DROP DATABASE`.
     admin: Admin,
     name: String,
+    url: String,
 }
 
 /// Pool for the server that owns the scratch database.
@@ -33,14 +34,16 @@ enum Admin {
 
 impl ScratchDb {
     /// A private database on the MySQL or PostgreSQL server named by
-    /// `MYSQL_URL` / `DATABASE_URL`, or `None` when neither is set.
+    /// `MYSQL_URL` / `DATABASE_URL`; missing configuration is an error.
     ///
     /// # Errors
     /// Returns backend errors when the server cannot create the database.
     pub async fn mysql() -> Result<Option<Self>, siderite_orm::OrmError> {
         let Some(url) = url_for("mysql") else {
-            eprintln!("MYSQL_URL not set; skipping");
-            return Ok(None);
+            return Err(siderite_orm::BackendError::Connection(
+                "live migration tests require MYSQL_URL".to_owned(),
+            )
+            .into());
         };
         let name = format!("siderite_mig_{}", Uuid::new_v4().simple());
         let admin = sqlx::MySqlPool::connect(&url).await.map_err(err)?;
@@ -48,8 +51,9 @@ impl ScratchDb {
             .execute(&admin)
             .await
             .map_err(err)?;
+        let url = database_url(&url, &name);
         let db = Db::new(
-            siderite_backends::mysql::MySqlBackend::connect(&database_url(&url, &name))
+            siderite_backends::mysql::MySqlBackend::connect(&url)
                 .await
                 .map_err(siderite_orm::OrmError::Backend)?,
         );
@@ -57,18 +61,21 @@ impl ScratchDb {
             db,
             admin: Admin::MySql(admin),
             name,
+            url,
         }))
     }
 
     /// A private database on the PostgreSQL server named by `DATABASE_URL`,
-    /// or `None` when it is not set.
+    /// with an error when it is not set.
     ///
     /// # Errors
     /// Returns backend errors when the server cannot create the database.
     pub async fn postgres() -> Result<Option<Self>, siderite_orm::OrmError> {
         let Some(url) = url_for("postgres") else {
-            eprintln!("DATABASE_URL not set; skipping");
-            return Ok(None);
+            return Err(siderite_orm::BackendError::Connection(
+                "live migration tests require DATABASE_URL".to_owned(),
+            )
+            .into());
         };
         let name = format!("siderite_mig_{}", Uuid::new_v4().simple());
         let admin = sqlx::PgPool::connect(&url).await.map_err(err)?;
@@ -76,8 +83,9 @@ impl ScratchDb {
             .execute(&admin)
             .await
             .map_err(err)?;
+        let url = database_url(&url, &name);
         let db = Db::new(
-            siderite_backends::postgres::PgBackend::connect(&database_url(&url, &name))
+            siderite_backends::postgres::PgBackend::connect(&url)
                 .await
                 .map_err(siderite_orm::OrmError::Backend)?,
         );
@@ -85,7 +93,13 @@ impl ScratchDb {
             db,
             admin: Admin::Postgres(admin),
             name,
+            url,
         }))
+    }
+
+    /// Private URL for child-process tests; never print it.
+    pub fn connection_url(&self) -> &str {
+        &self.url
     }
 
     /// Drop the private database.

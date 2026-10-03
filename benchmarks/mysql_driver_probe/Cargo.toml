@@ -1,0 +1,23 @@
+[package]
+name = "mysql_driver_probe"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["mysql"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+uuid.workspace = true
+
+[dependencies.mysql_async]
+version = "=0.37.1"
+default-features = false
+features = ["minimal-rust", "rustls-tls", "ring", "tls12"]
+

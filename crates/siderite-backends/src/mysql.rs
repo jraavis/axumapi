@@ -64,24 +64,28 @@
 //! Pools built elsewhere and passed to [`MySqlBackend::from_pool`] should do
 //! the same.
 
+use crate::connection_init::ConnectionInit;
 use crate::shared::{ConnSlot, TxSlot, affected_result, map_error, with_conn, with_tx};
-use crate::sql::{CompiledQuery, MySql, compile, compile_write};
+use crate::sql::{MySql, compile, compile_write};
 use async_trait::async_trait;
-use siderite_orm::types::canonical_text;
 use siderite_orm::{
-    Backend, BackendCapabilities, BackendError, BinaryOp, ExecResult, Executor, Expr,
-    IsolationLevel, LockMode, OrmError, QueryError, QueryPlan, QueryResult, Row, Transaction,
-    Value, WritePlan,
+    Backend, BackendCapabilities, BackendError, ExecResult, Executor, IsolationLevel, OrmError,
+    QueryPlan, QueryResult, Transaction, Value, WritePlan,
 };
-use sqlx::mysql::{
-    MySqlArguments, MySqlConnection, MySqlPool, MySqlPoolOptions, MySqlQueryResult, MySqlRow,
-    MySqlValueRef,
-};
-use sqlx::types::chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use sqlx::types::{Decimal, JsonValue};
-use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use sqlx::Executor as _;
+use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlQueryResult};
+use std::sync::Arc;
+
+mod io;
+mod metadata;
+#[cfg(feature = "mysql-native")]
+pub mod native;
+mod returning;
+mod sqlx_io;
+
+use metadata::TableCache;
+use returning::{prepare, synthesize, synthesized_result, table_of, write_returning};
+use sqlx_io::{execute_rows, fetch_rows, run};
 
 /// Session statements run on every new connection (see the module docs).
 const SESSION_SETUP: [&str; 3] = [
@@ -118,17 +122,49 @@ impl MySqlBackend {
         Self::connect_with(url, options).await
     }
 
-    /// Like [`connect`](Self::connect) with explicit pool options (pool size,
-    /// timeouts, `test_before_acquire`), used as given: a plain
-    /// `MySqlPoolOptions::new()` checks connections on acquire. The session
-    /// setup is added to `options`.
+    /// Connect with pool settings and mandatory adapter initialization.
+    ///
+    /// Replaces any after_connect callback already stored in options.
+    /// SQLx does not expose that callback for chaining; pass custom setup to
+    /// [`Self::connect_with_init`] instead. Other pool options are retained.
+    ///
+    /// Args:
+    ///     url: Database URL.
+    ///     options: Pool capacity, timeouts and checkout policy.
+    ///
+    /// Returns:
+    ///     Adapter whose fresh sessions receive mandatory initialization.
     ///
     /// # Errors
-    /// [`BackendError::Connection`] if the pool cannot be created.
+    /// Connection or initialization failure within the acquire deadline.
     pub async fn connect_with(url: &str, options: MySqlPoolOptions) -> Result<Self, BackendError> {
+        let init: ConnectionInit<sqlx::MySql> =
+            std::sync::Arc::new(|_, _| Box::pin(async { Ok(()) }));
+        Self::connect_with_init(url, options, init).await
+    }
+
+    /// Compose explicit custom setup with mandatory session settings.
+    ///
+    /// Args:
+    ///     url: Database URL.
+    ///     options: Pool settings; its stored after_connect is replaced.
+    ///     init: Custom hook run first on every new/reconnected session.
+    ///
+    /// Returns:
+    ///     Adapter after custom setup and required settings succeed.
+    ///
+    /// # Errors
+    /// Connection or initialization failure within the acquire deadline.
+    pub async fn connect_with_init(
+        url: &str,
+        options: MySqlPoolOptions,
+        init: ConnectionInit<sqlx::MySql>,
+    ) -> Result<Self, BackendError> {
         let pool = options
-            .after_connect(|conn, _meta| {
+            .after_connect(move |conn, meta| {
+                let init = init.clone();
                 Box::pin(async move {
+                    init(conn, meta).await?;
                     for statement in SESSION_SETUP {
                         conn.execute(statement).await?;
                     }
@@ -169,7 +205,7 @@ impl Executor for MySqlBackend {
             return Ok(affected_result(affected));
         }
         let prepared = prepare(plan)?;
-        let info = self.tables.table(&self.pool, table_of(plan)).await?;
+        let info = self.tables.table(&mut &self.pool, table_of(plan)).await?;
         if let WritePlan::Insert(p) = plan
             && let Some(row) = synthesize(&info, p)
         {
@@ -183,7 +219,7 @@ impl Executor for MySqlBackend {
         // concurrent update or delete cannot change or remove the row in
         // between.
         let mut tx = self.pool.begin().await.map_err(db_error)?;
-        let result = write_returning(&mut tx, &info, plan, prepared).await?;
+        let result = write_returning(&mut *tx, &info, plan, prepared).await?;
         tx.commit().await.map_err(db_error)?;
         Ok(result)
     }
@@ -206,6 +242,10 @@ impl Executor for MySqlBackend {
 
 #[async_trait]
 impl Backend for MySqlBackend {
+    fn read_parameter_count(&self, plan: &QueryPlan) -> Result<Option<usize>, OrmError> {
+        Ok(Some(compile(plan, &MySql)?.params.len()))
+    }
+
     async fn begin(
         &self,
         isolation: Option<IsolationLevel>,
@@ -383,730 +423,4 @@ fn script_result(done: Result<MySqlQueryResult, sqlx::Error>) -> Result<(), OrmE
     done.map(|_| ()).map_err(db_error)
 }
 
-fn bind_all(sql: &str, params: Vec<Value>) -> sqlx::query::Query<'_, sqlx::MySql, MySqlArguments> {
-    params
-        .into_iter()
-        .fold(sqlx::query(sql), |query, param| match param {
-            Value::Null => query.bind(None::<i64>),
-            Value::Bool(v) => query.bind(v),
-            Value::Int(v) => query.bind(v),
-            Value::Float(v) => query.bind(v),
-            Value::Decimal(v) => query.bind(v),
-            Value::Text(v) => query.bind(v),
-            Value::Bytes(v) => query.bind(v),
-            // SQLx would send 16 raw bytes; the canonical storage is CHAR(36).
-            Value::Uuid(v) => query.bind(v.hyphenated().to_string()),
-            Value::Date(v) => query.bind(v),
-            Value::Time(v) => query.bind(v),
-            Value::Timestamp(v) => query.bind(v),
-            Value::Json(v) => query.bind(v),
-        })
-}
-
-async fn fetch_rows<'c, E>(ex: E, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError>
-where
-    E: sqlx::Executor<'c, Database = sqlx::MySql>,
-{
-    let rows = bind_all(sql, params)
-        .fetch_all(ex)
-        .await
-        .map_err(db_error)?;
-    let rows = rows.iter().map(decode_row).collect::<Result<_, _>>()?;
-    Ok(QueryResult { rows })
-}
-
-async fn execute_rows<'c, E>(ex: E, sql: &str, params: Vec<Value>) -> Result<u64, OrmError>
-where
-    E: sqlx::Executor<'c, Database = sqlx::MySql>,
-{
-    Ok(run(ex, sql, params).await?.rows_affected())
-}
-
-async fn run<'c, E>(ex: E, sql: &str, params: Vec<Value>) -> Result<MySqlQueryResult, OrmError>
-where
-    E: sqlx::Executor<'c, Database = sqlx::MySql>,
-{
-    bind_all(sql, params).execute(ex).await.map_err(db_error)
-}
-
 // ---- RETURNING emulation ----------------------------------------------------
-
-/// Keys, columns and triggers of a table.
-#[derive(Debug)]
-struct TableInfo {
-    table: String,
-    primary_key: Vec<String>,
-    auto_increment: Option<String>,
-    columns: Vec<ColumnInfo>,
-    /// Whether an `INSERT` trigger exists (it may change the stored row), or
-    /// the user cannot see the table's triggers.
-    insert_triggers: bool,
-}
-
-/// What [`synthesize`] needs to know about a column.
-#[derive(Debug)]
-struct ColumnInfo {
-    name: String,
-    /// `DATA_TYPE`, e.g. `bigint`, `varchar`.
-    data_type: String,
-    /// `COLUMN_TYPE`, e.g. `tinyint(1)`, `int unsigned`.
-    column_type: String,
-    /// `CHARACTER_MAXIMUM_LENGTH` of a string column.
-    max_length: Option<u64>,
-    utf8mb4: bool,
-    nullable: bool,
-}
-
-impl ColumnInfo {
-    /// Range of a signed integer column that is not `TINYINT(1)` (which reads
-    /// back as a boolean).
-    fn integer_range(&self) -> Option<(i64, i64)> {
-        if self.column_type.contains("unsigned") || self.column_type.starts_with("tinyint(1)") {
-            return None;
-        }
-        match self.data_type.as_str() {
-            "tinyint" => Some((i64::from(i8::MIN), i64::from(i8::MAX))),
-            "smallint" => Some((i64::from(i16::MIN), i64::from(i16::MAX))),
-            "mediumint" => Some((-(1 << 23), (1 << 23) - 1)),
-            "int" => Some((i64::from(i32::MIN), i64::from(i32::MAX))),
-            "bigint" => Some((i64::MIN, i64::MAX)),
-            _ => None,
-        }
-    }
-
-    /// Whether `text` is stored as it is: no truncation, padding or character
-    /// set conversion.
-    fn stores_text(&self, text: &str) -> bool {
-        let Some(max) = self.max_length else {
-            return false;
-        };
-        let fits = match self.data_type.as_str() {
-            // Counted in characters.
-            "varchar" => text.chars().count() as u64 <= max,
-            // Counted in bytes.
-            "text" | "mediumtext" | "longtext" => text.len() as u64 <= max,
-            _ => false,
-        };
-        fits && (self.utf8mb4 || text.is_ascii())
-    }
-
-    /// Whether reading the column after writing `value` gives `value` back.
-    fn stores_exactly(&self, value: &Value) -> bool {
-        match value {
-            Value::Null => {
-                self.nullable
-                    && (self.integer_range().is_some()
-                        || self.column_type == "tinyint(1)"
-                        || self.stores_text(""))
-            }
-            Value::Bool(_) => self.column_type == "tinyint(1)",
-            Value::Int(v) => self
-                .integer_range()
-                .is_some_and(|(min, max)| (min..=max).contains(v)),
-            Value::Text(text) => self.stores_text(text),
-            _ => false,
-        }
-    }
-}
-
-/// Per-backend cache of [`TableInfo`].
-#[derive(Debug, Default)]
-struct TableCache {
-    tables: Mutex<HashMap<String, Arc<TableInfo>>>,
-}
-
-impl TableCache {
-    fn clear(&self) {
-        self.tables
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-    }
-
-    async fn table<'c, E>(&self, ex: E, name: &str) -> Result<Arc<TableInfo>, OrmError>
-    where
-        E: sqlx::Executor<'c, Database = sqlx::MySql>,
-    {
-        let cached = self
-            .tables
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(name)
-            .cloned();
-        if let Some(info) = cached {
-            return Ok(info);
-        }
-        let rows = sqlx::query(
-            "SELECT CAST(COLUMN_NAME AS CHAR) AS c, CAST(COLUMN_KEY AS CHAR) AS k, \
-             CAST(EXTRA AS CHAR) AS e, CAST(DATA_TYPE AS CHAR) AS d, \
-             CAST(COLUMN_TYPE AS CHAR) AS t, CAST(CHARACTER_MAXIMUM_LENGTH AS UNSIGNED) AS m, \
-             CAST(CHARACTER_SET_NAME AS CHAR) AS s, CAST(IS_NULLABLE AS CHAR) AS n, \
-             (SELECT COUNT(*) FROM information_schema.TRIGGERS \
-              WHERE EVENT_OBJECT_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE = ? \
-              AND EVENT_MANIPULATION = 'INSERT') AS g, \
-             (SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES p \
-              WHERE p.PRIVILEGE_TYPE = 'TRIGGER' AND p.GRANTEE = me.grantee) + \
-             (SELECT COUNT(*) FROM information_schema.SCHEMA_PRIVILEGES p \
-              WHERE p.PRIVILEGE_TYPE = 'TRIGGER' AND p.GRANTEE = me.grantee \
-              AND DATABASE() LIKE p.TABLE_SCHEMA) + \
-             (SELECT COUNT(*) FROM information_schema.TABLE_PRIVILEGES p \
-              WHERE p.PRIVILEGE_TYPE = 'TRIGGER' AND p.GRANTEE = me.grantee \
-              AND p.TABLE_SCHEMA = DATABASE() AND p.TABLE_NAME = ?) AS v \
-             FROM information_schema.COLUMNS, \
-             (SELECT CONCAT('''', SUBSTRING_INDEX(CURRENT_USER(), '@', 1), '''@''', \
-              SUBSTRING_INDEX(CURRENT_USER(), '@', -1), '''') AS grantee) me \
-             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-        )
-        .bind(name)
-        .bind(name)
-        .bind(name)
-        .fetch_all(ex)
-        .await
-        .map_err(db_error)?;
-        if rows.is_empty() {
-            return Err(QueryError::Model(format!("table `{name}` does not exist")).into());
-        }
-        let mut info = TableInfo {
-            table: name.to_owned(),
-            primary_key: Vec::new(),
-            auto_increment: None,
-            columns: Vec::with_capacity(rows.len()),
-            insert_triggers: false,
-        };
-        for row in &rows {
-            let column: String = row.try_get("c").map_err(db_error)?;
-            let key: String = row.try_get("k").map_err(db_error)?;
-            let extra: String = row.try_get("e").map_err(db_error)?;
-            let data_type: String = row.try_get("d").map_err(db_error)?;
-            let column_type: String = row.try_get("t").map_err(db_error)?;
-            let charset: Option<String> = row.try_get("s").map_err(db_error)?;
-            let nullable: String = row.try_get("n").map_err(db_error)?;
-            // `information_schema.TRIGGERS` only lists the triggers of tables
-            // the user has the `TRIGGER` privilege on. Without it (or with it
-            // only through a role), assume there is one.
-            let visible = row.try_get::<i64, _>("v").map_err(db_error)? > 0;
-            info.insert_triggers = !visible || row.try_get::<i64, _>("g").map_err(db_error)? > 0;
-            info.columns.push(ColumnInfo {
-                name: column.clone(),
-                data_type: data_type.to_ascii_lowercase(),
-                column_type: column_type.to_ascii_lowercase(),
-                max_length: row.try_get("m").map_err(db_error)?,
-                utf8mb4: charset.is_some_and(|c| c.eq_ignore_ascii_case("utf8mb4")),
-                nullable: nullable.eq_ignore_ascii_case("YES"),
-            });
-            if extra.to_ascii_lowercase().contains("auto_increment") {
-                info.auto_increment = Some(column.clone());
-            }
-            if key == "PRI" {
-                info.primary_key.push(column);
-            }
-        }
-        if info.primary_key.is_empty() {
-            return Err(QueryError::Model(format!(
-                "table `{name}` has no primary key, so MySQL cannot return the rows it writes"
-            ))
-            .into());
-        }
-        let info = Arc::new(info);
-        self.tables
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(name.to_owned(), Arc::clone(&info));
-        Ok(info)
-    }
-}
-
-/// The statements a write with emulated `RETURNING` needs, compiled up front
-/// so plan errors (capabilities, structure) surface before any I/O.
-struct Prepared {
-    /// The write itself, without `RETURNING`.
-    write: CompiledQuery,
-    /// `DELETE`: the locking read of the affected rows. (An `UPDATE`'s read
-    /// selects the primary key, known only once the table is looked up; see
-    /// [`read_keys`].)
-    read: Option<CompiledQuery>,
-}
-
-fn table_of(plan: &WritePlan) -> &str {
-    match plan {
-        WritePlan::Insert(p) => &p.table,
-        WritePlan::Update(p) => &p.table,
-        WritePlan::Delete(p) => &p.table,
-    }
-}
-
-fn without_returning(plan: &WritePlan) -> WritePlan {
-    let mut bare = plan.clone();
-    match &mut bare {
-        WritePlan::Insert(p) => p.returning.clear(),
-        WritePlan::Update(p) => p.returning.clear(),
-        WritePlan::Delete(p) => p.returning.clear(),
-    }
-    bare
-}
-
-fn prepare(plan: &WritePlan) -> Result<Prepared, OrmError> {
-    let write = compile_write(&without_returning(plan), &MySql)?;
-    let read = match plan {
-        WritePlan::Insert(_) | WritePlan::Update(_) => None,
-        WritePlan::Delete(p) => Some(locking_read(&p.table, p.filter.as_ref(), &p.returning)),
-    };
-    let read = read.map(|plan| compile(&plan, &MySql)).transpose()?;
-    Ok(Prepared { write, read })
-}
-
-/// `SELECT columns FROM table WHERE filter FOR UPDATE`.
-fn locking_read<C: Clone + Into<siderite_orm::expr::Ident>>(
-    table: &str,
-    filter: Option<&Expr>,
-    columns: &[C],
-) -> QueryPlan {
-    let mut plan = QueryPlan::from_table(table.to_owned());
-    plan.filter = filter.cloned();
-    plan.lock = Some(LockMode::ForUpdate);
-    for column in columns {
-        plan = plan.select(Expr::col(column.clone()), None);
-    }
-    plan
-}
-
-/// The key of a filter of the form `pk = value` on a single-column key.
-fn key_equality(info: &TableInfo, filter: Option<&Expr>) -> Option<Vec<Value>> {
-    let [pk] = info.primary_key.as_slice() else {
-        return None;
-    };
-    let Some(Expr::Binary {
-        op: BinaryOp::Eq,
-        lhs,
-        rhs,
-    }) = filter
-    else {
-        return None;
-    };
-    match (&**lhs, &**rhs) {
-        (Expr::Column(c), Expr::Value(v)) | (Expr::Value(v), Expr::Column(c))
-            if c.source.is_none() && c.name == pk.as_str() && !v.is_null() =>
-        {
-            Some(vec![v.clone()])
-        }
-        _ => None,
-    }
-}
-
-async fn write_returning(
-    conn: &mut MySqlConnection,
-    info: &TableInfo,
-    plan: &WritePlan,
-    prepared: Prepared,
-) -> Result<ExecResult, OrmError> {
-    let columns = plan.returning();
-    let Prepared { write, read } = prepared;
-    match plan {
-        WritePlan::Insert(p) => {
-            if let Some(row) = synthesize(info, p) {
-                let done = run(&mut *conn, &write.sql, write.params).await?;
-                return synthesized_result(info, row, &done);
-            }
-            let keys = InsertKeys::of(info, p)?;
-            let done = run(&mut *conn, &write.sql, write.params).await?;
-            let inserted = done.rows_affected();
-            let keys = match keys {
-                InsertKeys::Supplied(keys) => keys,
-                InsertKeys::Generated => {
-                    generated_keys(conn, done.last_insert_id(), inserted).await?
-                }
-            };
-            let rows = read_by_keys(conn, info, columns, &keys).await?;
-            if rows.len() as u64 != inserted {
-                return Err(QueryError::Model(format!(
-                    "inserted {inserted} rows into `{}` but read back {}",
-                    info.table,
-                    rows.len()
-                ))
-                .into());
-            }
-            Ok(ExecResult {
-                rows_affected: inserted,
-                returning: rows,
-            })
-        }
-        WritePlan::Update(p) => {
-            if p.assignments
-                .iter()
-                .any(|(column, _)| info.primary_key.iter().any(|k| column == k.as_str()))
-            {
-                return Err(QueryError::InvalidPlan(
-                    "MySQL cannot return the rows of an update that changes the primary key".into(),
-                )
-                .into());
-            }
-            let keys = match key_equality(info, p.filter.as_ref()) {
-                Some(keys) => vec![keys],
-                None => read_keys(conn, info, p.filter.as_ref()).await?,
-            };
-            if keys.is_empty() {
-                return Ok(affected_result(0));
-            }
-            let done = run(&mut *conn, &write.sql, write.params).await?;
-            let rows = if done.rows_affected() == 0 {
-                Vec::new()
-            } else {
-                read_by_keys(conn, info, columns, &keys).await?
-            };
-            Ok(ExecResult {
-                rows_affected: done.rows_affected(),
-                returning: rows,
-            })
-        }
-        WritePlan::Delete(_) => {
-            // The rows are gone afterwards, so they are read (and locked) first.
-            let read = read.ok_or_else(|| QueryError::Model("missing delete read".into()))?;
-            let rows = fetch_rows(&mut *conn, &read.sql, read.params).await?.rows;
-            let done = run(&mut *conn, &write.sql, write.params).await?;
-            Ok(ExecResult {
-                rows_affected: done.rows_affected(),
-                returning: rows,
-            })
-        }
-    }
-}
-
-/// A returned column of a single-row `INSERT` whose stored value is known
-/// without reading the row back.
-enum Known {
-    /// The supplied value, stored unchanged.
-    Supplied(Value),
-    /// The omitted `AUTO_INCREMENT` column: `LAST_INSERT_ID()`.
-    Generated,
-}
-
-/// The row a single-row `INSERT` returns, if every returned column is known
-/// without a read-back (see the module docs). `None` means: read it back.
-fn synthesize(info: &TableInfo, plan: &siderite_orm::InsertPlan) -> Option<Vec<(String, Known)>> {
-    let [row] = plan.rows.as_slice() else {
-        return None;
-    };
-    if info.insert_triggers {
-        return None;
-    }
-    plan.returning
-        .iter()
-        .map(|column| {
-            let name: &str = column;
-            let auto = info.auto_increment.as_deref() == Some(name);
-            let known = match plan.columns.iter().position(|c| c == column) {
-                // A supplied `AUTO_INCREMENT` value of 0 or NULL is generated.
-                Some(_) if auto => return None,
-                Some(i) => {
-                    let value = row.get(i)?;
-                    let meta = info.columns.iter().find(|c| c.name == name)?;
-                    if !meta.stores_exactly(value) {
-                        return None;
-                    }
-                    Known::Supplied(value.clone())
-                }
-                None if auto => Known::Generated,
-                // Omitted: a default or a generated column.
-                None => return None,
-            };
-            Some((name.to_owned(), known))
-        })
-        .collect()
-}
-
-/// The result of a single-row `INSERT` whose row is [`synthesize`]d.
-fn synthesized_result(
-    info: &TableInfo,
-    row: Vec<(String, Known)>,
-    done: &MySqlQueryResult,
-) -> Result<ExecResult, OrmError> {
-    if done.rows_affected() != 1 {
-        return Err(QueryError::Model(format!(
-            "inserted {} rows into `{}` instead of 1",
-            done.rows_affected(),
-            info.table
-        ))
-        .into());
-    }
-    let columns = row
-        .into_iter()
-        .map(|(name, known)| {
-            let value = match known {
-                Known::Supplied(value) => value,
-                Known::Generated => match i64::try_from(done.last_insert_id()) {
-                    Ok(id) if id != 0 => Value::Int(id),
-                    _ => {
-                        return Err(QueryError::Model(format!(
-                            "no usable generated key for `{}`",
-                            info.table
-                        )));
-                    }
-                },
-            };
-            Ok((name, value))
-        })
-        .collect::<Result<Vec<_>, QueryError>>()?;
-    Ok(ExecResult {
-        rows_affected: 1,
-        returning: vec![Row::new(columns)],
-    })
-}
-
-/// How the keys of the rows of an `INSERT` are known.
-enum InsertKeys {
-    /// The statement supplies them (one entry per row, in primary-key order).
-    Supplied(Vec<Vec<Value>>),
-    /// The primary key is `AUTO_INCREMENT` and omitted.
-    Generated,
-}
-
-impl InsertKeys {
-    fn of(info: &TableInfo, plan: &siderite_orm::InsertPlan) -> Result<Self, QueryError> {
-        let positions: Option<Vec<usize>> = info
-            .primary_key
-            .iter()
-            .map(|key| plan.columns.iter().position(|c| c == key.as_str()))
-            .collect();
-        if let Some(positions) = positions {
-            let keys = plan
-                .rows
-                .iter()
-                .map(|row| positions.iter().map(|&i| row[i].clone()).collect())
-                .collect();
-            return Ok(Self::Supplied(keys));
-        }
-        match (info.primary_key.as_slice(), &info.auto_increment) {
-            ([key], Some(auto)) if key == auto => Ok(Self::Generated),
-            _ => Err(QueryError::Model(format!(
-                "cannot read back rows inserted into `{}`: its primary key is neither supplied \
-                 nor AUTO_INCREMENT",
-                info.table
-            ))),
-        }
-    }
-}
-
-/// Keys `first, first + step, ...` of a multi-row insert of `count` rows.
-///
-/// InnoDB allocates the block of values of a plain `INSERT .. VALUES` in one
-/// go under every `innodb_autoinc_lock_mode`, and `LAST_INSERT_ID()` is the
-/// first of them.
-async fn generated_keys(
-    conn: &mut MySqlConnection,
-    first: u64,
-    count: u64,
-) -> Result<Vec<Vec<Value>>, OrmError> {
-    let overflow = || QueryError::Model("generated key out of range".into());
-    let step: i64 = if count > 1 {
-        sqlx::query_scalar::<_, i64>("SELECT CAST(@@auto_increment_increment AS SIGNED)")
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(db_error)?
-    } else {
-        1
-    };
-    let first = i64::try_from(first).map_err(|_| overflow())?;
-    (0..i64::try_from(count).map_err(|_| overflow())?)
-        .map(|i| {
-            i.checked_mul(step)
-                .and_then(|offset| first.checked_add(offset))
-                .map(|id| vec![Value::Int(id)])
-                .ok_or_else(|| overflow().into())
-        })
-        .collect()
-}
-
-/// Primary keys of the rows `filter` selects, read with `FOR UPDATE` (the
-/// filter of an `UPDATE`).
-async fn read_keys(
-    conn: &mut MySqlConnection,
-    info: &TableInfo,
-    filter: Option<&Expr>,
-) -> Result<Vec<Vec<Value>>, OrmError> {
-    let read = compile(
-        &locking_read(&info.table, filter, &info.primary_key),
-        &MySql,
-    )?;
-    let rows = fetch_rows(&mut *conn, &read.sql, read.params).await?.rows;
-    rows.iter()
-        .map(|row| {
-            info.primary_key
-                .iter()
-                .map(|key| {
-                    row.get(key).cloned().ok_or_else(|| {
-                        QueryError::Model(format!("key column `{key}` missing from read")).into()
-                    })
-                })
-                .collect()
-        })
-        .collect()
-}
-
-fn ident(out: &mut String, name: &str) {
-    use crate::sql::Dialect as _;
-    MySql.write_ident(out, name);
-}
-
-/// Read `columns` of the rows with the given primary keys, in key order.
-async fn read_by_keys(
-    conn: &mut MySqlConnection,
-    info: &TableInfo,
-    columns: &[siderite_orm::expr::Ident],
-    keys: &[Vec<Value>],
-) -> Result<Vec<Row>, OrmError> {
-    let mut sql = String::from("SELECT ");
-    for (i, column) in columns.iter().enumerate() {
-        if i > 0 {
-            sql.push_str(", ");
-        }
-        ident(&mut sql, column);
-    }
-    sql.push_str(" FROM ");
-    ident(&mut sql, &info.table);
-    sql.push_str(" WHERE ");
-    let width = info.primary_key.len();
-    let tuple = |sql: &mut String| {
-        sql.push('(');
-        for i in 0..width {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push('?');
-        }
-        sql.push(')');
-    };
-    if width == 1 {
-        ident(&mut sql, &info.primary_key[0]);
-    } else {
-        sql.push('(');
-        for (i, key) in info.primary_key.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            ident(&mut sql, key);
-        }
-        sql.push(')');
-    }
-    sql.push_str(" IN (");
-    for i in 0..keys.len() {
-        if i > 0 {
-            sql.push_str(", ");
-        }
-        if width == 1 {
-            sql.push('?');
-        } else {
-            tuple(&mut sql);
-        }
-    }
-    sql.push_str(") ORDER BY ");
-    for (i, key) in info.primary_key.iter().enumerate() {
-        if i > 0 {
-            sql.push_str(", ");
-        }
-        ident(&mut sql, key);
-    }
-    let params: Vec<Value> = keys.iter().flatten().cloned().collect();
-    let mut rows = fetch_rows(&mut *conn, &sql, params).await?.rows;
-    // Supplied keys keep their statement order (`ORDER BY` above is the key
-    // order, which is insertion order for generated keys).
-    let position: HashMap<String, usize> = keys
-        .iter()
-        .enumerate()
-        .map(|(i, key)| (key_text(key.iter()), i))
-        .collect();
-    let in_row = |row: &Row| -> Option<usize> {
-        let key: Option<Vec<&Value>> = info.primary_key.iter().map(|k| row.get(k)).collect();
-        position.get(&key_text(key?.into_iter())).copied()
-    };
-    if rows.iter().all(|row| in_row(row).is_some()) {
-        rows.sort_by_key(|row| in_row(row));
-    }
-    Ok(rows)
-}
-
-/// Comparable text of a key, alike for a bound value and its decoded form
-/// (a `Uuid` is bound as text and read back as `Text`).
-fn key_text<'a>(key: impl Iterator<Item = &'a Value>) -> String {
-    key.map(|value| {
-        canonical_text(value).unwrap_or_else(|| match value {
-            Value::Text(s) => s.clone(),
-            Value::Int(i) => i.to_string(),
-            Value::Bool(b) => i64::from(*b).to_string(),
-            other => format!("{other:?}"),
-        })
-    })
-    .collect::<Vec<_>>()
-    .join("\u{1f}")
-}
-
-// ---- decoding ---------------------------------------------------------------
-
-fn decode_row(row: &MySqlRow) -> Result<Row, QueryError> {
-    row.columns()
-        .iter()
-        .enumerate()
-        .map(|(i, col)| {
-            let name = col.name().to_owned();
-            let raw = row.try_get_raw(i).map_err(|e| QueryError::Decode {
-                column: name.clone(),
-                reason: e.to_string(),
-            })?;
-            let value = if raw.is_null() {
-                Value::Null
-            } else {
-                decode_value(row, i, raw).map_err(|reason| QueryError::Decode {
-                    column: name.clone(),
-                    reason,
-                })?
-            };
-            Ok((name, value))
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(Row::new)
-}
-
-/// Decode a non-null column by its MySQL type name.
-fn decode_value(row: &MySqlRow, i: usize, raw: MySqlValueRef<'_>) -> Result<Value, String> {
-    /// `try_get` as `$t`, converted with `$into`.
-    macro_rules! get {
-        ($t:ty => $into:expr) => {
-            row.try_get::<$t, _>(i)
-                .map($into)
-                .map_err(|e| e.to_string())
-        };
-    }
-    let type_info = raw.type_info();
-    match type_info.name() {
-        "BOOLEAN" => get!(bool => Value::Bool),
-        "TINYINT" => get!(i8 => |v| Value::Int(i64::from(v))),
-        "SMALLINT" => get!(i16 => |v| Value::Int(i64::from(v))),
-        "INT" | "MEDIUMINT" => get!(i32 => |v| Value::Int(i64::from(v))),
-        "BIGINT" => get!(i64 => Value::Int),
-        "TINYINT UNSIGNED" => get!(u8 => |v| Value::Int(i64::from(v))),
-        "SMALLINT UNSIGNED" | "YEAR" => get!(u16 => |v| Value::Int(i64::from(v))),
-        "INT UNSIGNED" | "MEDIUMINT UNSIGNED" => get!(u32 => |v| Value::Int(i64::from(v))),
-        "BIGINT UNSIGNED" => row
-            .try_get::<u64, _>(i)
-            .map_err(|e| e.to_string())
-            .and_then(|v| {
-                i64::try_from(v)
-                    .map(Value::Int)
-                    .map_err(|_| format!("{v} does not fit a 64-bit signed integer"))
-            }),
-        "FLOAT" => get!(f32 => |v| Value::Float(f64::from(v))),
-        "DOUBLE" => get!(f64 => Value::Float),
-        "DECIMAL" => get!(Decimal => Value::Decimal),
-        "CHAR" | "VARCHAR" | "TINYTEXT" | "TEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => {
-            get!(String => Value::Text)
-        }
-        "BINARY" | "VARBINARY" | "TINYBLOB" | "BLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
-            get!(Vec<u8> => Value::Bytes)
-        }
-        "DATE" => get!(NaiveDate => Value::Date),
-        "TIME" => get!(NaiveTime => Value::Time),
-        "DATETIME" => get!(NaiveDateTime => |v| Value::Timestamp(v.and_utc())),
-        "TIMESTAMP" => get!(DateTime<Utc> => Value::Timestamp),
-        "JSON" => get!(JsonValue => Value::Json),
-        other => Err(format!("unsupported MySQL type {other}")),
-    }
-}

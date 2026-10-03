@@ -302,7 +302,7 @@ async fn https_redirect() {
         &[("host", "example.com"), ("x-forwarded-proto", "https")],
     )
     .await;
-    assert_eq!(secure.status, StatusCode::OK);
+    assert_eq!(secure.status, StatusCode::PERMANENT_REDIRECT);
     assert_problem(
         &client.get("/hello").await.unwrap(),
         StatusCode::BAD_REQUEST,
@@ -498,7 +498,7 @@ async fn concurrency_limit_serialises_requests() {
                 }
             }),
         )
-        .layer(ConcurrencyLimit::new(1));
+        .layer(ConcurrencyLimit::new(1).queue(3, Duration::from_secs(1)));
     let client = TestClient::new(app);
     let all = futures_util::future::join_all((0..4).map(|_| client.get("/w"))).await;
     assert!(

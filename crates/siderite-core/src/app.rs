@@ -13,10 +13,11 @@
 //! ignored. Child lifespan hooks are lifted into the parent (child hooks run
 //! after the parent's at startup, before them at shutdown).
 
+use crate::background::{BackgroundTaskLimits, TaskManager};
 use crate::body::Body;
 use crate::di::{self, DiRegistry};
 use crate::error::{ApiError, ServerError};
-use crate::lifespan::Lifespan;
+use crate::lifespan::{DEFAULT_SHUTDOWN_BUDGET, Lifespan};
 use crate::response::IntoResponse;
 use crate::routing::{Endpoint, MethodRouter, Route};
 use siderite_openapi::{DocumentBuilder, OpenApi, OpenApiError, ui};
@@ -98,6 +99,9 @@ pub struct App {
     pub(crate) fallback: Option<RouterLayer>,
     pub(crate) startup_hooks: Vec<LifespanHook>,
     pub(crate) shutdown_hooks: Vec<LifespanHook>,
+    pub(crate) shutdown_budget: std::time::Duration,
+    pub(crate) background_limits: BackgroundTaskLimits,
+    pub(crate) server_limits: crate::ServerLimits,
     /// Middleware; the first registered is the outermost.
     pub(crate) middleware: Vec<RouterLayer>,
     /// Dependency-injection configuration.
@@ -150,6 +154,9 @@ impl App {
             fallback: None,
             startup_hooks: Vec::new(),
             shutdown_hooks: Vec::new(),
+            shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
+            background_limits: BackgroundTaskLimits::default(),
+            server_limits: crate::ServerLimits::default(),
             middleware: Vec::new(),
             di: DiRegistry::default(),
             databases: None,
@@ -385,6 +392,17 @@ impl App {
         // the list reversed, so children stop first, mirroring startup.
         hooks.shutdown.append(&mut self.shutdown_hooks);
 
+        let has_background = self.routes.iter().any(|(_, methods)| {
+            methods
+                .endpoints
+                .iter()
+                .any(|endpoint| endpoint.background_tasks)
+        });
+        let background = has_background.then(|| {
+            let manager = TaskManager::new(self.background_limits);
+            hooks.background.push(manager.clone());
+            manager
+        });
         let mut grouped: BTreeMap<String, Vec<Endpoint>> = BTreeMap::new();
         for (path, r) in self.routes {
             grouped.entry(path).or_default().extend(r.endpoints);
@@ -421,6 +439,9 @@ impl App {
             .router_layers
             .into_iter()
             .fold(router, |r, layer| layer(r));
+        if let Some(manager) = background {
+            router = router.layer(axum::Extension(manager));
+        }
         (router, self.middleware, fallback)
     }
 
@@ -435,7 +456,12 @@ impl App {
             .map_err(|e| ServerError::Configuration(e.to_string()))?;
         let docs = self.docs.clone();
         let title = self.meta.title.clone();
-        let mut hooks = Lifespan::default();
+        let upgrades = crate::server::tasks::TaskOwner::new(self.server_limits.max_websockets);
+        let mut hooks = Lifespan {
+            shutdown_budget: self.shutdown_budget,
+            server: Some(crate::server::ServerOwners::new(self.server_limits)),
+            ..Lifespan::default()
+        };
         let (mut router, middleware, fallback) = self.build_router(&mut hooks, true);
         if let Some(spec_url) = docs.openapi_url {
             let json = serde_json::to_string(&openapi)
@@ -467,6 +493,13 @@ impl App {
             None => router.fallback(route_not_found),
         };
         let router = apply_middleware(router, middleware);
+        let router = router.layer(axum::Extension(upgrades.handle()));
+        let router = if let Some(server) = &hooks.server {
+            router.layer(axum::Extension(server.readiness.clone()))
+        } else {
+            router
+        };
+        hooks.transports.push(upgrades);
         Ok((router, hooks))
     }
 
@@ -493,29 +526,67 @@ impl App {
             .map(|(router, lifespan)| (crate::RouterService::new(router), lifespan))
     }
 
-    /// Run startup hooks, bind `addr`, serve until ctrl-c, then run shutdown
-    /// hooks. Handlers can read the peer address (used by `RateLimit`).
+    /// Serve until Ctrl-C or Unix SIGTERM, then drain and clean up resources.
+    ///
+    /// Args:
+    ///     addr: Address to bind.
+    ///
+    /// Returns:
+    ///     Success after shutdown and resource cleanup.
     ///
     /// # Errors
-    /// Returns [`ServerError`] on misconfiguration, hook failure, or I/O errors.
+    /// Configuration, startup, bind, serving or shutdown errors.
     pub async fn run(self, addr: &str) -> Result<(), ServerError> {
-        let (title, version) = (self.meta.title.clone(), self.meta.version.clone());
-        let (router, mut lifespan) = self.build()?;
-        lifespan.startup().await?;
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|source| ServerError::Bind {
-                addr: addr.to_owned(),
-                source,
-            })?;
-        tracing::info!(%addr, %title, %version, "listening");
-        let service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
-        let served = axum::serve(listener, service)
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .map_err(ServerError::Serve);
-        let stopped = lifespan.shutdown().await;
-        served?;
+        self.run_until(addr, shutdown_signal()).await
+    }
+
+    /// Serve until a caller-supplied shutdown future completes.
+    ///
+    /// Startup cancellation and bind failure clean initialized resources.
+    /// HTTP draining and teardown share one deadline. Connection, stream
+    /// and WebSocket workers are cancelled before resource teardown.
+    ///
+    /// Args:
+    ///     addr: Address to bind.
+    ///     shutdown: Future requesting graceful termination.
+    ///
+    /// Returns:
+    ///     Success after serving and cleanup finish.
+    ///
+    /// # Errors
+    /// Configuration/startup/I/O errors or exceeded shutdown deadline.
+    pub async fn run_until<F>(self, addr: &str, shutdown: F) -> Result<(), ServerError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let budget = self.shutdown_budget;
+        let limits = self.server_limits;
+        let (router, lifespan) = self.build()?;
+        let server = lifespan
+            .server
+            .clone()
+            .ok_or_else(|| ServerError::Configuration("missing server owner".to_owned()))?;
+        let mut owner = lifespan.supervise()?;
+        let mut shutdown = Box::pin(shutdown);
+        tokio::select! {
+            result = owner.ready() => result?,
+            _ = &mut shutdown => return owner.shutdown().await,
+        }
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => listener,
+            Err(source) => {
+                let _ = owner.shutdown().await;
+                return Err(ServerError::Bind {
+                    addr: addr.to_owned(),
+                    source,
+                });
+            }
+        };
+        tracing::info!(%addr, "listening");
+        let serving = crate::server::serve(listener, router, limits, server, budget, shutdown);
+        let (result, deadline) = serving.await;
+        let stopped = owner.shutdown_at(deadline).await;
+        result?;
         stopped
     }
 }
@@ -544,8 +615,25 @@ fn static_route(content_type: &'static str, body: String) -> axum::routing::Meth
 }
 
 async fn shutdown_signal() {
-    if let Err(err) = tokio::signal::ctrl_c().await {
-        tracing::warn!(error = %err, "failed to listen for ctrl-c; graceful shutdown disabled");
-        std::future::pending::<()>().await;
-    }
+    let interrupt = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "cannot listen for Ctrl-C");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! { _ = interrupt => {}, _ = terminate => {} }
 }

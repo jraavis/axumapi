@@ -25,15 +25,20 @@ tower-http.workspace = true
 uuid.workspace = true
 axum.workspace = true
 http.workspace = true
+http-body.workspace = true
 http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
 tower.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+hyper = { workspace = true, features = ["client", "http1", "http2"] }
+tokio = { workspace = true, features = ["io-util"] }
 siderite-validation.workspace = true
 jsonschema.workspace = true
 siderite-testkit.workspace = true

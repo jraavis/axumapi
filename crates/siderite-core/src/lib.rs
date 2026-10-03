@@ -22,13 +22,17 @@ pub mod response;
 pub mod responses;
 pub mod routing;
 pub mod security;
+mod server;
 pub mod service;
 pub mod state;
 pub mod static_files;
 pub mod ws;
 
 pub use app::{App, AppMeta, DocsConfig};
-pub use background::{BackgroundTasks, Task, TaskId, TaskQueue, TaskQueueError};
+pub use background::{
+    BackgroundTaskError, BackgroundTaskLimits, BackgroundTasks, Task, TaskId, TaskQueue,
+    TaskQueueError,
+};
 pub use body::{Body, DEFAULT_BODY_LIMIT};
 pub use di::{Dependency, DependencyError, Depends, Provided, RequestHead, ResolveContext};
 pub use error::{ApiError, ApiResult, BodyError, ServerError};
@@ -38,10 +42,11 @@ pub use handler::Handler;
 pub use header::{
     Accept, Cookies, Header, NamedHeader, SameSite, SetCookie, UserAgent, WithCookies,
 };
-pub use lifespan::{Lifespan, Resource};
+pub use lifespan::{Lifespan, ManagedLifespan, Resource};
 pub use middleware::{
-    BodyLimit, BoxService, Compression, ConcurrencyLimit, Cors, HttpsRedirect, Next, RateLimit,
-    RequestId, RequestIdLayer, RequestLogging, Timeout, TrustedHosts, from_fn,
+    BodyLimit, BoxService, Compression, ConcurrencyLimit, ConcurrencyLimitError, ConcurrencyStats,
+    Cors, HttpsRedirect, Next, RateLimit, RateLimitError, RequestId, RequestIdLayer,
+    RequestLogging, Timeout, TrustedHosts, TrustedProxies, from_fn,
 };
 pub use response::{
     Html, IntoResponse, Json, JsonDump, NoContent, PlainText, Response, WithStatus,
@@ -54,6 +59,7 @@ pub use security::{
     ApiKey, ApiKeyLocation, ApiKeySpec, Authenticate, HttpBasic, HttpBearer, NoScopes,
     OAuth2PasswordBearer, OAuth2PasswordRequestForm, OAuth2Spec, Scopes, Security,
 };
+pub use server::{Readiness, ServerLimits, ServerPhase};
 pub use service::RouterService;
 pub use state::State;
 pub use ws::{CloseFrame, Message, WebSocket, WebSocketResponse, WebSocketUpgrade, WsError};

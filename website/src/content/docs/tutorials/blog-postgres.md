@@ -7,6 +7,10 @@ Package: `examples/blog_postgres`. A complete blog API: users, posts with
 tags, comments, OAuth2 password-flow authentication, pagination, OpenAPI
 tags, and an audit trail written by model signal receivers.
 
+The password-flow portion is legacy compatibility. For current OAuth
+applications use authorization code with PKCE and verified API access
+tokens; see the [security guide](/siderite/guides/http/security/).
+
 ## Run
 
 ```bash

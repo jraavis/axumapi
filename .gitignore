@@ -9,3 +9,4 @@ website/dist
 website/.astro
 
 .claude/
+__pycache__/

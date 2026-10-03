@@ -10,6 +10,39 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  backend-features:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - ""
+          - sqlite
+          - postgres
+          - mysql
+          - mysql-native
+          - mongodb
+          - redis
+          - tls
+          - postgres,tls
+          - mysql,tls
+          - mysql-native,tls
+          - redis,tls
+          - mongodb,redis,tls
+          - sqlite,postgres,mysql
+          - postgres,mysql-native
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Lint each backend feature without feature unification
+        env:
+          BACKEND_FEATURES: ${{ matrix.features }}
+        run: >-
+          cargo clippy -p siderite-backends --all-targets --no-default-features
+          --features "$BACKEND_FEATURES" -- -D warnings
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -54,6 +87,7 @@ jobs:
     env:
       DATABASE_URL: postgres://siderite:siderite@127.0.0.1:5432/siderite
       MYSQL_URL: mysql://root:siderite@127.0.0.1:3306/siderite
+      MYSQL_PROBE_URL: mysql://root:siderite@127.0.0.1:3306/siderite
       MONGODB_URL: mongodb://127.0.0.1:27017/siderite?directConnection=true
       REDIS_URL: redis://127.0.0.1:6379/15
     steps:
@@ -69,7 +103,25 @@ jobs:
             docker exec mongo mongosh --quiet --eval "rs.initiate({_id: 'rs0', members: [{_id: 0, host: '127.0.0.1:27017'}]}).ok" && break
             sleep 2
           done
-      - run: cargo test --workspace --all-features -- --include-ignored --test-threads=1
+          ready=0
+          for i in $(seq 1 30); do
+            if docker exec mongo mongosh --quiet --eval \
+              'quit(db.hello().isWritablePrimary ? 0 : 1)'; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = 1
+      - run: cargo test --workspace --all-features -- --include-ignored --test-threads=1 --skip tls_certificate_contracts --skip recovery_child
+      - name: Verify TLS against owned disposable services
+        run: python3 scripts/test_tls.py
+      - name: Exercise the native MySQL ORM with the same live contracts
+        run: >-
+          cargo test -p siderite-backends --all-features
+          --test mysql --test transaction_scopes -- --include-ignored
+        env:
+          SIDERITE_TEST_NATIVE_MYSQL: "1"
       - if: always()
         run: rm -rf target/tests
 

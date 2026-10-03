@@ -16,11 +16,9 @@
 //! take a *second* connection, which deadlocks on a one-connection pool such
 //! as `sqlite::memory:`.
 
-use crate::backend::{Backend, ExecResult, Executor, QueryResult, Transaction};
-use crate::capabilities::{
-    BackendCapabilities, BackendKind, Feature, IsolationLevel, TransactionSupport,
-};
-use crate::error::{BackendCapabilityError, OrmError, QueryError};
+use crate::backend::{Backend, ExecResult, QueryResult};
+use crate::capabilities::BackendCapabilities;
+use crate::error::{OrmError, QueryError};
 use crate::model::{Model, ModelMeta};
 use crate::plan::{PlanOrigin, QueryPlan};
 use crate::queryset::QuerySet;
@@ -30,46 +28,12 @@ use crate::value::Value;
 use crate::write::WritePlan;
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
 
-type Hook = Box<dyn FnOnce() + Send>;
-
-/// Callbacks registered with [`Db::on_commit`] for one transaction level.
-#[derive(Default)]
-struct Hooks(Mutex<Vec<Hook>>);
-
-impl Hooks {
-    fn push(&self, hook: Hook) {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(hook);
-    }
-
-    fn take(&self) -> Vec<Hook> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
-    }
-}
-
-struct TxState {
-    tx: Arc<dyn Transaction>,
-    /// The pool the transaction was opened on, to tell which database a
-    /// handle belongs to.
-    pool: Arc<dyn Backend>,
-    /// Hooks of this level; moved to the parent on savepoint release.
-    hooks: Arc<Hooks>,
-    /// Shared savepoint name counter for the whole transaction.
-    savepoints: Arc<AtomicU32>,
-}
-
-/// Dedicated connection that is not inside an SQL transaction (migration lock).
-struct ConnState {
-    conn: Arc<dyn Transaction>,
-    pool: Arc<dyn Backend>,
-}
+mod transaction;
+use transaction::{ConnState, ExecutorRef, TxState};
 
 #[derive(Clone)]
 enum Target {
@@ -154,22 +118,48 @@ impl Db {
         }
     }
 
-    fn executor(&self) -> &dyn Executor {
+    fn executor(&self) -> Result<ExecutorRef<'_>, OrmError> {
         match &self.target {
-            Target::Pool(pool) => pool.as_ref(),
-            Target::Tx(state) => state.tx.as_ref(),
-            Target::Conn(state) => state.conn.as_ref(),
+            Target::Pool(pool) => Ok(ExecutorRef::Pool(pool.as_ref())),
+            Target::Tx(state) => {
+                let lease = state.control.lease(state.scope)?;
+                Ok(ExecutorRef::Leased(lease))
+            }
+            Target::Conn(state) => Ok(ExecutorRef::Leased(state.control.lease(0)?)),
         }
     }
 
     /// Declared capabilities of the underlying backend.
     pub fn capabilities(&self) -> BackendCapabilities {
-        self.executor().capabilities()
+        self.pool().capabilities()
+    }
+
+    /// Count read-plan binds through the backend compiler without I/O.
+    ///
+    /// Args:
+    ///     plan: Complete target read plan, including existing filters.
+    ///
+    /// Returns:
+    ///     Exact count when supported; None for non-reporting backends.
+    ///
+    /// # Errors
+    /// Foreign database origin, invalid plan or unsupported capability.
+    pub fn read_parameter_count(&self, plan: &QueryPlan) -> Result<Option<usize>, OrmError> {
+        self.ensure_local(plan.has_foreign_origin(self.origin()))?;
+        self.pool().read_parameter_count(plan)
     }
 
     /// Whether this handle runs inside a transaction.
     pub fn in_transaction(&self) -> bool {
         matches!(self.target, Target::Tx(_))
+    }
+
+    /// Whether this handle owns a connection or transaction scope.
+    ///
+    /// Returns:
+    ///     True for scoped handles; false for a pool handle.
+    pub fn is_scoped(&self) -> bool {
+        !matches!(self.target, Target::Pool(_))
     }
 
     /// Execute a read plan.
@@ -178,8 +168,11 @@ impl Db {
     /// Capability, backend or decode errors.
     pub async fn fetch(&self, plan: &QueryPlan) -> Result<QueryResult, OrmError> {
         self.ensure_local(plan.has_foreign_origin(self.origin()))?;
-        self.traced("select", &plan.source.name, self.executor().fetch(plan))
-            .await
+        let mut executor = self.executor()?;
+        let query = executor.as_ref().fetch(plan);
+        let result = self.traced("select", &plan.source.name, query).await;
+        executor.finish();
+        result
     }
 
     /// Execute a write plan.
@@ -204,8 +197,12 @@ impl Db {
             WritePlan::Update(p) => ("update", &p.table),
             WritePlan::Delete(p) => ("delete", &p.table),
         };
-        self.traced(operation, table, self.executor().execute(plan))
-            .await
+        let mut executor = self.executor()?;
+        let result = self
+            .traced(operation, table, executor.as_ref().execute(plan))
+            .await;
+        executor.finish();
+        result
     }
 
     /// Raw SQL returning rows (`db.raw_sql("SELECT .. WHERE id = ?", params![id])`).
@@ -217,8 +214,12 @@ impl Db {
     /// Backend errors.
     pub async fn raw_sql(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult, OrmError> {
         tracing::trace!(sql, "raw query");
-        self.traced("raw", "", self.executor().fetch_raw(sql, params))
-            .await
+        let mut executor = self.executor()?;
+        let result = self
+            .traced("raw", "", executor.as_ref().fetch_raw(sql, params))
+            .await;
+        executor.finish();
+        result
     }
 
     /// Raw SQL returning the affected-row count. Parameters are bound.
@@ -227,8 +228,12 @@ impl Db {
     /// Backend errors.
     pub async fn raw_execute(&self, sql: &str, params: Vec<Value>) -> Result<u64, OrmError> {
         tracing::trace!(sql, "raw statement");
-        self.traced("raw", "", self.executor().execute_raw(sql, params))
-            .await
+        let mut executor = self.executor()?;
+        let result = self
+            .traced("raw", "", executor.as_ref().execute_raw(sql, params))
+            .await;
+        executor.finish();
+        result
     }
 
     /// Run a parameterless multi-statement script (DDL).
@@ -237,8 +242,12 @@ impl Db {
     /// Backend errors.
     pub async fn execute_script(&self, sql: &str) -> Result<(), OrmError> {
         tracing::trace!(sql, "script");
-        self.traced("script", "", self.executor().execute_script(sql))
-            .await
+        let mut executor = self.executor()?;
+        let result = self
+            .traced("script", "", executor.as_ref().execute_script(sql))
+            .await;
+        executor.finish();
+        result
     }
 
     /// Run `query` inside an `orm.query` span and record its duration.
@@ -269,263 +278,6 @@ impl Db {
         }
         .instrument(span)
         .await
-    }
-
-    /// Run `f` in a transaction: commit on `Ok`, roll back on `Err`.
-    ///
-    /// Called on a handle that is already in a transaction, this creates a
-    /// savepoint instead (requires [`TransactionSupport::Savepoints`]). If `f`
-    /// panics, the transaction is dropped and therefore rolled back.
-    ///
-    /// # Errors
-    /// `f`'s error, or an [`OrmError`] from begin/commit/rollback.
-    pub async fn transaction<F, Fut, T, E>(&self, f: F) -> Result<T, E>
-    where
-        F: FnOnce(Db) -> Fut,
-        Fut: Future<Output = Result<T, E>>,
-        E: From<OrmError>,
-    {
-        self.run_transaction(None, f).await
-    }
-
-    /// [`transaction`](Self::transaction) with an explicit isolation level.
-    ///
-    /// The level must be listed in [`BackendCapabilities::isolation_levels`]
-    /// and cannot be set on a nested (savepoint) transaction.
-    ///
-    /// # Errors
-    /// As [`transaction`](Self::transaction), plus a capability error for an
-    /// unsupported level.
-    pub async fn transaction_with<F, Fut, T, E>(
-        &self,
-        isolation: IsolationLevel,
-        f: F,
-    ) -> Result<T, E>
-    where
-        F: FnOnce(Db) -> Fut,
-        Fut: Future<Output = Result<T, E>>,
-        E: From<OrmError>,
-    {
-        self.run_transaction(Some(isolation), f).await
-    }
-
-    /// Run `f` on a dedicated connection prepared for schema changes.
-    ///
-    /// SQLite disables foreign-key enforcement on that connection before any
-    /// `BEGIN` (and restores it afterwards) so a table rebuild does not
-    /// CASCADE-delete child rows. `transactional` wraps `f` in `BEGIN` /
-    /// `COMMIT` when the backend supports it.
-    ///
-    /// # Errors
-    /// `f`'s error, or an [`OrmError`] from begin/commit/rollback. SQLite
-    /// rejects this when `self` is already in a transaction, because
-    /// `PRAGMA foreign_keys` cannot be changed until that transaction ends.
-    pub async fn schema_change<F, Fut, T, E>(&self, transactional: bool, f: F) -> Result<T, E>
-    where
-        F: FnOnce(Db) -> Fut,
-        Fut: Future<Output = Result<T, E>>,
-        E: From<OrmError>,
-    {
-        match &self.target {
-            Target::Pool(pool) => {
-                let handle: Arc<dyn Transaction> =
-                    Arc::from(pool.begin_schema(transactional).await?);
-                if transactional {
-                    let state = Arc::new(TxState {
-                        tx: Arc::clone(&handle),
-                        pool: Arc::clone(pool),
-                        hooks: Arc::default(),
-                        savepoints: Arc::default(),
-                    });
-                    let hooks = Arc::clone(&state.hooks);
-                    let result = f(Db {
-                        target: Target::Tx(state),
-                        signals: self.signals.clone(),
-                    })
-                    .await;
-                    match result {
-                        Ok(value) => {
-                            handle.commit().await?;
-                            hooks.take().into_iter().for_each(|hook| hook());
-                            Ok(value)
-                        }
-                        Err(err) => {
-                            drop(handle.rollback().await);
-                            Err(err)
-                        }
-                    }
-                } else {
-                    let state = Arc::new(ConnState {
-                        conn: Arc::clone(&handle),
-                        pool: Arc::clone(pool),
-                    });
-                    let result = f(Db {
-                        target: Target::Conn(state),
-                        signals: self.signals.clone(),
-                    })
-                    .await;
-                    match result {
-                        Ok(value) => {
-                            handle.commit().await?;
-                            Ok(value)
-                        }
-                        Err(err) => {
-                            drop(handle.rollback().await);
-                            Err(err)
-                        }
-                    }
-                }
-            }
-            Target::Tx(_) | Target::Conn(_) if self.capabilities().kind == BackendKind::Sqlite => {
-                Err(OrmError::from(QueryError::InvalidPlan(
-                    "SQLite schema migrations cannot run inside an open transaction \
-                     because PRAGMA foreign_keys cannot be changed until it commits"
-                        .into(),
-                ))
-                .into())
-            }
-            Target::Tx(_) | Target::Conn(_) => self.run_transaction(None, f).await,
-        }
-    }
-
-    async fn run_transaction<F, Fut, T, E>(
-        &self,
-        isolation: Option<IsolationLevel>,
-        f: F,
-    ) -> Result<T, E>
-    where
-        F: FnOnce(Db) -> Fut,
-        Fut: Future<Output = Result<T, E>>,
-        E: From<OrmError>,
-    {
-        match &self.target {
-            Target::Pool(pool) => {
-                if let Some(level) = isolation {
-                    pool.capabilities()
-                        .require(Feature::Isolation(level))
-                        .map_err(OrmError::from)?;
-                }
-                let tx: Arc<dyn Transaction> = Arc::from(pool.begin(isolation).await?);
-                let state = Arc::new(TxState {
-                    tx: Arc::clone(&tx),
-                    pool: Arc::clone(pool),
-                    hooks: Arc::default(),
-                    savepoints: Arc::default(),
-                });
-                let hooks = Arc::clone(&state.hooks);
-                let result = f(Db {
-                    target: Target::Tx(state),
-                    signals: self.signals.clone(),
-                })
-                .await;
-                match result {
-                    Ok(value) => {
-                        tx.commit().await?;
-                        hooks.take().into_iter().for_each(|hook| hook());
-                        Ok(value)
-                    }
-                    Err(err) => {
-                        // Keep the caller's error: a failed rollback means the
-                        // connection is broken, and dropping `tx` discards it.
-                        drop(tx.rollback().await);
-                        Err(err)
-                    }
-                }
-            }
-            Target::Conn(state) => {
-                if isolation.is_some() {
-                    return Err(OrmError::from(QueryError::InvalidPlan(
-                        "isolation level cannot be set on a nested transaction".into(),
-                    ))
-                    .into());
-                }
-                state.conn.execute_script("BEGIN").await?;
-                let tx_state = Arc::new(TxState {
-                    tx: Arc::clone(&state.conn),
-                    pool: Arc::clone(&state.pool),
-                    hooks: Arc::default(),
-                    savepoints: Arc::default(),
-                });
-                let hooks = Arc::clone(&tx_state.hooks);
-                let result = f(Db {
-                    target: Target::Tx(tx_state),
-                    signals: self.signals.clone(),
-                })
-                .await;
-                match result {
-                    Ok(value) => {
-                        state.conn.execute_script("COMMIT").await?;
-                        hooks.take().into_iter().for_each(|hook| hook());
-                        Ok(value)
-                    }
-                    Err(err) => {
-                        drop(state.conn.execute_script("ROLLBACK").await);
-                        Err(err)
-                    }
-                }
-            }
-            Target::Tx(parent) => {
-                if isolation.is_some() {
-                    return Err(OrmError::from(QueryError::InvalidPlan(
-                        "isolation level cannot be set on a nested transaction".into(),
-                    ))
-                    .into());
-                }
-                let caps = parent.tx.capabilities();
-                if caps.transactions < TransactionSupport::Savepoints {
-                    return Err(OrmError::from(BackendCapabilityError::Unsupported {
-                        backend: caps.kind,
-                        feature: Feature::Savepoints,
-                    })
-                    .into());
-                }
-                let n = parent.savepoints.fetch_add(1, Ordering::Relaxed) + 1;
-                let name = format!("siderite_sp_{n}");
-                parent
-                    .tx
-                    .execute_script(&format!("SAVEPOINT {name}"))
-                    .await?;
-                let state = Arc::new(TxState {
-                    tx: Arc::clone(&parent.tx),
-                    pool: Arc::clone(&parent.pool),
-                    hooks: Arc::default(),
-                    savepoints: Arc::clone(&parent.savepoints),
-                });
-                let hooks = Arc::clone(&state.hooks);
-                let result = f(Db {
-                    target: Target::Tx(state),
-                    signals: self.signals.clone(),
-                })
-                .await;
-                match result {
-                    Ok(value) => {
-                        parent
-                            .tx
-                            .execute_script(&format!("RELEASE SAVEPOINT {name}"))
-                            .await?;
-                        hooks.take().into_iter().for_each(|h| parent.hooks.push(h));
-                        Ok(value)
-                    }
-                    Err(err) => {
-                        parent
-                            .tx
-                            .execute_script(&format!("ROLLBACK TO SAVEPOINT {name}"))
-                            .await?;
-                        Err(err)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Run `hook` after the outermost transaction commits (Django
-    /// `transaction.on_commit`). Outside a transaction it runs immediately.
-    /// Hooks of a rolled-back savepoint or transaction are discarded.
-    pub fn on_commit(&self, hook: impl FnOnce() + Send + 'static) {
-        match &self.target {
-            Target::Pool(_) | Target::Conn(_) => hook(),
-            Target::Tx(state) => state.hooks.push(Box::new(hook)),
-        }
     }
 }
 

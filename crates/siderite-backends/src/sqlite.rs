@@ -119,6 +119,10 @@ impl Executor for SqliteBackend {
 
 #[async_trait]
 impl Backend for SqliteBackend {
+    fn read_parameter_count(&self, plan: &QueryPlan) -> Result<Option<usize>, OrmError> {
+        Ok(Some(compile(plan, &Sqlite)?.params.len()))
+    }
+
     async fn begin(
         &self,
         isolation: Option<IsolationLevel>,

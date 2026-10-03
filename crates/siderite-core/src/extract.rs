@@ -27,6 +27,10 @@ pub type Request = http::Request<Body>;
 
 /// Extract a value from request metadata (method, URI, headers, extensions).
 pub trait FromRequestParts: Sized + Send {
+    /// Whether extraction needs a request-owned background queue.
+    /// Custom wrappers delegating to BackgroundTasks must propagate this.
+    const BACKGROUND_TASKS: bool = false;
+
     /// Perform the extraction.
     fn from_request_parts(parts: &mut Parts)
     -> impl Future<Output = Result<Self, ApiError>> + Send;
@@ -37,6 +41,9 @@ pub trait FromRequestParts: Sized + Send {
 
 /// Extract a value from the whole request, possibly consuming the body.
 pub trait FromRequest: Sized + Send {
+    /// Whether extraction needs a request-owned background queue.
+    const BACKGROUND_TASKS: bool = false;
+
     /// Perform the extraction.
     fn from_request(req: Request) -> impl Future<Output = Result<Self, ApiError>> + Send;
 
@@ -45,6 +52,8 @@ pub trait FromRequest: Sized + Send {
 }
 
 impl<T: FromRequestParts> FromRequest for T {
+    const BACKGROUND_TASKS: bool = T::BACKGROUND_TASKS;
+
     fn from_request(req: Request) -> impl Future<Output = Result<Self, ApiError>> + Send {
         let (mut parts, _body) = req.into_parts();
         async move { T::from_request_parts(&mut parts).await }
@@ -60,6 +69,8 @@ impl<T: FromRequestParts> FromRequest for T {
 /// Only errors marked [`ApiError::absent`] become `None`; a header, query
 /// string or credential that is present but invalid still fails the request.
 impl<T: FromRequestParts> FromRequestParts for Option<T> {
+    const BACKGROUND_TASKS: bool = T::BACKGROUND_TASKS;
+
     async fn from_request_parts(parts: &mut Parts) -> Result<Self, ApiError> {
         match T::from_request_parts(parts).await {
             Ok(value) => Ok(Some(value)),

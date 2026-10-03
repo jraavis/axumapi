@@ -183,7 +183,7 @@ impl AppCli {
                 let db = scratch_db().await?;
                 self.migrations(&global, &db, rest).await
             }
-            "migrate" | "rollback" | "showmigrations" => {
+            "migrate" | "rollback" | "showmigrations" | "inspectmigrations" => {
                 let url = self.database_url(&global, env)?;
                 let alias = global.database.as_deref().unwrap_or(DEFAULT_DATABASE);
                 let db = connect_url(&url)
@@ -318,6 +318,7 @@ Commands:
   migrate [TARGET] [--dry-run]
   rollback [--steps N | TARGET] [--dry-run]
   showmigrations
+  inspectmigrations       Read-only recovery report
   squashmigrations FROM TO [--name SLUG]
 
 Options:

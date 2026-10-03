@@ -1,32 +1,35 @@
 //! MySQL end-to-end tests.
 //!
-//! They run only when `MYSQL_URL` (or, failing that, `DATABASE_URL`) starts
-//! with `mysql`, for example `mysql://root@127.0.0.1:3306/siderite_test`, and
-//! print a note otherwise. Each test creates its own database (a random
-//! `siderite_test_<uuid>` name) and drops it afterwards, so tests can run in
-//! parallel against one server.
+//! These tests are explicitly ignored in offline runs. Select --ignored
+//! with the documented service URL to run them; missing configuration fails.
+//! Each test owns a disposable schema/database or a unique Redis namespace.
+//! Shared application data and Redis FLUSH commands are not used.
 #![cfg(feature = "mysql")]
 #![allow(clippy::unwrap_used)]
 
 mod common;
 
+use chrono::{DateTime, NaiveTime, TimeDelta, Utc};
 use common::{Author, Book, Event, Note, Tag, Team, seed, titles};
 use siderite_backends::mysql::MySqlBackend;
 use siderite_orm::functions::{case, concat, length, upper};
-use siderite_orm::{
-    ArrayAgg, BackendCapabilityError, BackendError, Count, Db, Expr, IsolationLevel, Model,
-    ModelOps, OrmError, Relation, RowNumber, StdDev, StringAgg, Sum, Value, Variance, params,
-};
+use siderite_orm::{ArrayAgg, BackendCapabilityError, BackendError, Count};
+use siderite_orm::{Db, Expr, IsolationLevel, Model, ModelOps, OrmError};
+use siderite_orm::{QueryError, QuerySet, Relation, RowNumber, StdDev};
+use siderite_orm::{StringAgg, Sum, Value, Variance, params};
 use sqlx::MySqlPool;
 use sqlx::mysql::MySqlPoolOptions;
 
 const SCHEMA: &str = "
-    CREATE TABLE teams (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(191) NOT NULL);
+    CREATE TABLE teams (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(191) NOT NULL);
     CREATE TABLE authors (
-        id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, age INT,
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(100) NOT NULL, age INT,
         team_id BIGINT NULL,
         FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE SET NULL);
-    CREATE TABLE tags (slug VARCHAR(191) PRIMARY KEY, label VARCHAR(191) NOT NULL);
+    CREATE TABLE tags (
+        slug VARCHAR(191) PRIMARY KEY, label VARCHAR(191) NOT NULL);
     CREATE TABLE books (
         id BIGINT AUTO_INCREMENT PRIMARY KEY, title VARCHAR(191) NOT NULL,
         author_id BIGINT NOT NULL,
@@ -43,68 +46,36 @@ const SCHEMA: &str = "
         created_at DATETIME(6) NOT NULL, updated_at DATETIME(6) NOT NULL);
     CREATE TABLE events (
         id CHAR(36) PRIMARY KEY, at DATETIME(6) NOT NULL, day DATE NOT NULL,
-        clock TIME(6) NOT NULL, payload JSON NOT NULL, `blob` BLOB NOT NULL, score DOUBLE);
+        clock TIME(6) NOT NULL, payload JSON NOT NULL,
+        `blob` BLOB NOT NULL, score DOUBLE);
     CREATE TABLE nullables (
-        id BIGINT AUTO_INCREMENT PRIMARY KEY, t TEXT, u CHAR(36), ts DATETIME(6), j JSON,
+        id BIGINT AUTO_INCREMENT PRIMARY KEY, t TEXT, u CHAR(36),
+        ts DATETIME(6), j JSON,
         n DECIMAL(20,4), d DATE);
 ";
 
 /// Isolation level and state of the current connection's transaction.
-const TRANSACTION_LEVEL: &str = "SELECT CAST(isolation_level AS CHAR) AS level, \
-    CAST(state AS CHAR) AS state FROM performance_schema.events_transactions_current \
+const TRANSACTION_LEVEL: &str = "SELECT \
+    CAST(isolation_level AS CHAR) AS level, CAST(state AS CHAR) AS state \
+    FROM performance_schema.events_transactions_current \
     WHERE thread_id = PS_CURRENT_THREAD_ID()";
 
-/// A database handle on a private database, dropped by [`cleanup`](Self::cleanup).
-struct TestDb {
-    db: Db,
-    admin: MySqlPool,
-    name: String,
-}
-
-impl TestDb {
-    async fn open() -> Option<Self> {
-        let Some(url) = ["MYSQL_URL", "DATABASE_URL"]
-            .into_iter()
-            .filter_map(|var| std::env::var(var).ok())
-            .find(|u| u.starts_with("mysql"))
-        else {
-            eprintln!("skipping MySQL test: MYSQL_URL / DATABASE_URL does not start with `mysql`");
-            return None;
-        };
-        let name = format!("siderite_test_{}", uuid::Uuid::new_v4().simple());
-        let admin = MySqlPool::connect(&url).await.unwrap();
-        sqlx::query(&format!("CREATE DATABASE {name}"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        let (server, _) = url.rsplit_once('/').unwrap();
-        let backend = MySqlBackend::connect_with(
-            &format!("{server}/{name}"),
-            MySqlPoolOptions::new().max_connections(4),
-        )
-        .await
-        .unwrap();
-        let db = Db::new(backend);
-        db.execute_script(SCHEMA).await.unwrap();
-        Some(Self { db, admin, name })
-    }
-
-    async fn cleanup(self) {
-        sqlx::query(&format!("DROP DATABASE {}", self.name))
-            .execute(&self.admin)
-            .await
-            .unwrap();
-    }
-}
+#[path = "mysql/fixture.rs"]
+mod fixture;
+#[path = "mysql/returning.rs"]
+mod returning;
+use fixture::TestDb;
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn session_is_utc_and_group_concat_is_not_truncated() {
     let Some(t) = TestDb::open().await else {
         return;
     };
     let rows =
         t.db.raw_sql(
-            "SELECT @@session.time_zone AS tz, @@session.group_concat_max_len AS len, \
+            "SELECT @@session.time_zone AS tz, \
+             @@session.group_concat_max_len AS len, \
              @@session.sql_mode AS mode",
             vec![],
         )
@@ -138,6 +109,7 @@ async fn session_is_utc_and_group_concat_is_not_truncated() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn instance_operations_and_timestamps() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -146,7 +118,7 @@ async fn instance_operations_and_timestamps() {
     let mut note = Note::new("hello");
     note.save(db).await.unwrap();
     assert!(note.id > 0 && note.created_at > chrono::DateTime::UNIX_EPOCH);
-    assert!(note.created_at <= chrono::Utc::now() + chrono::TimeDelta::seconds(1));
+    assert!(note.created_at <= Utc::now() + TimeDelta::seconds(1));
     note.body = "edited".into();
     note.save(db).await.unwrap();
     let mut copy = Note::new("stale");
@@ -182,6 +154,7 @@ async fn instance_operations_and_timestamps() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn manual_keys_are_returned_as_supplied() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -215,13 +188,15 @@ async fn manual_keys_are_returned_as_supplied() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn null_parameters_fit_any_column_type() {
     let Some(t) = TestDb::open().await else {
         return;
     };
     let inserted =
         t.db.raw_execute(
-            "INSERT INTO nullables (t, u, ts, j, n, d) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO nullables (t, u, ts, j, n, d) \
+             VALUES (?, ?, ?, ?, ?, ?)",
             params![
                 Value::Null,
                 Value::Null,
@@ -243,6 +218,7 @@ async fn null_parameters_fit_any_column_type() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn scalar_types_round_trip_natively() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -250,9 +226,9 @@ async fn scalar_types_round_trip_natively() {
     let db = &t.db;
     let mut event = Event {
         id: uuid::Uuid::from_u128(0xfeed),
-        at: chrono::DateTime::from_timestamp_micros(1_715_953_530_123_456).unwrap(),
+        at: DateTime::from_timestamp_micros(1_715_953_530_123_456).unwrap(),
         day: chrono::NaiveDate::from_ymd_opt(2024, 5, 17).unwrap(),
-        clock: chrono::NaiveTime::from_hms_micro_opt(13, 45, 30, 123_456).unwrap(),
+        clock: NaiveTime::from_hms_micro_opt(13, 45, 30, 123_456).unwrap(),
         payload: serde_json::json!({"k": [1, 2]}),
         blob: vec![0, 1, 255],
         score: None,
@@ -300,6 +276,7 @@ async fn scalar_types_round_trip_natively() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn queries_aggregates_windows_and_sets() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -327,10 +304,9 @@ async fn queries_aggregates_windows_and_sets() {
         2
     );
 
-    let row = Book::objects(db)
-        .aggregate([("likes", Sum::of(Book::likes)), ("n", Sum::of(Book::price))])
-        .await
-        .unwrap();
+    let likes = Sum::of(Book::likes);
+    let totals = [("likes", likes), ("n", Sum::of(Book::price))];
+    let row = Book::objects(db).aggregate(totals).await.unwrap();
     assert_eq!(
         row.get_as::<i64>("likes").unwrap(),
         27,
@@ -345,8 +321,10 @@ async fn queries_aggregates_windows_and_sets() {
         .await
         .unwrap();
     // likes = 10, 5, 8, 1, 3: mean 5.4, sum of squared deviations 53.2.
-    assert!((stats.get_as::<f64>("pop").unwrap() - (53.2_f64 / 5.0).sqrt()).abs() < 1e-9);
-    assert!((stats.get_as::<f64>("samp").unwrap() - (53.2_f64 / 4.0).sqrt()).abs() < 1e-9);
+    let population = stats.get_as::<f64>("pop").unwrap();
+    let sample = stats.get_as::<f64>("samp").unwrap();
+    assert!((population - (53.2_f64 / 5.0).sqrt()).abs() < 1e-9);
+    assert!((sample - (53.2_f64 / 4.0).sqrt()).abs() < 1e-9);
     assert!((stats.get_as::<f64>("var").unwrap() - 53.2 / 4.0).abs() < 1e-9);
 
     let grouped = Book::objects(db)
@@ -408,6 +386,7 @@ async fn queries_aggregates_windows_and_sets() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn text_lookups_are_case_sensitive_when_asked() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -426,7 +405,7 @@ async fn text_lookups_are_case_sensitive_when_asked() {
     for name in names {
         Book::new(name, s.ann.id).save(db).await.unwrap();
     }
-    let count = |q: siderite_orm::QuerySet<Book>| async move { q.count().await.unwrap() };
+    let count = |q: QuerySet<Book>| async move { q.count().await.unwrap() };
 
     // The default collation is case-insensitive, so `eq` follows it; the
     // explicit lookups are case-sensitive.
@@ -510,13 +489,11 @@ async fn text_lookups_are_case_sensitive_when_asked() {
     );
 
     // NULL counts as empty text in CONCAT, LENGTH counts characters.
+    let parts = [Book::title.expr(), Book::pages.expr(), Expr::val("!")];
     let rows = Book::objects(db)
         .filter(Book::title.eq("ünïcode"))
         .project([
-            (
-                "joined",
-                concat([Book::title.expr(), Book::pages.expr(), Expr::val("!")]),
-            ),
+            ("joined", concat(parts)),
             ("len", length(Book::title.expr())),
             ("up", upper(Book::title.expr())),
         ])
@@ -539,7 +516,7 @@ async fn text_lookups_are_case_sensitive_when_asked() {
         .aggregate([("t", StringAgg::of(Book::title, ",").distinct())])
         .await
         .unwrap();
-    // DISTINCT compares with the column collation: "Hello" and "hello" are one value.
+    // DISTINCT follows collation: "Hello" and "hello" are one value.
     assert_eq!(
         distinct.get_as::<String>("t").unwrap().matches(',').count(),
         0
@@ -548,6 +525,7 @@ async fn text_lookups_are_case_sensitive_when_asked() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn unsupported_features_fail_before_any_io() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -573,6 +551,7 @@ async fn unsupported_features_fail_before_any_io() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn writes_bulk_operations_and_relations() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -676,6 +655,7 @@ async fn writes_bulk_operations_and_relations() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn correlated_and_limited_subqueries() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -746,6 +726,7 @@ async fn correlated_and_limited_subqueries() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn transactions_savepoints_isolation_and_row_locks() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -762,8 +743,9 @@ async fn transactions_savepoints_isolation_and_row_locks() {
                 // `@@transaction_isolation` is the session default, so ask the
                 // performance schema for the level of the running transaction.
                 let rows = tx.raw_sql(TRANSACTION_LEVEL, vec![]).await?;
-                assert_eq!(rows.rows[0].get_as::<String>("state").unwrap(), "ACTIVE");
-                Ok::<_, OrmError>(rows.rows[0].get_as::<String>("level").unwrap())
+                let row = &rows.rows[0];
+                assert_eq!(row.get_as::<String>("state").unwrap(), "ACTIVE");
+                Ok::<_, OrmError>(row.get_as::<String>("level").unwrap())
             })
             .await
             .unwrap();
@@ -786,7 +768,7 @@ async fn transactions_savepoints_isolation_and_row_locks() {
             let inner: Result<(), OrmError> = tx
                 .transaction(|inner| async move {
                     Author::new("inner", None).save(&inner).await?;
-                    Err(siderite_orm::QueryError::InvalidPlan("abort".into()).into())
+                    Err(QueryError::InvalidPlan("abort".into()).into())
                 })
                 .await;
             assert!(inner.is_err());
@@ -848,6 +830,7 @@ async fn transactions_savepoints_isolation_and_row_locks() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn concurrent_bulk_creates_get_their_own_keys() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -878,316 +861,7 @@ async fn concurrent_bulk_creates_get_their_own_keys() {
 }
 
 #[tokio::test]
-async fn returning_is_emulated_for_updates_deletes_and_inserts() {
-    use siderite_orm::{DeletePlan, InsertPlan, UpdatePlan, WritePlan};
-    let Some(t) = TestDb::open().await else {
-        return;
-    };
-    let db = &t.db;
-    let s = seed(db).await;
-    let columns = || vec!["id".into(), "title".into(), "likes".into()];
-
-    // Multi-row UPDATE .. RETURNING: rows come back as updated.
-    let updated = db
-        .execute(&WritePlan::Update(UpdatePlan {
-            table: "books".into(),
-            assignments: vec![("likes".into(), Expr::col("likes") + 100_i64)],
-            filter: Some(Book::author.eq(s.ann.id)),
-            returning: columns(),
-        }))
-        .await
-        .unwrap();
-    assert_eq!(updated.rows_affected, 2);
-    let mut likes: Vec<i64> = updated
-        .returning
-        .iter()
-        .map(|r| r.get_as::<i64>("likes").unwrap())
-        .collect();
-    likes.sort_unstable();
-    assert_eq!(likes, [105, 110]);
-
-    // The filter may stop matching after the update: rows are read by key.
-    let moved = db
-        .execute(&WritePlan::Update(UpdatePlan {
-            table: "books".into(),
-            assignments: vec![("likes".into(), Expr::val(0_i64))],
-            filter: Some(Book::likes.gt(100_i64)),
-            returning: columns(),
-        }))
-        .await
-        .unwrap();
-    assert_eq!(moved.returning.len(), 2);
-    assert!(
-        moved
-            .returning
-            .iter()
-            .all(|r| r.get_as::<i64>("likes").unwrap() == 0)
-    );
-
-    // No match: nothing changes, nothing is returned.
-    let none = db
-        .execute(&WritePlan::Update(UpdatePlan {
-            table: "books".into(),
-            assignments: vec![("likes".into(), Expr::val(1_i64))],
-            filter: Some(Book::likes.gt(9_999_i64)),
-            returning: columns(),
-        }))
-        .await
-        .unwrap();
-    assert_eq!((none.rows_affected, none.returning.len()), (0, 0));
-
-    // DELETE .. RETURNING: the rows are read (and locked) before they vanish.
-    let deleted = db
-        .execute(&WritePlan::Delete(DeletePlan {
-            table: "books".into(),
-            filter: Some(Book::author.eq(s.dee.id)),
-            returning: columns(),
-        }))
-        .await
-        .unwrap();
-    assert_eq!(deleted.rows_affected, 2);
-    let mut gone: Vec<String> = deleted
-        .returning
-        .iter()
-        .map(|r| r.get_as::<String>("title").unwrap())
-        .collect();
-    gone.sort();
-    assert_eq!(gone, ["Go", "Zig"]);
-    assert_eq!(Book::objects(db).count().await.unwrap(), 3);
-
-    // The same inside a transaction, rolled back with it.
-    let inside = db
-        .transaction(|tx| async move {
-            let inserted = tx
-                .execute(&WritePlan::Insert(InsertPlan {
-                    table: "teams".into(),
-                    columns: vec!["name".into()],
-                    rows: vec![vec!["x".into()], vec!["y".into()], vec!["z".into()]],
-                    returning: vec!["id".into(), "name".into()],
-                }))
-                .await?;
-            let ids: Vec<i64> = inserted
-                .returning
-                .iter()
-                .map(|r| r.get_as::<i64>("id").unwrap())
-                .collect();
-            assert_eq!(ids.windows(2).filter(|w| w[1] == w[0] + 1).count(), 2);
-            let names: Vec<String> = inserted
-                .returning
-                .iter()
-                .map(|r| r.get_as::<String>("name").unwrap())
-                .collect();
-            assert_eq!(names, ["x", "y", "z"]);
-            Err::<(), _>(OrmError::from(siderite_orm::QueryError::InvalidPlan(
-                "undo".into(),
-            )))
-        })
-        .await;
-    assert!(inside.is_err());
-    assert_eq!(Team::objects(db).count().await.unwrap(), 2);
-
-    // A table without a primary key cannot use the emulation; it says so.
-    db.execute_script("CREATE TABLE loose (a INT)")
-        .await
-        .unwrap();
-    let err = db
-        .execute(&WritePlan::Insert(InsertPlan {
-            table: "loose".into(),
-            columns: vec!["a".into()],
-            rows: vec![vec![Value::Int(1)]],
-            returning: vec!["a".into()],
-        }))
-        .await;
-    assert!(matches!(err, Err(OrmError::Query(_))), "{err:?}");
-    t.cleanup().await;
-}
-
-/// A single-row insert returns its row without reading it back when the
-/// stored values are known; the row must equal what a read gives.
-#[tokio::test]
-async fn single_row_inserts_return_the_stored_row() {
-    use siderite_orm::{InsertPlan, WritePlan};
-    let Some(t) = TestDb::open().await else {
-        return;
-    };
-    let db = &t.db;
-    db.execute_script(
-        "CREATE TABLE plain (
-            id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(8) NOT NULL, body TEXT,
-            n INT, small TINYINT, flag BOOLEAN NOT NULL, legacy VARCHAR(8) CHARACTER SET latin1);
-         CREATE TABLE defaults (
-            id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(8) NOT NULL,
-            state VARCHAR(8) NOT NULL DEFAULT 'new', shout VARCHAR(8) AS (UPPER(name)),
-            price DECIMAL(6,2), tag CHAR(4));
-         CREATE TABLE triggered (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(8) NOT NULL);
-         CREATE TRIGGER triggered_bi BEFORE INSERT ON triggered
-            FOR EACH ROW SET NEW.name = UPPER(NEW.name);",
-    )
-    .await
-    .unwrap();
-    let insert = |table: &'static str, columns: Vec<&'static str>, row: Vec<Value>| {
-        let returning: Vec<&'static str> = match table {
-            "plain" => vec!["id", "name", "body", "n", "small", "flag", "legacy"],
-            "defaults" => vec!["id", "name", "state", "shout", "price", "tag"],
-            _ => vec!["id", "name"],
-        };
-        WritePlan::Insert(InsertPlan {
-            table: table.into(),
-            columns: columns.into_iter().map(Into::into).collect(),
-            rows: vec![row],
-            returning: returning.into_iter().map(Into::into).collect(),
-        })
-    };
-    // What a read of the row with the returned key gives.
-    let stored = |table: &'static str, row: &siderite_orm::Row| {
-        let columns: Vec<&str> = row.iter().map(|(c, _)| c).collect();
-        let sql = format!("SELECT {} FROM {table} WHERE id = ?", columns.join(", "));
-        let id = row.get("id").cloned().unwrap();
-        async move { db.raw_sql(&sql, vec![id]).await.unwrap().rows.remove(0) }
-    };
-    let plain_columns = || vec!["name", "body", "n", "small", "flag", "legacy"];
-
-    // Known without a read-back: integers, booleans, text, NULLs.
-    for row in [
-        vec![
-            "ünï 🦀".into(),
-            "long text".into(),
-            Value::Int(-7),
-            Value::Int(127),
-            Value::Bool(true),
-            "ascii".into(),
-        ],
-        vec![
-            "".into(),
-            Value::Null,
-            Value::Null,
-            Value::Null,
-            Value::Bool(false),
-            Value::Null,
-        ],
-        // Not ASCII in a latin1 column: read back.
-        vec![
-            "x".into(),
-            Value::Null,
-            Value::Int(1),
-            Value::Int(1),
-            Value::Bool(true),
-            "é".into(),
-        ],
-    ] {
-        let done = db
-            .execute(&insert("plain", plain_columns(), row))
-            .await
-            .unwrap();
-        assert_eq!(done.rows_affected, 1);
-        assert_eq!(done.returning.len(), 1);
-        assert_eq!(done.returning[0], stored("plain", &done.returning[0]).await);
-    }
-    let ids: Vec<i64> = db
-        .raw_sql("SELECT id FROM plain ORDER BY id", vec![])
-        .await
-        .unwrap()
-        .rows
-        .iter()
-        .map(|r| r.get_as::<i64>("id").unwrap())
-        .collect();
-    assert_eq!(ids, [1, 2, 3]);
-
-    // Text that does not fit is the server's to reject or truncate.
-    let long = db
-        .execute(&insert(
-            "plain",
-            vec!["name", "flag"],
-            vec!["123456789".into(), Value::Bool(true)],
-        ))
-        .await;
-    assert!(long.is_err(), "{long:?}");
-
-    // Defaults, generated columns and lossy types are read back.
-    let done = db
-        .execute(&insert(
-            "defaults",
-            vec!["name", "price", "tag"],
-            vec![
-                "ab".into(),
-                Value::Decimal("1.005".parse().unwrap()),
-                "t ".into(),
-            ],
-        ))
-        .await
-        .unwrap();
-    let row = &done.returning[0];
-    assert_eq!(row.get_as::<String>("state").unwrap(), "new");
-    assert_eq!(row.get_as::<String>("shout").unwrap(), "AB");
-    assert_eq!(row.get_as::<String>("tag").unwrap(), "t");
-    assert_eq!(row, &stored("defaults", row).await);
-
-    // A trigger may rewrite the row.
-    let done = db
-        .execute(&insert("triggered", vec!["name"], vec!["abc".into()]))
-        .await
-        .unwrap();
-    assert_eq!(done.returning[0].get_as::<String>("name").unwrap(), "ABC");
-
-    // A user without the TRIGGER privilege cannot see triggers in
-    // `information_schema`; its rows are read back all the same.
-    let user = format!("sid_{}", &t.name[t.name.len() - 12..]);
-    for sql in [
-        format!("CREATE USER '{user}'@'%' IDENTIFIED BY 'pw'"),
-        format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON {}.* TO '{user}'@'%'",
-            t.name
-        ),
-    ] {
-        sqlx::query(&sql).execute(&t.admin).await.unwrap();
-    }
-    let url = ["MYSQL_URL", "DATABASE_URL"]
-        .into_iter()
-        .filter_map(|var| std::env::var(var).ok())
-        .find(|u| u.starts_with("mysql"))
-        .unwrap();
-    let host = url.rsplit_once('@').unwrap().1.rsplit_once('/').unwrap().0;
-    let limited = MySqlBackend::connect(&format!("mysql://{user}:pw@{host}/{}", t.name))
-        .await
-        .unwrap();
-    let done = Db::new(limited)
-        .execute(&insert("triggered", vec!["name"], vec!["low".into()]))
-        .await
-        .unwrap();
-    assert_eq!(done.returning[0].get_as::<String>("name").unwrap(), "LOW");
-    sqlx::query(&format!("DROP USER '{user}'@'%'"))
-        .execute(&t.admin)
-        .await
-        .unwrap();
-
-    // Inside a transaction the row is the same, and rolls back with it.
-    let inside = db
-        .transaction(|tx| async move {
-            let done = tx
-                .execute(&insert(
-                    "triggered",
-                    vec!["id", "name"],
-                    vec![Value::Int(50), "x".into()],
-                ))
-                .await?;
-            assert_eq!(done.returning[0].get("id"), Some(&Value::Int(50)));
-            let team = Team {
-                id: 0,
-                name: "tx".into(),
-            };
-            let team = Team::objects(&tx).create(team).await?;
-            assert_eq!(Team::objects(&tx).get(Team::id.eq(team.id)).await?, team);
-            Err::<(), _>(OrmError::from(siderite_orm::QueryError::InvalidPlan(
-                "undo".into(),
-            )))
-        })
-        .await;
-    assert!(inside.is_err());
-    assert_eq!(Team::objects(db).count().await.unwrap(), 0);
-    t.cleanup().await;
-}
-
-#[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn update_assignments_read_old_values() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -1221,6 +895,7 @@ async fn update_assignments_read_old_values() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn raw_sql_uses_question_mark_placeholders() {
     let Some(t) = TestDb::open().await else {
         return;
@@ -1246,6 +921,7 @@ async fn raw_sql_uses_question_mark_placeholders() {
 /// `update_or_create` locks its lookup (`FOR UPDATE`), and retries as an
 /// update when a concurrent insert of the missing row wins.
 #[tokio::test]
+#[ignore = "requires explicit MYSQL_URL and an isolated live service"]
 async fn update_or_create_serializes_with_concurrent_writers() {
     use std::time::Duration;
 
@@ -1253,7 +929,10 @@ async fn update_or_create_serializes_with_concurrent_writers() {
         return;
     };
     let db = &t.db;
-    let bump = |t: &mut Tag| t.label = (t.label.parse::<i32>().unwrap() + 1).to_string();
+    let bump = |t: &mut Tag| {
+        let value = t.label.parse::<i32>().unwrap() + 1;
+        t.label = value.to_string();
+    };
     // Runs `sql` in a transaction held open while `update_or_create` starts,
     // then bumps the `slug` row.
     let race = |sql: &'static str, slug: &'static str| async move {
@@ -1264,8 +943,9 @@ async fn update_or_create_serializes_with_concurrent_writers() {
         });
         let waiter = async {
             tokio::time::sleep(Duration::from_millis(100)).await;
+            let create = || Tag::new(slug, "unused");
             Tag::objects(db)
-                .update_or_create(Tag::slug.eq(slug), || Tag::new(slug, "unused"), bump)
+                .update_or_create(Tag::slug.eq(slug), create, bump)
                 .await
         };
         let (held, outcome) = tokio::join!(holder, waiter);
@@ -1275,12 +955,14 @@ async fn update_or_create_serializes_with_concurrent_writers() {
 
     // Without the lock the lookup would read "0" and overwrite the held "1".
     Tag::new("c", "0").save(db).await.unwrap();
-    let (tag, created) = race("UPDATE tags SET label = '1' WHERE slug = 'c'", "c").await;
+    let update = "UPDATE tags SET label = '1' WHERE slug = 'c'";
+    let (tag, created) = race(update, "c").await;
     assert!(!created);
     assert_eq!(tag.label, "2");
 
     // The row is missing; the held insert wins and the loser updates it.
-    let (tag, created) = race("INSERT INTO tags (slug, label) VALUES ('r', '1')", "r").await;
+    let insert = "INSERT INTO tags (slug, label) VALUES ('r', '1')";
+    let (tag, created) = race(insert, "r").await;
     assert!(!created);
     assert_eq!(tag.label, "2");
     let stored = Tag::objects(db).get(Tag::slug.eq("r")).await.unwrap();

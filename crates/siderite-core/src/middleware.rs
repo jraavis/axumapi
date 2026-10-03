@@ -39,8 +39,14 @@ use tower::{Layer, Service};
 pub use adapt::{BoxService, FromFnLayer, Next, from_fn};
 pub use cors::{Compression, Cors};
 pub use hosts::{HttpsRedirect, TrustedHosts};
-pub use limits::{BodyLimit, ConcurrencyLimit, RateLimit, Timeout};
+mod concurrency;
+pub use concurrency::{ConcurrencyLimit, ConcurrencyLimitError, ConcurrencyStats};
+pub use limits::{BodyLimit, Timeout};
+mod proxy;
+mod rate_limit;
 pub use observe::{RequestId, RequestIdLayer, RequestLogging};
+pub use proxy::{ProxyContext, ProxyError, TrustedProxies};
+pub use rate_limit::{RateLimit, RateLimitError};
 
 pub(crate) use observe::note_matched_path;
 
@@ -107,8 +113,12 @@ impl App {
 
     /// Add a [`ConcurrencyLimit`].
     #[must_use]
-    pub fn concurrency_limit(self, max: usize) -> Self {
-        self.layer(ConcurrencyLimit::new(max))
+    pub fn concurrency_limit(mut self, max: usize) -> Self {
+        let limit = ConcurrencyLimit::new(max);
+        if let Err(error) = limit.validate() {
+            self.config_errors.push(error.to_string());
+        }
+        self.layer(limit)
     }
 
     /// Add a [`BodyLimit`] of `max_bytes`.
@@ -119,7 +129,11 @@ impl App {
 
     /// Add a [`RateLimit`].
     #[must_use]
-    pub fn rate_limit(self, limit: RateLimit) -> Self {
+    pub fn rate_limit(mut self, limit: RateLimit) -> Self {
+        if !limit.valid() {
+            self.config_errors
+                .push("invalid rate limiter configuration".into());
+        }
         self.layer(limit)
     }
 }

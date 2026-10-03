@@ -1,4 +1,5 @@
 //! `bulk_create` / `bulk_update` on SQLite.
+#![cfg(feature = "sqlite")]
 #![allow(clippy::unwrap_used)]
 
 mod common;

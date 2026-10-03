@@ -1,5 +1,6 @@
 //! Related traversal, `select_related`, `prefetch_related` and
 //! many-to-many managers on SQLite.
+#![cfg(feature = "sqlite")]
 #![allow(clippy::unwrap_used)]
 
 mod common;

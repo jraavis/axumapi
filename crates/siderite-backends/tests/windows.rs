@@ -1,4 +1,5 @@
 //! Window functions on SQLite.
+#![cfg(feature = "sqlite")]
 #![allow(clippy::unwrap_used)]
 
 mod common;

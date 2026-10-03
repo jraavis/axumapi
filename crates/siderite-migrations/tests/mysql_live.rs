@@ -147,6 +147,14 @@ async fn mysql_failed_migration_resumes_after_repair() {
         "{err:?}"
     );
     db.execute_script("DROP TABLE `rs_u`").await.unwrap();
+    // This duplicate CREATE failed without effects; reconciliation is
+    // explicit before clearing the script intent and retrying.
+    db.raw_execute(
+        "DELETE FROM siderite_migration_intents WHERE migration_id = ?",
+        vec![Value::Text(migration.id.clone())],
+    )
+    .await
+    .unwrap();
     let report = migrator.migrate(None, false).await.unwrap();
     assert_eq!(report.applied, vec![migration.id.clone()]);
     db.raw_sql("SELECT `n` FROM `rs_t`", Vec::new())

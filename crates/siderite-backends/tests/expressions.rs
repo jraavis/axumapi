@@ -1,5 +1,6 @@
 //! Typed operands, functions, `CASE`, subqueries, date parts and set
 //! operations on SQLite.
+#![cfg(feature = "sqlite")]
 #![allow(clippy::unwrap_used)]
 
 mod common;

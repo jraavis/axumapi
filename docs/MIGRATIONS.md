@@ -1,194 +1,269 @@
-# Migrations
+# Siderite vs. FastAPI Benchmarks
 
-Django-inspired schema migrations. The autodetector diffs [`ModelMeta`](../crates/siderite-orm/src/model.rs) snapshots; the executor applies JSON files through `siderite_orm::Db`.
+This directory contains the end-to-end HTTP benchmark suite comparing Siderite
+against FastAPI, matching the methodology described in
+[`docs/BENCHMARKS.md`](../docs/BENCHMARKS.md).
 
-## Commands
+## Quick Start
 
-Call them from the **application binary** so `makemigrations` sees compiled metadata:
+### 1. Prerequisites
 
-```rust
-siderite_migrations::cli::run(
-    &[User::META, Post::META],
-    &db,
-    Path::new("migrations"),
-    std::env::args().skip(1),
-).await?;
+- **ApacheBench (`ab`)**: Available by default on macOS (`/usr/sbin/ab`) or via
+`apache2-utils` on Linux.
+- **Rust Toolchain**: `cargo` with edition 2024.
+- **Python 3.12+**: With dependencies installed:
+  ```bash
+  pip install -r benchmarks/fastapi/requirements.txt
+  ```
+
+### 2. Build Siderite in Release Mode
+
+```bash
+cargo build --release -p hello_world -p siderite_todo
 ```
 
-| Command | What it does |
-|---|---|
-| `makemigrations [--name SLUG] [--empty] [--dry-run]` | Diff compiled models against the migration graph and write `migrations/NNNN_slug.json`. |
-| `migrate [TARGET] [--dry-run]` | Apply unapplied migrations up to `TARGET` (all remaining if omitted). |
-| `rollback --steps N [--dry-run]` | Unapply the last `N` applied migrations. |
-| `rollback TARGET [--dry-run]` | Unapply everything **after** `TARGET` (`TARGET` stays applied). |
-| `showmigrations` | `[X]` applied / `[ ]` pending, in graph order. |
-| `squashmigrations FROM TO [--name SLUG]` | Collapse a contiguous range into one migration with `replaces`. |
+### 3. Run the Benchmarks
 
-The `siderite` CLI binary runs `migrate`, `rollback`, `showmigrations` and `squashmigrations` from JSON files plus `--database-url` / `DATABASE_URL`. SQLite is always available; PostgreSQL and MySQL URLs need `siderite-cli` built with `--features postgres` / `--features mysql`. See [CLI.md](CLI.md) for the application-side commands (`AppCli`). For `makemigrations` it prints the snippet above: the binary cannot see your models.
-
-`--dry-run` prints SQL (or operations) and executes nothing.
-
-`migrate` and `rollback` take a backend lock before re-reading history, so two replicas cannot apply the same migration: PostgreSQL `pg_advisory_lock`, MySQL `GET_LOCK`, SQLite `BEGIN IMMEDIATE` on the dedicated connection.
-
-## File format
-
-Pretty-printed JSON, one file per migration, named `{id}.json`:
-
-```json
-{
-  "id": "0001_initial",
-  "dependencies": [],
-  "operations": [
-    { "op": "create_model", "model": { "name": "Author", "table": "authors", "fields": [ ... ] } }
-  ],
-  "atomic": true,
-  "checksum": "cbf29ce484222325"
-}
+To run the **Plain HTTP** suite (matching `examples/hello_world`):
+```bash
+python3 benchmarks/run_benchmarks.py --suite plain
 ```
 
-* **id** — zero-padded sequence (at least four digits) plus a slug: `0001_initial`, `0002_add_book_isbn`.
-* **dependencies** — ids that must be applied first. The graph must be a single-headed DAG: missing deps, cycles, and multiple leaves are errors (create a merge or run `squashmigrations`).
-* **checksum** — 16-digit hex FNV-1a of the canonical JSON of `id`, `dependencies`, `operations`, `atomic` and `replaces`. An applied migration whose file no longer matches the history row is refused.
-* **replaces** — set by squash. The loader hides replaced ids and treats the squash as applied when every replaced id is in the history table.
-* **atomic** — wrap the migration in `db.transaction` when the backend supports transactional DDL (PostgreSQL and SQLite both do). `false` runs the statements outside a transaction, which a statement like `CREATE INDEX CONCURRENTLY` needs; see [PostgreSQL](#atomic-false-is-not-transactional) for what that costs.
-
-`RunRust` stores a **registered name**, not a function. Register implementations at runtime with `MigrationRegistry` before `Migrator::migrate`.
-
-## Operations and reversibility
-
-| Operation | Reverse | Notes |
-|---|---|---|
-| `CreateModel` | `DeleteModel` | Includes fields, named indexes, table constraints. Auto M2M join tables (`through: None`) are ordinary models. |
-| `DeleteModel` | `CreateModel` from the before-state | Never assumed empty. |
-| `AddField` | `RemoveField` | |
-| `RemoveField` | `AddField` from the before-state | |
-| `AlterField` | `AlterField` with the old snapshot | |
-| `RenameField` | swapped names | **Only when hinted** (`RenameHints::rename_field`). An unhinted same-shape remove+add is refused; `RenameHints::allow_drop_field` approves an intentional drop. |
-| `RenameModel` | swapped names | **Only when hinted** (`RenameHints::rename_model`). An unhinted same-shape delete+create is refused; `RenameHints::allow_drop_model` approves an intentional drop. The table is renamed when the new model's table name differs. |
-| `CreateIndex` / `DeleteIndex` | each other | `DeleteIndex` recreates from the before-state. |
-| `AddConstraint` / `DeleteConstraint` | each other | |
-| `RunSQL` | `RunSQL` of `reverse_sql` | **Irreversible** if `reverse_sql` is omitted. |
-| `RunRust` | the `backwards` registered name | **Irreversible** if `backwards` is omitted. |
-
-Irreversible migrations are marked by those two cases. Rollback refuses them instead of guessing.
-
-## Schema diff order
-
-Creates are topological by foreign-key dependencies (cyclic FKs are deferred as `AddField`). Deletes run in reverse dependency order. Unmanaged models (`managed: false`) are ignored.
-
-## DDL
-
-Identifiers are double-quoted on PostgreSQL and SQLite (embedded quotes doubled) and backtick-quoted on MySQL. Bind parameters are used for history-table DML; developer-authored `RunSQL` / `CHECK` expressions are copied as written.
-
-| Family | PostgreSQL | SQLite |
-|---|---|---|
-| Auto `i64` PK | `BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY` | `INTEGER PRIMARY KEY AUTOINCREMENT` |
-| Auto `i32` PK | `INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY` | `INTEGER PRIMARY KEY AUTOINCREMENT` |
-| `VARCHAR(n)` | when `max_length` is set | same |
-| `NUMERIC(p,s)` | when `max_digits` / `decimal_places` are set | same |
-| JSON | `jsonb` | `TEXT` |
-| UUID | `UUID` | `TEXT` |
-| Timestamp | `TIMESTAMPTZ` | `TEXT` |
-| Date / time | `DATE` / `TIME` | `TEXT` |
-| Bytes | `BYTEA` | `BLOB` |
-| Bool | `BOOLEAN` | `INTEGER` |
-| Duration | `BIGINT` | `BIGINT` |
-| IP address | `TEXT` | `TEXT` |
-
-`ON DELETE`: `CASCADE`, `RESTRICT` (Protect), `SET NULL`, `SET DEFAULT`, `NO ACTION` (DoNothing).
-
-`DbDefault::Now` → `CURRENT_TIMESTAMP` on PostgreSQL; on SQLite `(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, which `DateTime::from_value` accepts as RFC3339.
-
-MySQL DDL is described in [MySQL](#mysql). Other backends (MongoDB, Redis) return `MigrationError::UnsupportedBackend` before I/O.
-
-## PostgreSQL
-
-### `atomic: false` is not transactional
-
-PostgreSQL DDL *is* transactional, so the executor wraps a migration in `db.transaction` by default and a failure rolls the whole migration back. A migration that sets `"atomic": false` opts out of that — which is what a statement like `CREATE INDEX CONCURRENTLY` needs, since PostgreSQL refuses to run it inside a transaction block. Outside a transaction every statement autocommits, so the consequences match MySQL's:
-
-* A migration that fails half way leaves its earlier statements applied, and no row is written to the history table. The executor records progress per statement in `siderite_migration_progress` (the same table MySQL uses), so running `migrate` again resumes at the first statement that did not commit instead of replaying the ones that did, including *inside* one operation. The error is [`MigrationError::PostgresPartial`](../crates/siderite-migrations/src/error.rs), naming the statement that failed (`2 of 3`, …), or [`MigrationError::PostgresOpPartial`](../crates/siderite-migrations/src/error.rs) naming the operation when a `RunRust` step fails after earlier statements committed.
-* Repair by hand, then re-run: fix what the failed statement left behind and the resume starts at the statement that failed. To restart from scratch instead, roll the applied part back by hand and delete its progress row (`DELETE FROM siderite_migration_progress WHERE migration_id = '…'`).
-* The progress row stores the migration's checksum; if the file changed after a partial run, `migrate` refuses to resume. Restore the original file, or reconcile the schema by hand and delete the progress row.
-* Progress is saved right *after* each statement commits, and no savepoint can span the two. If the process dies in between, the re-run replays that one statement and fails loudly (`already exists`). Check that the statement's effect is present, then advance the row by hand (`UPDATE siderite_migration_progress SET stmt_index = stmt_index + 1 WHERE migration_id = '…'`, or `op_index + 1, stmt_index = 0` for a `RunRust`) and re-run. Keep `RunRust` code idempotent, and prefer several small `atomic: false` migrations to one large one.
-* `rollback` behaves the same way in reverse: an `atomic: false` migration cannot be undone in one transaction, so its progress is recorded there too.
-
-The flag changes nothing on SQLite (the run *is* the lock's transaction) or on MySQL (which never wraps DDL regardless).
-
-## SQLite table rebuild
-
-SQLite cannot `DROP COLUMN` portably, cannot `ALTER COLUMN`, and cannot add or drop table constraints. For `AlterField`, `RemoveField`, `AddConstraint` and `DeleteConstraint` the editor:
-
-1. `CREATE TABLE "<table>__siderite_new" (...)`
-2. `INSERT INTO ... SELECT` overlapping columns (with `CAST` when the type changes)
-3. `DROP TABLE` / `ALTER TABLE ... RENAME TO`
-4. Recreate indexes
-
-`PRAGMA foreign_keys` is a no-op inside a transaction, so the migrator turns it off on the dedicated connection *before* `BEGIN`, runs `PRAGMA foreign_key_check` before commit, and restores the previous value afterwards. Child rows with `ON DELETE CASCADE` survive a rebuild of the parent table. The check fails only on violations the migration introduced (diffed row by row against a baseline taken at open, so a migration that repairs one violation and adds another still fails), so pre-existing violations in unrelated tables do not block it; when foreign keys were already off the check is skipped.
-
-`RunRust` data code on SQLite runs on that same connection with foreign keys **off**: `ON DELETE CASCADE` does nothing there, and orphan rows can be written. Keep data migrations FK-clean by hand (delete children before parents, insert parents first) — the pre-commit check rejects newly created orphans and names the offending table and row.
-
-Simple `AddField` uses `ALTER TABLE ... ADD COLUMN`. Adding `UNIQUE` / `PRIMARY KEY` on SQLite also rebuilds.
-
-A `migrate` / `rollback` run on SQLite is a single transaction (`BEGIN IMMEDIATE` doubles as the concurrency lock), so it is all-or-nothing: a failing migration rolls back the earlier ones in the same run. The per-migration `atomic` flag has no effect on SQLite. Because the run is one transaction, statements SQLite refuses inside a transaction (`VACUUM`, `PRAGMA journal_mode`) cannot appear in a SQLite migration; run them outside `migrate`. `migrate` / `rollback` also refuse to run on a SQLite `Db` that is already inside a transaction, because `PRAGMA foreign_keys` cannot change until it commits.
-
-## MySQL
-
-The MySQL schema editor (`crates/siderite-migrations/src/schema_editor/mysql.rs`) targets MySQL 8.0.31+ and mirrors the PostgreSQL editor, with the differences MySQL forces.
-
-### DDL is not transactional
-
-Every DDL statement in MySQL commits implicitly, so the executor does **not** wrap MySQL migrations in a transaction, whatever the migration's `atomic` flag says. Consequences:
-
-* A migration that fails half way leaves its earlier statements applied, and no row is written to the history table. The executor records progress per statement (`siderite_migration_progress`), so running `migrate` again resumes at the first statement that did not commit instead of replaying the ones that did. That includes resuming *inside* one operation: a `CreateModel` with indexes renders several statements, and a re-run does not re-issue its committed `CREATE TABLE`. The error is [`MigrationError::MysqlPartial`](../crates/siderite-migrations/src/error.rs) and names the statement that failed (`2 of 3`, …), or [`MigrationError::MysqlOpPartial`](../crates/siderite-migrations/src/error.rs) naming the operation when a `RunRust` step fails after committed statements (earlier DDL, or earlier data written by another `RunRust`).
-* Repair by hand, then re-run: fix what the failed statement left behind (for example drop a half-created table, or free a taken index name) and the resume starts at the statement that failed. To restart a migration from scratch instead, roll its applied part back by hand and delete its progress row (`DELETE FROM siderite_migration_progress WHERE migration_id = '…'`).
-* The progress row stores the migration's checksum. If the file changed after a partial run, `migrate` refuses to resume (its indices would point at different operations): restore the original file, or reconcile the schema by hand and delete the progress row.
-* Progress is saved right *after* each statement commits, and MySQL cannot make the two atomic. If the process dies in between, the re-run replays that one statement and fails loudly (`already exists`, or a duplicate key from a `RunRust`). Check that the statement's effect is present, then advance the row by hand (`UPDATE siderite_migration_progress SET stmt_index = stmt_index + 1 WHERE migration_id = '…'`, or `op_index + 1, stmt_index = 0` for a `RunRust`) and re-run. `RunRust` code on MySQL should be idempotent for the same reason.
-* Keep MySQL migrations small, ideally one schema change each, so a failure is easy to repair. Prefer several small migrations to one large one; `--dry-run` shows the SQL first.
-* `RunSQL` statements are not rolled back either.
-
-### Keyed `TEXT` needs `max_length`
-
-`TEXT`, `BLOB` and `JSON` columns cannot be a primary key, `UNIQUE` or indexed without a prefix length, and the editor never guesses one. A `String` field that is unique, indexed or a primary key must set `max_length` so it becomes a `VARCHAR(n)`; otherwise the migration fails before any I/O with an error saying so:
-
-```rust
-#[field(max_length = 191, unique)]   // VARCHAR(191): fine on MySQL
-pub email: String,
+To run a fast sanity check (lower request counts):
+```bash
+python3 benchmarks/run_benchmarks.py --suite plain --fast
 ```
 
-(`VARCHAR(191)` keeps a `utf8mb4` unique index within older key-length limits.) Literal defaults on `TEXT`, `BLOB` and `JSON` are written as `DEFAULT ('..')`.
-
-### `ON DELETE SET DEFAULT` is unsupported
-
-InnoDB rejects `ON DELETE SET DEFAULT`, so a foreign key using it is reported as an error instead of producing DDL that MySQL would ignore or refuse. Use `SET NULL`, `CASCADE`, `RESTRICT` or `NO ACTION`.
-
-### Other differences
-
-| Topic | MySQL |
-|---|---|
-| Quoting | backticks (embedded backticks doubled); string literals escape backslashes as well as quotes |
-| Auto primary key | `BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY` |
-| Column types | `TINYINT(1)` bool, `DATETIME(6)` (UTC) timestamps, `TIME(6)`, `CHAR(36)` UUID, `JSON`, `DOUBLE`; a decimal without precision is `DECIMAL(38,10)` |
-| `DbDefault::Now` | `CURRENT_TIMESTAMP(6)` |
-| Foreign keys | table-level `CONSTRAINT .. FOREIGN KEY`, named `<table>_<column>_fk` (an inline `REFERENCES` is parsed and ignored by MySQL, so it is never used) |
-| `AlterField` | `MODIFY COLUMN`, which restates type, nullability and default |
-| Dropping | `DROP INDEX name ON table`; a unique constraint is dropped as an index and a check constraint with `DROP CHECK` |
-
-## History table
-
-```sql
-CREATE TABLE IF NOT EXISTS "siderite_migrations" (
-  "id" TEXT PRIMARY KEY,
-  "checksum" TEXT NOT NULL,
-  "applied_at" TEXT NOT NULL
-)
+To run the **Database-backed Todo API** suite (e.g. SQLite):
+```bash
+python3 benchmarks/run_benchmarks.py --suite db --db sqlite
 ```
 
-`applied_at` is UTC text in the ORM canonical timestamp form (`%Y-%m-%dT%H:%M:%S%.6fZ`).
+To run against PostgreSQL (ensure Docker container is running):
+```bash
+DATABASE_URL=postgres://siderite:siderite@127.0.0.1:55432/siderite \
+  python3 benchmarks/run_benchmarks.py --suite db --db postgres
+```
 
-## Deferred
+## Workloads
 
-* MongoDB / Redis migrations.
-* Automatic rename detection (hints only).
-* Data migrations beyond `RunSQL` / `RunRust`.
-* Multi-app graphs (`app` is reserved on the file but unused).
+The plain suite measures `GET /`, `GET /hello/world`, and `POST /echo`.
+The database suite measures `GET /todos` (20 rows), `GET /todos/1`, and
+`POST /todos` (one independently committed row per response).
+
+Use a dedicated benchmark database. The runner creates `todos` before
+opening application pools. Each trial starts only its measured application,
+warms it, resets rows without recreating the schema, measures, and shuts
+down before starting the next application. Trial order alternates S/F then
+F/S. Each database reset restores 100 initial rows outside timed work.
+
+`--pool-size N` controls the configured pools. SQLite FastAPI still uses
+blocking sqlite3 connections opened per request; its lifecycle differs from
+Siderite's pool and must be identified in published comparisons.
+Pool 10 with concurrency 20 remains an intentional saturation workload.
+
+SQLite defaults use rollback journal and `synchronous=FULL`.
+`--sqlite-wal` selects WAL and `synchronous=NORMAL` in both applications;
+report this as a separate durability profile.
+
+## Validity and evidence
+
+The runner defaults to five paired repetitions. Normal runs calibrate a
+shared request count to the faster application's observed rate, with a
+minimum measured duration of ten seconds. `--min-seconds N` changes this
+minimum; `--timeout N` bounds each load-generator process. `--fast` skips
+calibration and uses reduced counts for smoke checks only.
+
+Trials with process failures, timeouts, missing metrics, incomplete counts,
+transport errors, non-2xx responses, or insufficient duration abort the
+comparison. Invalid trials are retained and never enter normal medians.
+
+For database inserts, each trial first requires exactly HTTP 201, validates
+its returned values, and reads the committed row through an independent
+client. After warm-up and reset, the measured row-count increase must equal
+the requested count. Each valid timed insert trial is followed by a separate
+concurrent correctness batch at the same concurrency (capped at 100). Every
+sample must return exactly HTTP 201, correct values and a unique positive ID.
+One independent database query checks all sampled IDs and stored values.
+Failures reject the trial; response and row evidence is retained in
+`response_checks`. Sample writes happen after the measured row-count check
+and never enter timed throughput or latency metrics. ApacheBench still
+cannot prove the exact status or ID of every measured response; the retained
+sample evidence explicitly records that limitation.
+
+Evidence is saved under `benchmarks/logs/trials-*`: raw load-generator
+output, validation reasons, completed counts, row deltas, application logs,
+and a manifest of runner settings, source revision, release binary hashes,
+platform, Python and installed Python driver versions. Hashes identify
+binaries but do not prove which source built them. Database versions,
+effective settings, storage, and build flags still require recording.
+
+Short smoke results are unsuitable for performance claims. Published
+comparisons additionally need the durability/transaction matrix, sampling,
+full-pool warm-up verification and paired confidence intervals described in
+[plan 3](../docs/INSERT_OPTIMIZATION_PLAN_3.md).
+
+## Runner regression checks
+
+```bash
+python3 -m unittest discover -s benchmarks -p 'test_*.py'
+```
+
+
+## Native MySQL driver diagnostics
+
+[mysql_driver_probe](mysql_driver_probe/README.md) compares SQLx with pinned
+mysql_async using the same prepared INSERT, independent autocommit,
+connection count and session setup. It verifies every returned ID and row
+through an independent connection. Default-reset and retained-session modes
+are separate profiles; held connections isolate checkout/release cost.
+
+This driver experiment predates the experimental native ORM adapter. It is
+not a FastAPI comparison. Its live cancellation/reuse contract participates
+in the workspace's ignored live-test suite.
+
+## Experimental native MySQL HTTP profile
+
+Build the benchmark with the opt-in adapter, then select it explicitly:
+
+```bash
+cargo build --release -p siderite_todo --features mysql-native
+python3 benchmarks/run_benchmarks.py --suite db --db mysql \
+  --mysql-driver native --todo-operation insert --runs 5 --min-seconds 10
+```
+
+Provide `MYSQL_URL` for a dedicated disposable database. `--mysql-driver
+sqlx` selects the compatibility control. `--todo-operation` supports `all`,
+`insert` and `reads`. Both SQL MySQL profiles warm the full configured pool;
+the native adapter warms again after schema setup retires a raw connection.
+
+Fresh connections are the default transport. Requested keep-alive now
+requires ApacheBench's actual keep-alive count to match every completed
+request. A local HTTP/1.0 run negotiated keep-alive with Siderite but none
+with FastAPI/Uvicorn; that asymmetric run is excluded from performance
+evidence. A valid persistent-connection comparison needs a generator and
+protocol profile that both servers actually support.
+
+Native HTTP measurements remain diagnostic until exact response status/ID
+sampling, server-log review, effective database settings and build provenance
+meet plan 3's publication gates. A driver-probe gain is not an HTTP gain.
+
+
+The runner records repetition identities in timed trial JSON and emits a
+paired-comparison record for each workload. It reports the geometric mean
+of within-pair Siderite/FastAPI throughput ratios and a deterministic 10,000
+resample 95% percentile interval (seed 0). It resamples whole pairs rather
+than treating concurrent requests as independent observations. Fewer than
+five pairs produce no interval. The lead gate requires at least five
+identified pairs, every timed trial lasting at least ten seconds, and a
+lower bound strictly exceeding 1.10x. Both adoption and strong-lead gates
+also require each pair's p99 ratio <=1.05 and equal observed scheduler
+worker counts. Plan 3 adoption instead requires a point ratio >=1.10 and a
+confidence lower bound above parity. Zero-rounded baseline tail latency
+cannot establish a ratio. Failure to establish a lead remains
+visible alongside valid trial results; smoke runs cannot pass this gate.
+These intervals do not remove systematic bias or generalize to other hosts,
+database settings, workloads or deployment architectures.
+
+
+SQLite durability profiles are separate: `--sqlite-profile default`,
+`--sqlite-profile wal-full` and `--sqlite-profile wal-normal`. WAL/FULL keeps
+synchronous=FULL on each application connection. WAL/NORMAL selects NORMAL,
+which has a weaker acknowledgement durability policy. The legacy
+`--sqlite-wal` flag remains an alias for WAL/NORMAL and cannot be combined
+with the explicit profile. Output labels and manifests preserve the choice.
+
+
+CLI database runs create a unique `siderite_bench_<uuid>` database on the
+configured server, or a temporary SQLite file. They remove only that owned
+fixture after all application processes stop, including trial failure and
+interrupt handling. PostgreSQL/MySQL credentials need database creation and
+removal rights; the configured application database is not reset. MongoDB
+clients follow the owned URL database while retaining its original
+`authSource`. Failed cleanup reports the generated name for reconciliation.
+Direct `run_todo_suite` calls must supply their own disposable database/file.
+
+Runtime/load controls: `--concurrency`, `--requests`, `--warmup-requests`
+and `--runtime-workers`. Rust defaults to one scheduler worker; FastAPI
+runs one Uvicorn process/event loop. Larger Rust worker counts are retained
+as unmatched experiments and cannot pass the comparison gates. Startup
+reports verify actual Rust worker counts against the requested setting,
+validate the owned PID and retain sanitized records in `runtime.jsonl`.
+Additional driver/blocking workers and database resources are not equivalent
+CPU budgets. Initial request counts can be raised by normal calibration.
+
+The plain FastAPI baseline now uses async handlers for nonblocking work;
+previous thread-pool-handler results must not be combined with it. SQLite's
+FastAPI baseline still performs blocking SQLite calls in its event loop;
+that implementation must be labeled and supplemented with a modern pooled
+worker baseline before broad production performance claims.
+
+## Inspecting interrupted work
+
+`inspectmigrations` emits a read-only JSON snapshot of applied ids and
+recorded partial work. It does not create history/progress tables, acquire
+the migration lock, change schema or delete recovery rows. Database
+connection initialization still follows the chosen adapter policy.
+
+```text
+siderite inspectmigrations --database-url URL --migrations-dir migrations
+siderite migrate --lock-timeout-ms 30000
+```
+
+The report includes direction, completed operations/statements, checksum,
+current-file match (`null` for an unknown migration) and history status.
+Catalog/table permission failures and malformed bookkeeping are errors.
+Reads may race with another migrator; inspect while migration writers are
+stopped for a stable operator diagnosis.
+
+PostgreSQL/MySQL advisory acquisition defaults to 30 seconds. Set
+`Migrator::with_lock_timeout` or `--lock-timeout-ms` to change it. Timeout
+returns `MigrationError::LockTimeout`; retry after the holder finishes.
+This limit does not bound pool acquisition, SQLite BEGIN or migration
+execution. Session release is checked, including MySQL lock ownership.
+
+An owned process-kill check verifies PostgreSQL atomic rollback and recorded
+progress resume on PostgreSQL non-atomic migrations/MySQL. Bookkeeping is
+not proof of schema state. A crash after DDL commit but before its progress
+write still requires manual catalog reconciliation before rerunning.
+Arbitrary non-transactional RunRust callbacks may have committed data before
+failure; inspect their effects and establish replay safety explicitly.
+The current inspection command does not certify exactly-once data work.
+
+
+### Unconfirmed explicit work
+
+For MySQL and non-atomic PostgreSQL migrations, the executor records an
+intent before each explicit `RunSQL` script or registered `RunRust` callback.
+It clears the intent after successful execution and progress recording.
+`inspectmigrations` includes these in `uncertain_steps`; `callback: null`
+identifies a SQL script. Scripts may commit several commands before failing.
+A remaining intent blocks automatic retry with `UncertainSqlStep` or
+`UncertainRustStep`, even if the failure appeared harmless. This deliberately
+changes automatic retry behavior for explicit non-transactional scripts.
+
+Stop migration writers, preserve the original checksummed file, and inspect
+the actual schema, data and external effects before reconciliation. Preserve
+the intent until that investigation establishes a safe next operation.
+Deleting an intent blindly may duplicate committed data. There is currently
+no automatic repair or acknowledgement command; a verified repair requires
+an operator-controlled bookkeeping change. Generated DDL still has a
+commit-to-progress crash window that requires catalog reconciliation.
+
+A callback can be registered with `register_replay_safe` when its complete
+behavior is idempotent, including side effects outside the database. The
+framework treats this as a caller declaration, not an exactly-once guarantee.
+Ordinary `register` removes a previous replay-safety declaration when replacing
+that name. SQLite and atomic PostgreSQL use transaction rollback instead.
+
+Migration execution requires a pool `Db`. Passing a transaction or dedicated
+connection handle fails before migration bookkeeping or DDL, preserving the
+caller's transaction ownership. Read-only inspection accepts those handles.
+
+
+If a replay-safe callback already recorded completed-operation progress,
+but termination interrupted intent deletion, recovery clears that guarded
+intent and skips the completed callback. Forward and reverse recovery tests
+verify the callback is not run again. An ordinary registration still fails
+the uncertainty guard; completion records do not automatically authorize
+replay or repair for arbitrary callbacks/scripts.

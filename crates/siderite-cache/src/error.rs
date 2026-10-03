@@ -10,6 +10,15 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CacheError {
+    /// Configured key, value or total byte admission was exceeded.
+    #[error("cache byte admission limit exceeded")]
+    SizeLimit,
+    /// Cache limits must be positive and fit within the total byte budget.
+    #[error("invalid cache byte limits")]
+    InvalidLimits,
+    /// A TTL cannot be represented by the backend's monotonic deadline.
+    #[error("cache TTL is not representable")]
+    InvalidTtl,
     /// The backend could not complete the operation.
     #[error("cache backend error: {0}")]
     Backend(String),

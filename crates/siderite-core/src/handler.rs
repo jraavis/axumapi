@@ -16,6 +16,9 @@ use std::future::Future;
 
 /// An endpoint callable with a request. `T` is an inference marker.
 pub trait Handler<T>: Clone + Send + Sync + Sized + 'static {
+    /// Whether this handler needs request-owned background work.
+    const BACKGROUND_TASKS: bool = false;
+
     /// Run extraction, the handler body and response conversion.
     fn call(self, req: Request) -> impl Future<Output = Response> + Send;
 
@@ -50,6 +53,10 @@ macro_rules! impl_handler {
             $($p: FromRequestParts,)*
             $last: FromRequest,
         {
+            const BACKGROUND_TASKS: bool =
+                false $(|| <$p as FromRequestParts>::BACKGROUND_TASKS)*
+                || <$last as FromRequest>::BACKGROUND_TASKS;
+
             fn call(self, req: Request) -> impl Future<Output = Response> + Send {
                 async move {
                     let (mut parts, body) = req.into_parts();
